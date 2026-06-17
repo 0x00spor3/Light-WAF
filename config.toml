@@ -74,3 +74,8 @@ enabled = true
 
 [modules.header_injection]
 enabled = true
+
+# Validazione del FRAMING HTTP (CL/TE) — controllo strutturale, NON content-inspection.
+# Default true: bassissimo falso-positivo (scatta solo su framing illegale/ambiguo).
+[modules.request_smuggling]
+enabled = true

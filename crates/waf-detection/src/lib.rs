@@ -3,6 +3,7 @@ pub mod lfi_rfi;
 pub mod path_traversal;
 pub mod rate_limit;
 pub mod rce;
+pub mod request_smuggling;
 pub mod sqli;
 pub mod ssrf;
 pub mod xss;

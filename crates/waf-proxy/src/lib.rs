@@ -27,7 +27,8 @@ use waf_detection::{
     header_injection::HeaderInjectionModule, lfi_rfi::LfiRfiModule,
     path_traversal::PathTraversalModule,
     rate_limit::{RateLimitModule, RateLimitState},
-    rce::RceModule, sqli::SqliModule, ssrf::SsrfModule, xss::XssModule,
+    rce::RceModule, request_smuggling::RequestSmugglingModule, sqli::SqliModule, ssrf::SsrfModule,
+    xss::XssModule,
 };
 use waf_normalizer::Normalizer;
 use waf_pipeline::{NoopLogger, Pipeline, PipelineVerdict};
@@ -269,11 +270,18 @@ fn deny_response(
                 status = status,
                 "request rejected"
             );
+            // Reason phrase by status: 429 rate-limit, 400 illegal framing
+            // (request smuggling). Block (403 detection) is a separate arm above.
+            let body = match status {
+                429 => "Too Many Requests",
+                400 => "Bad Request",
+                _ => "Rejected",
+            };
             let mut builder = Response::builder().status(status);
             if let Some(secs) = retry_after {
                 builder = builder.header("retry-after", secs.to_string());
             }
-            Some(builder.body(full_body("Too Many Requests")).unwrap())
+            Some(builder.body(full_body(body)).unwrap())
         }
     }
 }
@@ -426,6 +434,11 @@ pub struct Proxy {
 /// SHARED bucket store so its throttle state survives a reload.
 fn build_modules(config: &Config, rl_state: &RateLimitState) -> Vec<Box<dyn WafModule>> {
     let mut modules: Vec<Box<dyn WafModule>> = vec![Box::new(NoopLogger)];
+    // Framing validation runs first among Connection-phase modules: illegal
+    // framing is refused before it is even counted against the rate limit.
+    if config.modules.request_smuggling.enabled {
+        modules.push(Box::new(RequestSmugglingModule::new()));
+    }
     if config.rate_limit.enabled {
         modules.push(Box::new(RateLimitModule::with_state(rl_state.clone())));
     }

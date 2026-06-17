@@ -329,6 +329,40 @@ async fn panic_in_module_is_isolated_other_clients_unaffected() {
     assert_eq!(normal_resp.unwrap().status(), 200);
 }
 
+// ── request smuggling (Fase 6 / Pillar 4) ───────────────────────────────────────
+
+/// Send a raw HTTP/1.1 request over TCP (full byte control) and return the
+/// response status line. Uses `Connection: close` so the server closes the socket.
+async fn raw_status_line(addr: std::net::SocketAddr, raw: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    s.write_all(raw.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).await.unwrap();
+    String::from_utf8_lossy(&buf).lines().next().unwrap_or("").to_string()
+}
+
+#[tokio::test]
+async fn smuggling_te_list_rejected_through_proxy() {
+    let backend = start_echo_backend().await;
+    let mut cfg = make_config(backend);
+    cfg.waf.mode = WafMode::Blocking;
+    let proxy = Proxy::bind(&cfg).await.unwrap();
+    let addr = proxy.local_addr().unwrap();
+    tokio::spawn(proxy.run());
+
+    // `gzip, chunked` is valid to hyper (TE ends in chunked) but refused by the
+    // strict request-smuggling module → exercises the full stack to a 400.
+    let raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\nConnection: close\r\n\r\n0\r\n\r\n";
+    let status = raw_status_line(addr, raw).await;
+    assert!(status.contains("400"), "expected 400, got: {status:?}");
+
+    // A legitimate request passes through.
+    let raw_ok = "GET /ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    let status_ok = raw_status_line(addr, raw_ok).await;
+    assert!(status_ok.contains("200"), "expected 200, got: {status_ok:?}");
+}
+
 // ── hot reload (Fase 6 / Pillar 3) ──────────────────────────────────────────────
 
 fn write_cfg(tag: &str, contents: &str) -> PathBuf {

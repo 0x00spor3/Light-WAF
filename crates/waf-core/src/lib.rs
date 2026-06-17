@@ -423,6 +423,10 @@ pub struct ModulesConfig {
     pub ssrf: ModuleConfig,
     #[serde(default)]
     pub header_injection: ModuleConfig,
+    /// HTTP request-smuggling framing checks (CL/TE). Structural security control,
+    /// default on (see ARCHITECTURE §8).
+    #[serde(default)]
+    pub request_smuggling: ModuleConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
