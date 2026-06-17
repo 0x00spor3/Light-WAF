@@ -14,6 +14,9 @@ use waf_core::{
     Config, Decision, FailMode, LimitsConfig, ModulesConfig, NetworkConfig, Phase, ProxyConfig,
     RateLimitAction, RateLimitConfig, RateLimitKey, RequestContext, WafConfig, WafMode, WafModule,
 };
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use waf_proxy::Proxy;
 
 /// Test module that panics when the request carries an `x-boom` header — used to
@@ -324,4 +327,170 @@ async fn panic_in_module_is_isolated_other_clients_unaffected() {
     assert_eq!(boom_resp.unwrap().status(), 200);
     // The other client is completely unaffected.
     assert_eq!(normal_resp.unwrap().status(), 200);
+}
+
+// ── hot reload (Fase 6 / Pillar 3) ──────────────────────────────────────────────
+
+fn write_cfg(tag: &str, contents: &str) -> PathBuf {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let mut p = std::env::temp_dir();
+    p.push(format!("waf-reload-{tag}-{nanos}.toml"));
+    std::fs::write(&p, contents).unwrap();
+    p
+}
+
+/// Sends a GET that decodes to `1 UNION SELECT a,b FROM users--` → sqli-union-select
+/// (Critical, 5) → blocked in blocking mode at threshold 5. Returns the status.
+async fn sqli_status(client: &Client<HttpConnector, TestBody>, addr: std::net::SocketAddr) -> u16 {
+    client
+        .request(
+            Request::builder()
+                .uri(format!("http://{addr}/?q=1%20UNION%20SELECT%20a%2Cb%20FROM%20users--"))
+                .body(empty_body())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test]
+async fn reload_valid_activates_new_rules() {
+    let backend = start_echo_backend().await;
+    // Start in detection-only: SQLi is detected but never blocked.
+    let proxy = Proxy::bind(&make_config(backend)).await.unwrap();
+    let addr = proxy.local_addr().unwrap();
+    let reloader = proxy.reloader();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+
+    // Before reload: SQLi payload is forwarded (detection-only) → 200.
+    assert_eq!(sqli_status(&client, addr).await, 200);
+
+    // Reload to blocking mode (same backend, modules default-enabled).
+    let cfg = format!(
+        "[proxy]\nlisten = \"{addr}\"\nbackend = \"http://{backend}\"\n[waf]\nmode = \"blocking\"\nblock_threshold = 5\n"
+    );
+    let path = write_cfg("valid", &cfg);
+    reloader.reload_from(&path).expect("valid reload should succeed");
+
+    // After reload: the same payload is blocked → 403. New rules are live.
+    assert_eq!(sqli_status(&client, addr).await, 403);
+    std::fs::remove_file(&path).ok();
+}
+
+#[tokio::test]
+async fn reload_invalid_keeps_old_config() {
+    let backend = start_echo_backend().await;
+    let proxy = Proxy::bind(&make_config(backend)).await.unwrap(); // detection-only
+    let addr = proxy.local_addr().unwrap();
+    let reloader = proxy.reloader();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+
+    // Invalid: trusted_hops out of range → validation error.
+    let bad = format!(
+        "[proxy]\nlisten = \"{addr}\"\nbackend = \"http://{backend}\"\n[waf]\nmode = \"blocking\"\n[network]\ntrusted_hops = 99\n"
+    );
+    let path = write_cfg("invalid", &bad);
+    assert!(reloader.reload_from(&path).is_err(), "invalid config must be rejected");
+
+    // Old config (detection-only) still active: SQLi forwarded → 200, not blocked.
+    assert_eq!(sqli_status(&client, addr).await, 200);
+    std::fs::remove_file(&path).ok();
+}
+
+#[tokio::test]
+async fn reload_under_concurrent_load_has_no_race() {
+    let backend = start_echo_backend().await;
+    let proxy = Proxy::bind(&make_config(backend)).await.unwrap();
+    let addr = proxy.local_addr().unwrap();
+    let reloader = proxy.reloader();
+    tokio::spawn(proxy.run());
+
+    let cfg = format!(
+        "[proxy]\nlisten = \"{addr}\"\nbackend = \"http://{backend}\"\n[waf]\nmode = \"detection-only\"\n"
+    );
+    let path = write_cfg("load", &cfg);
+
+    let client = test_client();
+    // Fire many concurrent requests...
+    let mut handles = Vec::new();
+    for _ in 0..40 {
+        let c = client.clone();
+        handles.push(tokio::spawn(async move {
+            c.request(
+                Request::builder()
+                    .uri(format!("http://{addr}/x"))
+                    .body(empty_body())
+                    .unwrap(),
+            )
+            .await
+        }));
+    }
+    // ...while reloading repeatedly. No panic/race; every request still completes.
+    for _ in 0..10 {
+        reloader.reload_from(&path).expect("reload should succeed");
+    }
+    for h in handles {
+        let resp = h.await.unwrap().unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+    std::fs::remove_file(&path).ok();
+}
+
+#[tokio::test]
+async fn reload_listen_change_is_ignored_old_kept() {
+    let backend = start_echo_backend().await;
+    let proxy = Proxy::bind(&make_config(backend)).await.unwrap();
+    let addr = proxy.local_addr().unwrap();
+    let reloader = proxy.reloader();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+
+    // Request a DIFFERENT bind address: restart-required → warned + ignored.
+    let cfg = format!(
+        "[proxy]\nlisten = \"127.0.0.1:9\"\nbackend = \"http://{backend}\"\n[waf]\nmode = \"detection-only\"\n"
+    );
+    let path = write_cfg("listen", &cfg);
+    reloader.reload_from(&path).expect("reload should still succeed");
+
+    // Proxy keeps serving on the ORIGINAL address.
+    let resp = client
+        .request(Request::builder().uri(format!("http://{addr}/x")).body(empty_body()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    std::fs::remove_file(&path).ok();
+}
+
+#[tokio::test]
+async fn reload_does_not_reset_rate_limit_buckets() {
+    let backend = start_echo_backend().await;
+    let proxy = Proxy::bind(&make_config_rate_limited(backend, 1)).await.unwrap();
+    let addr = proxy.local_addr().unwrap();
+    let reloader = proxy.reloader();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+    let send = |path: &str| {
+        client.request(
+            Request::builder().uri(format!("http://{addr}{path}")).body(empty_body()).unwrap(),
+        )
+    };
+
+    // Exhaust the single-token budget.
+    assert_eq!(send("/a").await.unwrap().status(), 200);
+    assert_eq!(send("/b").await.unwrap().status(), 429);
+
+    // Reload (same rate-limit config). If buckets reset, the next request would be
+    // 200 again — an exploitable bypass. They must SURVIVE the swap.
+    let cfg = format!(
+        "[proxy]\nlisten = \"{addr}\"\nbackend = \"http://{backend}\"\n[waf]\nmode = \"blocking\"\n[rate_limit]\nenabled = true\nrequests = 1\nwindow_seconds = 60\nburst = 1\n"
+    );
+    let path = write_cfg("rl", &cfg);
+    reloader.reload_from(&path).expect("reload should succeed");
+
+    assert_eq!(send("/c").await.unwrap().status(), 429, "bucket must survive reload");
+    std::fs::remove_file(&path).ok();
 }

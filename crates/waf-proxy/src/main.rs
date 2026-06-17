@@ -34,5 +34,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let proxy = Proxy::bind(&config).await?;
     info!(addr = %proxy.local_addr()?, "listening");
+
+    // Hot reload trigger (Fase 6 / Pillar 3): SIGHUP re-reads the same config
+    // path and atomically swaps. Unix-only — the signal is just the button; the
+    // validate-then-swap logic (`Reloader`) is OS-agnostic and what tests drive.
+    #[cfg(unix)]
+    {
+        use tracing::{error, warn};
+        let reloader = proxy.reloader();
+        let reload_path = config_path.clone();
+        tokio::spawn(async move {
+            let mut hangup = match tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::hangup(),
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(error = %e, "cannot install SIGHUP handler; hot reload disabled");
+                    return;
+                }
+            };
+            while hangup.recv().await.is_some() {
+                // Distinguish "signal received" from "reload ok/failed".
+                info!(path = %reload_path.display(), "SIGHUP received; reloading config");
+                if let Err(e) = reloader.reload_from(&reload_path) {
+                    error!(error = %e, "SIGHUP reload failed; current config kept");
+                }
+            }
+        });
+    }
+
     proxy.run().await
 }

@@ -2,8 +2,9 @@ pub mod config;
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 use http_body_util::combinators::BoxBody;
@@ -24,8 +25,9 @@ use waf_core::{
 };
 use waf_detection::{
     header_injection::HeaderInjectionModule, lfi_rfi::LfiRfiModule,
-    path_traversal::PathTraversalModule, rate_limit::RateLimitModule, rce::RceModule,
-    sqli::SqliModule, ssrf::SsrfModule, xss::XssModule,
+    path_traversal::PathTraversalModule,
+    rate_limit::{RateLimitModule, RateLimitState},
+    rce::RceModule, sqli::SqliModule, ssrf::SsrfModule, xss::XssModule,
 };
 use waf_normalizer::Normalizer;
 use waf_pipeline::{NoopLogger, Pipeline, PipelineVerdict};
@@ -130,13 +132,86 @@ fn build_context(
     }
 }
 
-struct AppState {
-    client: Client<HttpConnector, HyperBoxBody>,
+/// Config-derived state, rebuilt as a unit on every hot reload and swapped
+/// atomically. A request loads either the entire old or the entire new value —
+/// never a mix of recompiled rules and stale thresholds.
+struct Reloadable {
     backend: String,
     normalizer: Normalizer,
     pipeline: Pipeline,
     ip_resolver: ClientIpResolver,
     resilience: ResilienceConfig,
+}
+
+/// Process-lifetime state that survives reloads:
+/// - `client`: the hyper connection pool (kept warm);
+/// - `listen_addr`: the bound address (restart-required if it changes);
+/// - `rl_state`: the rate-limiter token buckets (NOT reset by a reload, so a
+///   reload cannot be used to clear an attacker's throttle);
+/// - `current`: the atomically-swappable `Reloadable`.
+struct StaticState {
+    client: Client<HttpConnector, HyperBoxBody>,
+    listen_addr: SocketAddr,
+    rl_state: RateLimitState,
+    current: RwLock<Arc<Reloadable>>,
+}
+
+impl StaticState {
+    /// Load the current config snapshot: take the read lock just long enough to
+    /// clone the `Arc`, then release it (never held across `.await`). Poisoning is
+    /// recovered (`into_inner`) because the only writer holds the lock solely for a
+    /// pointer assignment that cannot panic — so the data is never left invalid.
+    fn current(&self) -> Arc<Reloadable> {
+        self.current
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// Handle that can hot-reload a running proxy's configuration. Obtained via
+/// `Proxy::reloader()`; cheap to clone (an `Arc`). Used by the SIGHUP task in the
+/// binary and directly by tests.
+#[derive(Clone)]
+pub struct Reloader(Arc<StaticState>);
+
+impl Reloader {
+    /// Re-read, validate (reusing Pillar-1 `config::load`) and atomically swap.
+    /// On any error the current configuration is KEPT and the error is logged —
+    /// a failed reload never degrades a working WAF.
+    pub fn reload_from(&self, path: &Path) -> Result<(), config::LoadError> {
+        let new_cfg = match config::load(path) {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, "config reload failed; keeping current configuration");
+                return Err(e);
+            }
+        };
+
+        // Restart-required field: the socket is already bound.
+        if new_cfg.proxy.listen != self.0.listen_addr {
+            warn!(
+                current = %self.0.listen_addr,
+                requested = %new_cfg.proxy.listen,
+                "proxy.listen change requires a restart; keeping the current bind address"
+            );
+        }
+
+        // Rebuild ALL config-derived state (rules recompiled, CIDR re-parsed),
+        // reusing the shared rate-limit buckets so the throttle state survives.
+        let new_reloadable = build_reloadable(&new_cfg, self.0.rl_state.clone(), Vec::new());
+
+        // Atomic swap. The write section is a single pointer assignment that
+        // cannot panic, so the lock is never poisoned by this path; recover
+        // defensively anyway so a foreign poison can't wedge reloads.
+        *self
+            .0
+            .current
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(new_reloadable);
+        info!("configuration reloaded");
+        Ok(())
+    }
 }
 
 /// Build an upstream-error response per `on_upstream_error`: 502 (fail_closed,
@@ -205,17 +280,21 @@ fn deny_response(
 
 async fn try_forward(
     req: Request<Incoming>,
-    state: &AppState,
+    state: &StaticState,
     client_addr: SocketAddr,
 ) -> Result<Response<HyperBoxBody>, Box<dyn std::error::Error + Send + Sync>> {
+    // Load the current config snapshot ONCE per request (atomic): the whole
+    // request runs against this `Reloadable`, immune to a concurrent reload.
+    let rel = state.current();
+
     let (parts, body) = req.into_parts();
     let body_bytes = body.collect().await?.to_bytes();
 
-    let mut ctx = build_context(&parts, &body_bytes, client_addr, &state.ip_resolver);
+    let mut ctx = build_context(&parts, &body_bytes, client_addr, &rel.ip_resolver);
 
     // Connection-phase modules (rate limiting) run BEFORE normalization, so
     // flood traffic is rejected without paying for Fase 2 parsing.
-    let connection_verdict = state.pipeline.run_connection(&mut ctx);
+    let connection_verdict = rel.pipeline.run_connection(&mut ctx);
     if let Some(resp) = deny_response(&ctx, connection_verdict) {
         return Ok(resp);
     }
@@ -223,9 +302,9 @@ async fn try_forward(
     // Parser-limit policy (Fase 6 / Pillar 2): on a normalization failure
     // (limits exceeded / malformed input) `fail_closed` → 400; `fail_open` →
     // forward UNINSPECTED (logged loudly), trading inspection for availability.
-    let normalized_ok = match state.normalizer.normalize(&mut ctx) {
+    let normalized_ok = match rel.normalizer.normalize(&mut ctx) {
         Ok(()) => true,
-        Err(e) => match state.resilience.on_parser_limit {
+        Err(e) => match rel.resilience.on_parser_limit {
             FailMode::FailClosed => {
                 warn!(
                     request_id = %ctx.request_id,
@@ -268,13 +347,13 @@ async fn try_forward(
     // Skip inspection when normalization failed under fail_open (no canonical
     // data to inspect); the request is forwarded uninspected.
     if normalized_ok {
-        let inspection_verdict = state.pipeline.run_inspection(&mut ctx);
+        let inspection_verdict = rel.pipeline.run_inspection(&mut ctx);
         if let Some(resp) = deny_response(&ctx, inspection_verdict) {
             return Ok(resp);
         }
     }
 
-    let backend_uri: Uri = format!("{}{}", state.backend, path_and_query).parse()?;
+    let backend_uri: Uri = format!("{}{}", rel.backend, path_and_query).parse()?;
 
     let mut builder = Request::builder()
         .method(parts.method)
@@ -295,7 +374,7 @@ async fn try_forward(
     // Upstream round-trip under a hard timeout so a stalled origin cannot pin the
     // worker. Connection/timeout failures apply on_upstream_error (502/503),
     // returned here rather than bubbling to the generic 502 in `handle`.
-    let upstream = tokio::time::timeout(state.resilience.upstream_timeout(), async {
+    let upstream = tokio::time::timeout(rel.resilience.upstream_timeout(), async {
         let resp = state.client.request(fwd_req).await?;
         let (resp_parts, resp_body) = resp.into_parts();
         let resp_bytes = resp_body.collect().await?.to_bytes();
@@ -305,9 +384,9 @@ async fn try_forward(
 
     let (resp_parts, resp_bytes) = match upstream {
         Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return Ok(upstream_error_response(&ctx, &state.resilience, &e.to_string())),
+        Ok(Err(e)) => return Ok(upstream_error_response(&ctx, &rel.resilience, &e.to_string())),
         Err(_elapsed) => {
-            return Ok(upstream_error_response(&ctx, &state.resilience, "upstream timeout"))
+            return Ok(upstream_error_response(&ctx, &rel.resilience, "upstream timeout"))
         }
     };
 
@@ -323,7 +402,7 @@ async fn try_forward(
 
 async fn handle(
     req: Request<Incoming>,
-    state: Arc<AppState>,
+    state: Arc<StaticState>,
     client_addr: SocketAddr,
 ) -> Result<Response<HyperBoxBody>, Infallible> {
     match try_forward(req, &state, client_addr).await {
@@ -340,14 +419,15 @@ async fn handle(
 
 pub struct Proxy {
     listener: TcpListener,
-    state: Arc<AppState>,
+    state: Arc<StaticState>,
 }
 
-/// Build the enabled built-in modules from config.
-fn build_modules(config: &Config) -> Vec<Box<dyn WafModule>> {
+/// Build the enabled built-in modules from config. The rate limiter is given the
+/// SHARED bucket store so its throttle state survives a reload.
+fn build_modules(config: &Config, rl_state: &RateLimitState) -> Vec<Box<dyn WafModule>> {
     let mut modules: Vec<Box<dyn WafModule>> = vec![Box::new(NoopLogger)];
     if config.rate_limit.enabled {
-        modules.push(Box::new(RateLimitModule::new()));
+        modules.push(Box::new(RateLimitModule::with_state(rl_state.clone())));
     }
     if config.modules.sqli.enabled {
         modules.push(Box::new(SqliModule::new()));
@@ -373,6 +453,46 @@ fn build_modules(config: &Config) -> Vec<Box<dyn WafModule>> {
     modules
 }
 
+/// Build the full config-derived state as a unit (rules recompiled, CIDR
+/// re-parsed). Used at startup AND on every reload, so reload gets exactly the
+/// same construction path — no mixed state. `extra` modules are appended after the
+/// built-ins (test seam; they are NOT carried across a reload).
+fn build_reloadable(
+    config: &Config,
+    rl_state: RateLimitState,
+    extra: Vec<Box<dyn WafModule>>,
+) -> Reloadable {
+    let mut modules = build_modules(config, &rl_state);
+    modules.extend(extra);
+    let pipeline = Pipeline::new(config, modules);
+
+    // PL4 is "empty but legal": warn that a paranoia_level above the highest
+    // shipped rule activates no extra rules (forward-compatible).
+    if config.waf.paranoia_level > waf_detection::HIGHEST_RULE_PARANOIA {
+        warn!(
+            paranoia_level = config.waf.paranoia_level,
+            highest_rule_paranoia = waf_detection::HIGHEST_RULE_PARANOIA,
+            "paranoia_level exceeds the highest existing rule paranoia: no additional rules are activated"
+        );
+    }
+    let ip_resolver = ClientIpResolver::from_config(&config.network);
+    if ip_resolver.trusted_count() < config.network.trusted_proxies.len() {
+        warn!(
+            configured = config.network.trusted_proxies.len(),
+            valid = ip_resolver.trusted_count(),
+            "some trusted_proxies CIDR entries were invalid and skipped"
+        );
+    }
+
+    Reloadable {
+        backend: config.proxy.backend.trim_end_matches('/').to_string(),
+        normalizer: Normalizer::new(&config.limits),
+        pipeline,
+        ip_resolver,
+        resilience: config.resilience,
+    }
+}
+
 impl Proxy {
     pub async fn bind(config: &Config) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Self::bind_with_modules(config, Vec::new()).await
@@ -389,43 +509,31 @@ impl Proxy {
         extra: Vec<Box<dyn WafModule>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let listener = TcpListener::bind(config.proxy.listen).await?;
+        let listen_addr = listener.local_addr()?;
         let client: Client<HttpConnector, HyperBoxBody> =
             Client::builder(TokioExecutor::new()).build(HttpConnector::new());
-        let backend = config.proxy.backend.trim_end_matches('/').to_string();
-        let normalizer = Normalizer::new(&config.limits);
 
-        let mut modules = build_modules(config);
-        modules.extend(extra);
-        let pipeline = Pipeline::new(config, modules);
+        // The rate-limiter bucket store lives here (process lifetime), shared into
+        // every (re)built pipeline so reloads never reset the throttle.
+        let rl_state = RateLimitState::new();
+        let reloadable = build_reloadable(config, rl_state.clone(), extra);
 
-        // PL4 is "empty but legal": warn the operator that a paranoia_level above
-        // the highest shipped rule activates no extra rules (forward-compatible).
-        if config.waf.paranoia_level > waf_detection::HIGHEST_RULE_PARANOIA {
-            warn!(
-                paranoia_level = config.waf.paranoia_level,
-                highest_rule_paranoia = waf_detection::HIGHEST_RULE_PARANOIA,
-                "paranoia_level exceeds the highest existing rule paranoia: no additional rules are activated"
-            );
-        }
-        let ip_resolver = ClientIpResolver::from_config(&config.network);
-        if ip_resolver.trusted_count() < config.network.trusted_proxies.len() {
-            warn!(
-                configured = config.network.trusted_proxies.len(),
-                valid = ip_resolver.trusted_count(),
-                "some trusted_proxies CIDR entries were invalid and skipped"
-            );
-        }
         Ok(Self {
             listener,
-            state: Arc::new(AppState {
+            state: Arc::new(StaticState {
                 client,
-                backend,
-                normalizer,
-                pipeline,
-                ip_resolver,
-                resilience: config.resilience,
+                listen_addr,
+                rl_state,
+                current: RwLock::new(Arc::new(reloadable)),
             }),
         })
+    }
+
+    /// A cheap, cloneable handle to hot-reload this proxy's configuration.
+    /// Obtain it before `run()` (which consumes `self`); the binary wires it to
+    /// SIGHUP, tests call `reload_from` directly.
+    pub fn reloader(&self) -> Reloader {
+        Reloader(Arc::clone(&self.state))
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {

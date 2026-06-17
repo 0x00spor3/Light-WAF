@@ -61,6 +61,27 @@ struct RlState {
     buckets: HashMap<String, Bucket>,
 }
 
+/// Shared, **non-reloadable** token-bucket store. Lives outside the module so a
+/// config hot reload (Fase 6 / Pillar 3) rebuilds the module's *parameters*
+/// (capacity/refill/action) while the buckets **survive** — otherwise an attacker
+/// could clear their own throttle by triggering a reload. The critical section is
+/// a short, synchronous map update (never held across `.await`), so `std::Mutex`
+/// is the right choice.
+#[derive(Clone)]
+pub struct RateLimitState(Arc<Mutex<RlState>>);
+
+impl RateLimitState {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(RlState { buckets: HashMap::new() })))
+    }
+}
+
+impl Default for RateLimitState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── module ────────────────────────────────────────────────────────────────────
 
 pub struct RateLimitModule {
@@ -72,7 +93,7 @@ pub struct RateLimitModule {
     key: RateLimitKey,
     max_tracked_keys: usize,
     clock: Arc<dyn Clock>,
-    state: Mutex<RlState>,
+    state: RateLimitState,
 }
 
 impl Default for RateLimitModule {
@@ -86,8 +107,18 @@ impl RateLimitModule {
         Self::default()
     }
 
-    /// Construct with a custom clock (used by tests).
+    /// Construct with a custom clock (used by tests). Buckets are private.
     pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+        Self::with_clock_and_state(clock, RateLimitState::new())
+    }
+
+    /// Construct with a **shared** bucket store, reinjected across reloads so the
+    /// throttle state persists when only config parameters change.
+    pub fn with_state(state: RateLimitState) -> Self {
+        Self::with_clock_and_state(Arc::new(SystemClock), state)
+    }
+
+    fn with_clock_and_state(clock: Arc<dyn Clock>, state: RateLimitState) -> Self {
         Self {
             enabled: false,
             capacity: 0.0,
@@ -97,13 +128,13 @@ impl RateLimitModule {
             key: RateLimitKey::ClientIp,
             max_tracked_keys: 0,
             clock,
-            state: Mutex::new(RlState { buckets: HashMap::new() }),
+            state,
         }
     }
 
     /// Number of currently tracked keys (for tests/metrics).
     pub fn tracked_keys(&self) -> usize {
-        self.state.lock().unwrap().buckets.len()
+        self.state.0.lock().unwrap().buckets.len()
     }
 
     fn key_for(&self, ctx: &RequestContext) -> String {
@@ -164,7 +195,7 @@ impl WafModule for RateLimitModule {
         let now = self.clock.now();
 
         let tokens_after = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.0.lock().unwrap();
 
             // Bound memory: before tracking a brand-new key at the cap, evict
             // idle (fully refilled) buckets.
