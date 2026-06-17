@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "crates/waf-core",
+    "crates/waf-normalizer",
+    "crates/waf-pipeline",
+    "crates/waf-detection",
+    "crates/waf-proxy",
+]
+resolver = "2"

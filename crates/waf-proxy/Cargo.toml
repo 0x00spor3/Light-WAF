@@ -1,0 +1,28 @@
+[package]
+name = "waf-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "waf"
+path = "src/main.rs"
+
+[lib]
+name = "waf_proxy"
+path = "src/lib.rs"
+
+[dependencies]
+waf-core = { path = "../waf-core" }
+waf-normalizer = { path = "../waf-normalizer" }
+waf-pipeline = { path = "../waf-pipeline" }
+waf-detection = { path = "../waf-detection" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time"] }
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
+http-body-util = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+toml = "0.8"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time"] }

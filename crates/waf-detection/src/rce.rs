@@ -1,0 +1,157 @@
+use regex::RegexSet;
+use tracing::warn;
+use waf_core::{Config, Decision, Phase, RequestContext, ScoreItem, Severity, WafModule};
+
+use crate::{all_matches, body_str_values, Rule};
+
+// ── rules ─────────────────────────────────────────────────────────────────────
+//
+// Command injection is the most false-positive-prone category (shell
+// metacharacters are common in legit text), so the paranoia tiers are deliberate:
+//   - PL1 (Critical): only high-confidence signals — command substitution,
+//     a metacharacter *followed by a known command*, explicit shell binaries,
+//     reverse-shell idioms.
+//   - PL2 (Warning): backticks (common in markdown), ${IFS}, remote fetch,
+//     Windows shell invocation.
+//   - PL3 (Notice): bare logical operators `&&` / `||`, noisy on their own.
+//
+// All patterns target the normalizer's OUTPUT form (Fase 2): query/body values
+// are double percent-decoded + NFKC-normalized. Every token here is ASCII, which
+// NFKC leaves unchanged, so shell metacharacters and `${IFS}` are matched as-is.
+
+pub static RCE_RULES: &[Rule] = &[
+    Rule {
+        id: "rce-cmd-substitution",
+        // $( ... ) command substitution.
+        pattern: r"\$\([^)]+\)",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "rce-chained-command",
+        // A shell separator immediately followed by a known command name.
+        pattern: r"(?i)[;&|]\s*(?:cat|ls|id|whoami|uname|pwd|wget|curl|nc|ncat|netcat|ping|bash|sh|zsh|python|perl|ruby|nslookup|dig|chmod|rm|cp|mv|kill|telnet|powershell|cmd)\b",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "rce-shell-path",
+        // Explicit shell binary path / executable.
+        pattern: r"(?i)(?:/bin/(?:sh|bash|zsh|dash|ksh)\b|cmd\.exe|powershell\.exe)",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "rce-reverse-shell",
+        // Common reverse-shell idioms.
+        pattern: r"(?i)(?:/dev/tcp/|bash\s+-i|nc\s+-[a-z]*e|mkfifo)",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "rce-backtick",
+        // Backtick command substitution; also common in markdown inline code,
+        // hence Warning/PL2 (won't block on its own).
+        pattern: r"`[^`]+`",
+        severity: Severity::Warning,
+        paranoia: 2,
+    },
+    Rule {
+        id: "rce-ifs-evasion",
+        // ${IFS} / $IFS used to smuggle spaces.
+        pattern: r"(?i)\$(?:\{ifs\}|ifs\b)",
+        severity: Severity::Warning,
+        paranoia: 2,
+    },
+    Rule {
+        id: "rce-download-exec",
+        // Remote payload fetch via wget/curl.
+        pattern: r"(?i)\b(?:wget|curl)\s+(?:-\S+\s+)*https?://",
+        severity: Severity::Warning,
+        paranoia: 2,
+    },
+    Rule {
+        id: "rce-windows-shell",
+        // Windows shell invocation: cmd /c ... or powershell -...
+        pattern: r"(?i)(?:cmd(?:\.exe)?\s*/c|powershell(?:\.exe)?\s+-)",
+        severity: Severity::Warning,
+        paranoia: 2,
+    },
+    Rule {
+        id: "rce-logical-operator",
+        // Bare shell logical operators. NB: `&&|\|\|` — NOT `&&|||` (which would
+        // contain an empty alternative and match everything).
+        pattern: r"&&|\|\|",
+        severity: Severity::Notice,
+        paranoia: 3,
+    },
+];
+
+// ── module ────────────────────────────────────────────────────────────────────
+
+#[derive(Default)]
+pub struct RceModule {
+    rule_set: Option<RegexSet>,
+    /// Rules active at the configured paranoia level, index-aligned with `rule_set`.
+    active_rules: Vec<&'static Rule>,
+}
+
+impl RceModule {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl WafModule for RceModule {
+    fn id(&self) -> &str {
+        "rce"
+    }
+
+    fn phase(&self) -> Phase {
+        Phase::Body
+    }
+
+    fn init(&mut self, cfg: &Config) {
+        let pl = cfg.waf.paranoia_level;
+        self.active_rules = RCE_RULES.iter().filter(|r| r.paranoia <= pl).collect();
+        self.rule_set = Some(
+            RegexSet::new(self.active_rules.iter().map(|r| r.pattern))
+                .expect("RCE rule compilation failed — check patterns at startup"),
+        );
+    }
+
+    fn inspect(&self, ctx: &RequestContext) -> Decision {
+        let Some(rule_set) = &self.rule_set else {
+            return Decision::Allow;
+        };
+
+        let query = ctx.normalized.query_params.iter().map(|(_, v)| v.as_str());
+        let cookies = ctx.normalized.cookies.iter().map(|(_, v)| v.as_str());
+        let body_vals = body_str_values(&ctx.normalized.body);
+        let body = body_vals.iter().map(String::as_str);
+
+        let matched = all_matches(rule_set, query.chain(cookies).chain(body));
+        if matched.is_empty() {
+            return Decision::Allow;
+        }
+
+        let items: Vec<ScoreItem> = matched
+            .iter()
+            .map(|&idx| {
+                let rule = self.active_rules[idx];
+                warn!(
+                    request_id = %ctx.request_id,
+                    rule_id = %rule.id,
+                    severity = ?rule.severity,
+                    "rce detection"
+                );
+                ScoreItem {
+                    rule_id: rule.id.to_string(),
+                    severity: rule.severity,
+                }
+            })
+            .collect();
+
+        Decision::Scores(items)
+    }
+}

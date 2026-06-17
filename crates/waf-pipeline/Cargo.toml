@@ -1,0 +1,11 @@
+[package]
+name = "waf-pipeline"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+waf-core = { path = "../waf-core" }
+tracing = "0.1"
+
+[dev-dependencies]
+bytes = "1"

@@ -1,0 +1,14 @@
+[package]
+name = "waf-detection"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+waf-core = { path = "../waf-core" }
+regex = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+waf-normalizer = { path = "../waf-normalizer" }
+waf-pipeline = { path = "../waf-pipeline" }
+bytes = "1"
