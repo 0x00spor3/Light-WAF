@@ -31,3 +31,38 @@ path = "fuzz_targets/multipart.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "normalize_path"
+path = "fuzz_targets/normalize_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "query"
+path = "fuzz_targets/query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "flatten_json"
+path = "fuzz_targets/flatten_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cookies"
+path = "fuzz_targets/cookies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "form_body"
+path = "fuzz_targets/form_body.rs"
+test = false
+doc = false
+bench = false

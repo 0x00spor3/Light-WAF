@@ -15,3 +15,5 @@ bytes = "1"
 proptest = "1"
 # Independent NFKC oracle for the differential's property B (fixed-point check).
 unicode-normalization = "0.1"
+# Fase 8 #5: build serde_json::Value directly to fuzz the flatten recursion.
+serde_json = "1"

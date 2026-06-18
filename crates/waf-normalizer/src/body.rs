@@ -186,6 +186,22 @@ fn find_bytes(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 
 // ── JSON ──────────────────────────────────────────────────────────────────────
 
+/// Flatten an already-parsed JSON value to `(dot-path, string)` pairs, depth-limited.
+///
+/// Public test/fuzz seam (Fase 8, DEC 2 #5): lets the depth-limited RECURSION be
+/// exercised directly on a `serde_json::Value`, bypassing serde's own parse-depth
+/// cap (~128). The JSON *parsing* is serde_json's job and already robust; this is
+/// our recursion. In production the value always comes from `serde_json::from_str`,
+/// so the input depth is bounded before this even runs.
+pub fn flatten_value(
+    value: &serde_json::Value,
+    limits: &LimitsConfig,
+) -> Result<Vec<(String, String)>, NormalizationError> {
+    let mut out = Vec::new();
+    flatten_json(value, "", &mut out, 1, limits.max_json_depth)?;
+    Ok(out)
+}
+
 fn parse_json(body: &Bytes, limits: &LimitsConfig) -> Result<ParsedBody, NormalizationError> {
     let text = std::str::from_utf8(body.as_ref())
         .map_err(|e| NormalizationError::JsonParseError(e.to_string()))?;
