@@ -63,6 +63,67 @@ waf-core ────────┐ (tipi base, nessuna dipendenza interna)
 
 ---
 
+## Hardening & performance (Fasi 8–9)
+
+Le Fasi 8–9 **non** aggiungono detection: *dimostrano* (non assumono) le garanzie non
+funzionali. Ogni guardia è provata col **bite-test** — rompi il percorso, il test DEVE
+diventare rosso; se resta verde non stava testando nulla. Dettaglio in `ARCHITECTURE.md`
+§11 (performance) e §13 (robustezza). Comandi per riprodurre: § *Strumenti on-demand*.
+
+**Performance — latenza d'ispezione.** Il numero del contratto è la latenza che dipende
+SOLO dal nostro codice (`enqueue→verdetto`), isolata da rete e upstream:
+
+- **~2 µs** worst-case PL3 (regole sature) → **~500×** sotto il contratto **p99 < 1 ms**;
+- distribuzione del worst-case-set: **p50 ~2.1 µs / p99 ~3.1 µs / p99.9 ~5.3 µs**, senza
+  cliff di alloc/lock; il caso più pesante (`ssrf-cloud-metadata`, 3 regole) corona il p99;
+- **`max` (~97 µs) NON è il contratto**: è jitter dello scheduler OS, non proprietà del
+  codice (lo prova il fatto che il caso più pesante corona il **p99**, non il `max`);
+- il gate CI è **relativo** sul single-case pinnato (`inspect_worst_case_pl3`), **non**
+  sull'aggregato né sul `max`: cattura le regressioni senza il rumore di un assoluto su CI
+  condiviso (un `<1 ms` assoluto su runner condiviso varia 3–10× → rumore).
+
+**Resilienza — cosa fa il WAF quando è lui in difficoltà** (policy `[resilience]`
+per-scenario, §9), tutto provato end-to-end e col bite-test:
+
+- **kill-upstream** → 502/503 dichiarati, e il WAF **ispeziona comunque** — un attacco è
+  bloccato *prima* dell'upstream morto (upstream giù ≠ bypass del WAF);
+- **corrupt-reload** → validate-then-swap: una config invalida è **rifiutata**, la
+  last-good resta attiva, **nessuna finestra senza protezione**;
+- **panic in un modulo** → isolato (`catch_unwind`): `fail_open` salta **solo** il modulo
+  rotto (gli altri girano), `fail_closed` → deny. Default **`fail_open`** (controllo
+  *additivo*: un bug nostro non deve ridurre la disponibilità sotto la baseline no-WAF).
+
+**Validazione — la base della fiducia** (Fase 7, §7/§10). La detection è **congelata** e
+misurata da un corpus versionato (`waf-corpus`): **79 casi**, **100% detection-recall**,
+**0% falsi positivi** a PL3. Pesi e soglia (config **C2**: `critical=6`, `block_threshold=5`)
+sono giustificati dall'evidenza del corpus, non ereditati. NB la **detection-recall** (una
+regola matcha) è distinta dalla **blocking-recall** (`score ≥ soglia`).
+
+**Robustezza (Fase 8, §13).** Fuzzing dei 7 parser custom (cargo-fuzz/ASan, Linux/CI) +
+invarianti **proptest** cross-platform sempre-attive; ReDoS **impossibile per costruzione**
+(motore `regex` a tempo lineare, nessun backtracking); differential canonicalization vs un
+oracolo indipendente. **0 finding reali.**
+
+**Qualità dei test — un principio, non un dettaglio.** Esiste una classe nota di
+anti-pattern (§13): *un test che non esercita il percorso che crede di testare* — verde per
+il motivo sbagliato, perché il traffico non è **candidate** (il fast-path salta il benigno)
+o perché l'asserzione è soddisfatta da un percorso diverso. **Unico rilevatore affidabile =
+il bite-test.** Le misure di fault-injection girano su traffico **candidate**, con
+asserzioni che *cambiano* tra percorso-ok e percorso-rotto (403-vs-200, contatore atomico),
+mai un verde/200 che un secondo percorso può produrre.
+
+**In attesa dell'AMBIENTE (non del lavoro).** Gli harness sono costruiti e *noti-corretti*
+(provati dalla candidacy bite verde); manca solo **dove** misurare:
+
+- **curva di overhead e2e** (1k/5k/10k RPS) → `oha` su un box **silenzioso**. In-process su
+  loopback il segnale ~µs dell'ispezione è **sotto il noise floor e2e** (~344 µs di jitter):
+  `examples/load_overhead` lo mostra onestamente (delta perfino negativo = il sanity-check
+  che scatta) — l'e2e **non è e non è mai stato** il contratto, che resta l'isolato (a)/(d);
+- **wiring della pipeline CI** del gate di regressione → ambiente git/CI;
+- **asserzione assoluta `< 1 ms` e2e** → hardware pinnato (mai su CI condiviso).
+
+---
+
 ## Requisiti
 
 - **Rust** stabile (toolchain con `cargo`).
@@ -126,6 +187,29 @@ cargo run -p waf-corpus --example coverage     # mappa regola → caso(i) → mi
 cargo run -p waf-corpus --example tuning       # sweep config soglie × paranoia (margini)
 cargo run --release -p waf-corpus --example fastpath_bench   # benchmark fast-path
 ```
+
+Performance e resilienza (Fasi 8–9):
+
+```sh
+cargo bench -p waf-corpus                                          # microbench ispezione (criterion); baseline ~2µs
+cargo run --release -p waf-corpus --example latency_distribution   # distribuzione worst-case-set: p50/p99/p99.9/max
+cargo run --release -p waf-proxy  --example load_overhead          # smoke e2e WAF vs passthrough (candidacy bite; e2e informativo, non il contratto)
+```
+
+Gate di regressione **relativa** (DEC 4) — workflow a due run sullo **stesso** runner
+(baseline pinnato sul commit base, confronto sul candidato), poi il gate esce `1` sulla
+regressione oltre soglia:
+
+```sh
+cargo bench -p waf-corpus --bench inspection -- --save-baseline pinned   # sul commit base
+cargo bench -p waf-corpus --bench inspection -- --baseline pinned        # sul candidato
+cargo run  -p waf-corpus --example regression_gate                       # PASS / FAIL relativo (ignora max e aggregato)
+```
+
+> Le garanzie di resilienza (kill-upstream, corrupt-reload, isolamento-panic) e di
+> robustezza (proptest sui parser) girano nella suite normale: `cargo test --workspace`.
+> Il fuzzing coverage-guided (`fuzz/`, cargo-fuzz + ASan) è nightly/Linux, escluso dal
+> workspace per non rompere build stabili/Windows.
 
 ---
 

@@ -159,6 +159,19 @@ struct StaticState {
     listen_addr: SocketAddr,
     rl_state: RateLimitState,
     current: RwLock<Arc<Reloadable>>,
+    mode: HandlerMode,
+}
+
+/// Which request handler the accept loop dispatches to. `Inspect` is the ONLY mode a
+/// configured WAF ever uses (every public `bind*` sets it). `Passthrough` is a
+/// `#[doc(hidden)]` bench seam set ONLY by `bind_passthrough` — no `config.toml` field
+/// reaches it (that is the line separating a bench seam from a production bypass flag).
+/// It exists so the Fase 9 (c) load-test can measure the WAF-overhead delta against the
+/// SAME `forward_to_backend` the inspecting path uses.
+#[derive(Clone, Copy)]
+enum HandlerMode {
+    Inspect,
+    Passthrough,
 }
 
 impl StaticState {
@@ -371,10 +384,27 @@ async fn try_forward(
         }
     }
 
+    forward_to_backend(state, &rel, &parts, &path_and_query, body_bytes, client_addr, &ctx).await
+}
+
+/// The SINGLE forwarding path. Both the inspecting handler (`try_forward`) and the
+/// `#[doc(hidden)]` passthrough seam (`try_passthrough`) call it, so the (c) load-test's
+/// no-WAF leg cannot drift from production forwarding — the §13 duplicate-path risk is
+/// removed at the root, not mitigated. Behaviour is unchanged vs the inlined version
+/// (proven by the `passthrough_*` integration tests, green before and after the extract).
+async fn forward_to_backend(
+    state: &StaticState,
+    rel: &Reloadable,
+    parts: &hyper::http::request::Parts,
+    path_and_query: &str,
+    body_bytes: Bytes,
+    client_addr: SocketAddr,
+    ctx: &RequestContext,
+) -> Result<Response<HyperBoxBody>, Box<dyn std::error::Error + Send + Sync>> {
     let backend_uri: Uri = format!("{}{}", rel.backend, path_and_query).parse()?;
 
     let mut builder = Request::builder()
-        .method(parts.method)
+        .method(parts.method.clone())
         .uri(backend_uri);
 
     for (name, value) in &parts.headers {
@@ -402,9 +432,9 @@ async fn try_forward(
 
     let (resp_parts, resp_bytes) = match upstream {
         Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return Ok(upstream_error_response(&ctx, &rel.resilience, &e.to_string())),
+        Ok(Err(e)) => return Ok(upstream_error_response(ctx, &rel.resilience, &e.to_string())),
         Err(_elapsed) => {
-            return Ok(upstream_error_response(&ctx, &rel.resilience, "upstream timeout"))
+            return Ok(upstream_error_response(ctx, &rel.resilience, "upstream timeout"))
         }
     };
 
@@ -418,12 +448,42 @@ async fn try_forward(
     Ok(Response::from_parts(resp_parts, full_body(resp_bytes)))
 }
 
+/// `#[doc(hidden)]` passthrough seam: build the context and forward, SKIPPING the
+/// connection phase, normalization and inspection. The WAF-overhead delta the (c)
+/// load-test publishes = (inspecting leg) − (this leg) = normalize + detect, measured
+/// against the identical `forward_to_backend`. `build_context` runs in BOTH legs (shared
+/// proxy machinery) so it cancels in the delta. Reached only via `bind_passthrough`; no
+/// `config.toml` field selects it.
+async fn try_passthrough(
+    req: Request<Incoming>,
+    state: &StaticState,
+    client_addr: SocketAddr,
+) -> Result<Response<HyperBoxBody>, Box<dyn std::error::Error + Send + Sync>> {
+    let rel = state.current();
+    let (parts, body) = req.into_parts();
+    let body_bytes = body.collect().await?.to_bytes();
+    let ctx = build_context(&parts, &body_bytes, client_addr, &rel.ip_resolver);
+    let path_and_query = parts
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/")
+        .to_string();
+    forward_to_backend(state, &rel, &parts, &path_and_query, body_bytes, client_addr, &ctx).await
+}
+
 async fn handle(
     req: Request<Incoming>,
     state: Arc<StaticState>,
     client_addr: SocketAddr,
 ) -> Result<Response<HyperBoxBody>, Infallible> {
-    match try_forward(req, &state, client_addr).await {
+    // Dispatch on the (config-unreachable) handler mode. `Inspect` is production; the
+    // `try_forward` decision path is unchanged. `Passthrough` is the bench seam.
+    let result = match state.mode {
+        HandlerMode::Inspect => try_forward(req, &state, client_addr).await,
+        HandlerMode::Passthrough => try_passthrough(req, &state, client_addr).await,
+    };
+    match result {
         Ok(resp) => Ok(resp),
         Err(e) => {
             error!(error = %e, client_ip = %client_addr.ip(), "forwarding error");
@@ -533,6 +593,25 @@ impl Proxy {
         config: &Config,
         extra: Vec<Box<dyn WafModule>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::bind_inner(config, extra, HandlerMode::Inspect).await
+    }
+
+    /// `#[doc(hidden)]` bench seam: bind a proxy that FORWARDS WITHOUT inspecting (no
+    /// connection phase, no normalization, no detection) — the no-WAF leg of the Fase 9
+    /// (c) load-test, sharing `forward_to_backend` with the real path. Not a production
+    /// surface: no `config.toml` field selects it, only this constructor does.
+    #[doc(hidden)]
+    pub async fn bind_passthrough(
+        config: &Config,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::bind_inner(config, Vec::new(), HandlerMode::Passthrough).await
+    }
+
+    async fn bind_inner(
+        config: &Config,
+        extra: Vec<Box<dyn WafModule>>,
+        mode: HandlerMode,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let listener = TcpListener::bind(config.proxy.listen).await?;
         let listen_addr = listener.local_addr()?;
         let client: Client<HttpConnector, HyperBoxBody> =
@@ -550,6 +629,7 @@ impl Proxy {
                 listen_addr,
                 rl_state,
                 current: RwLock::new(Arc::new(reloadable)),
+                mode,
             }),
         })
     }

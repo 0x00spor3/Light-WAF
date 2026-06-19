@@ -1,4 +1,6 @@
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
@@ -327,6 +329,238 @@ async fn panic_in_module_is_isolated_other_clients_unaffected() {
     assert_eq!(boom_resp.unwrap().status(), 200);
     // The other client is completely unaffected.
     assert_eq!(normal_resp.unwrap().status(), 200);
+}
+
+// ── Fase 9: resilience e2e — panic-in-module, BOTH fail modes, surviving protection ──
+//
+// These pin the DEC-5 contract end-to-end. The subtlety the line-299 test misses: the
+// content prefilter (Pilastro 3) SKIPS inspection on prc-clean (benign) traffic, so a
+// content module only ever runs on *candidate* traffic — "the request was served" alone
+// does NOT prove the module ran. So the panicking module increments a shared counter
+// before panicking, and the tests assert that counter. Traffic is driven by a real
+// prefilter candidate:
+//   - a WEAK-signal candidate: `ftp://…` → rfi-remote-url (Notice=2, < threshold 5).
+//     Inspection runs (panic fires) but the lone weak rule does NOT block. So the SAME
+//     request is SERVED under fail_open (200) and DENIED under fail_closed (403) — that
+//     contrast is the "BOTH modes" proof.
+//   - a real SQLi payload (Critical ≥ threshold) to show fail_open drops only the broken
+//     module, the surviving SQLi module still blocks (one signal dropped ≠ all dropped).
+
+/// Like `BoomModule`, but bumps a shared counter immediately BEFORE panicking, so a test
+/// can PROVE the panic fired (vs. the prefilter silently skipping inspection).
+struct CountingBoom {
+    hits: Arc<AtomicUsize>,
+}
+
+impl WafModule for CountingBoom {
+    fn id(&self) -> &str {
+        "counting_boom"
+    }
+    fn phase(&self) -> Phase {
+        Phase::RequestLine
+    }
+    fn init(&mut self, _: &Config) {}
+    fn inspect(&self, ctx: &RequestContext) -> Decision {
+        if ctx.normalized.headers.iter().any(|(k, _)| k == "x-boom") {
+            self.hits.fetch_add(1, Ordering::SeqCst);
+            panic!("boom: simulated module defect");
+        }
+        Decision::Allow
+    }
+}
+
+/// Blocking-mode config at PL3 (all rules active) with an explicit `on_internal_error`.
+fn make_config_resilience(backend: std::net::SocketAddr, policy: FailMode) -> Config {
+    let mut cfg = make_config(backend);
+    cfg.waf.mode = WafMode::Blocking;
+    cfg.waf.paranoia_level = 3; // rfi-remote-url is PL3 — keep the weak candidate active
+    cfg.resilience.on_internal_error = policy;
+    cfg
+}
+
+/// GET `?{query}` with the `x-boom` header that trips [`CountingBoom`]. Returns status.
+async fn get_with_boom(
+    client: &Client<HttpConnector, TestBody>,
+    addr: std::net::SocketAddr,
+    query: &str,
+) -> u16 {
+    client
+        .request(
+            Request::builder()
+                .uri(format!("http://{addr}/?{query}"))
+                .header("x-boom", "1")
+                .body(empty_body())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+/// `ftp://host.example/resource`, percent-encoded → rfi-remote-url (Notice=2 < 5): a
+/// prefilter CANDIDATE (inspection runs → the panic fires) that does NOT block on its own.
+const WEAK_CANDIDATE_QUERY: &str = "include=ftp%3A%2F%2Fhost.example%2Fresource";
+/// `1 UNION SELECT a,b FROM users--` → sqli-union-select (Critical ≥ threshold → Block).
+const SQLI_QUERY: &str = "q=1%20UNION%20SELECT%20a%2Cb%20FROM%20users--";
+
+#[tokio::test]
+async fn fail_open_isolates_panic_and_keeps_surviving_protection() {
+    let backend = start_echo_backend().await;
+    let hits = Arc::new(AtomicUsize::new(0));
+    let cfg = make_config_resilience(backend, FailMode::FailOpen);
+    let proxy = Proxy::bind_with_modules(&cfg, vec![Box::new(CountingBoom { hits: Arc::clone(&hits) })])
+        .await
+        .unwrap();
+    let addr = proxy.local_addr().unwrap();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+
+    // Weak-signal candidate: inspection runs (panic fires → counter == 1), fail_open skips
+    // the broken module, and the lone Notice rule is below threshold → request SERVED.
+    assert_eq!(
+        get_with_boom(&client, addr, WEAK_CANDIDATE_QUERY).await,
+        200,
+        "fail_open skips the panicking module; a sub-threshold request is served"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "the module must actually have panicked (prefilter did not skip inspection)"
+    );
+
+    // Same panicking module, but the request now also carries a real SQLi attack. fail_open
+    // drops ONLY the broken module; the surviving SQLi module still BLOCKS (403). If
+    // fail_open meant 'bypass the WAF' this would be 200 — that is the assertion that bites.
+    assert_eq!(
+        get_with_boom(&client, addr, SQLI_QUERY).await,
+        403,
+        "surviving modules still block a real attack after a peer module panics"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        2,
+        "the panicking module ran on the attack request too"
+    );
+}
+
+#[tokio::test]
+async fn fail_closed_turns_panic_into_a_deny() {
+    let backend = start_echo_backend().await;
+    let hits = Arc::new(AtomicUsize::new(0));
+    let cfg = make_config_resilience(backend, FailMode::FailClosed);
+    let proxy = Proxy::bind_with_modules(&cfg, vec![Box::new(CountingBoom { hits: Arc::clone(&hits) })])
+        .await
+        .unwrap();
+    let addr = proxy.local_addr().unwrap();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+
+    // The SAME weak-signal candidate that fail_open SERVED (200) above: under fail_closed
+    // the panic becomes a synthetic Block → 403. Same request, opposite verdict — that
+    // contrast IS the 'BOTH modes' proof. The counter proves the panic actually fired.
+    assert_eq!(
+        get_with_boom(&client, addr, WEAK_CANDIDATE_QUERY).await,
+        403,
+        "fail_closed turns an internal panic into a deny"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "the module must actually have panicked"
+    );
+}
+
+// ── Fase 9: resilience e2e — kill-upstream & corrupt-reload ──────────────────────
+//
+// Both apply the prefilter-candidate requirement (ARCHITECTURE §11): the request that
+// must reach inspection is a real candidate (SQLi union → Critical), so the Pilastro-3
+// prefilter does not short-circuit the path under test. Both run in BLOCKING mode so
+// protection-active (403) is distinguishable from protection-dropped (200) — the existing
+// upstream/reload tests run where the status is the same either way and prove less.
+
+#[tokio::test]
+async fn upstream_down_waf_still_inspects_and_blocks_attacks() {
+    // Kill-upstream (§9 on_upstream_error) is NOT a WAF bypass: inspection runs BEFORE the
+    // upstream call (try_forward), so a malicious request is denied by the WAF and never
+    // reaches the dead origin. A benign request passes inspection and only then hits the
+    // dead upstream → 502. The contrast proves the 403 is inspection, not a blanket error.
+    let dead_addr = {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a = l.local_addr().unwrap();
+        drop(l);
+        a
+    };
+    let mut cfg = make_config(dead_addr);
+    cfg.waf.mode = WafMode::Blocking;
+    let proxy = Proxy::bind(&cfg).await.unwrap();
+    let addr = proxy.local_addr().unwrap();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+
+    // Malicious candidate → blocked by the WAF (403), NOT 502: inspected and denied before
+    // the dead upstream is ever tried.
+    assert_eq!(
+        sqli_status(&client, addr).await,
+        403,
+        "the WAF must still inspect and block attacks even when the upstream is down"
+    );
+
+    // Benign → passes inspection, then the dead upstream yields 502 (fail_closed default).
+    let benign = client
+        .request(
+            Request::builder()
+                .uri(format!("http://{addr}/healthz"))
+                .body(empty_body())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        benign.status(),
+        502,
+        "benign traffic passes inspection and reaches the dead upstream → 502"
+    );
+}
+
+#[tokio::test]
+async fn corrupt_reload_keeps_protection_no_unprotected_window() {
+    // Corrupt-reload (§9 on_config_error): validate-then-swap. A config that fails
+    // validation must be REJECTED and last-good kept — NO window where requests pass
+    // unprotected. The corrupt config below (paranoia_level = 0) is invalid (must be
+    // 1..=4) AND, if ever applied, would deactivate every rule (paranoia <= 0 matches
+    // none) → exactly an unprotected window. Validation must gate the swap.
+    let backend = start_echo_backend().await;
+    let mut cfg = make_config(backend);
+    cfg.waf.mode = WafMode::Blocking;
+    cfg.waf.paranoia_level = 3;
+    let proxy = Proxy::bind(&cfg).await.unwrap();
+    let addr = proxy.local_addr().unwrap();
+    let reloader = proxy.reloader();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+
+    // Baseline: blocking, the SQLi candidate is blocked → 403.
+    assert_eq!(sqli_status(&client, addr).await, 403);
+
+    let corrupt = format!(
+        "[proxy]\nlisten = \"{addr}\"\nbackend = \"http://{backend}\"\n[waf]\nmode = \"blocking\"\nparanoia_level = 0\n"
+    );
+    let path = write_cfg("corrupt-pl0", &corrupt);
+    assert!(
+        reloader.reload_from(&path).is_err(),
+        "an invalid config (paranoia_level = 0) must be rejected"
+    );
+
+    // No unprotected window: the SAME attack is STILL blocked (403) — last-good kept. If
+    // the swap had happened before validation, paranoia 0 would have dropped every rule
+    // and this would be 200.
+    assert_eq!(
+        sqli_status(&client, addr).await,
+        403,
+        "protection must never drop on a rejected reload (no unprotected window)"
+    );
+    std::fs::remove_file(&path).ok();
 }
 
 // ── request smuggling (Fase 6 / Pillar 4) ───────────────────────────────────────
