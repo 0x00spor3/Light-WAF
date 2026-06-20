@@ -21,13 +21,13 @@
 //! On-demand, NOT a CI gate (DEC 4): `cargo bench -p waf-corpus`. The absolute `<1ms p99`
 //! is declared on pinned hardware from this artifact; CI guards regressions relatively.
 //!
-//! **Pinned baseline (DEC 4 regression reference):** ~4.3 µs worst-case PL3 (Fase 10a;
-//! was ~2 µs at Fase 9, ~2.65 µs after 10a-B1 — the growth is the per-request RegexSets
-//! of the new content modules + the path scan added to rce/header_injection, ARCHITECTURE
-//! §11 Fase 10a). This is the versioned reference the relative-regression gate compares
-//! against — NOT an absolute assertion. **Headroom (DEC 1):** ~4.3 µs worst-case vs the
-//! p99 1 ms contract ≈ 230× margin; the number depends only on our code, isolated from
-//! upstream/network.
+//! **Pinned baseline (DEC 4 regression reference):** ~5.1 µs worst-case PL3 (Fase 10b;
+//! was ~2 µs at Fase 9, ~2.65 µs after 10a-B1, ~4.3 µs at end-10a — the growth is the
+//! per-request RegexSets of the new content modules (10b adds `ssi` + `xxe`) plus the
+//! extra rules broadened into the existing sets, ARCHITECTURE §11 Fase 10a/10b). This is
+//! the versioned reference the relative-regression gate compares against — NOT an absolute
+//! assertion. **Headroom (DEC 1):** ~5.1 µs worst-case vs the p99 1 ms contract ≈ 195×
+//! margin; the number depends only on our code, isolated from upstream/network.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use waf_corpus::{cases, corpus_pipeline, prepared_ctx, RECOMMENDED_SEVERITY};

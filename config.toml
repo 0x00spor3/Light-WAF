@@ -3,7 +3,7 @@ listen = "0.0.0.0:8080"
 backend = "http://127.0.0.1:8000"
 
 [waf]
-mode = "detection-only"
+mode = "blocking"
 block_threshold = 5
 paranoia_level = 1          # 1..=4 — higher activates more (noisier) rules
 
@@ -74,6 +74,31 @@ enabled = true
 enabled = true
 
 [modules.ssrf]
+enabled = true
+
+# ── moduli detection Fase 10a/10b (firme inequivocabili per categoria) ──────────
+[modules.ldap]
+enabled = true
+
+[modules.nosql]
+enabled = true
+
+[modules.mail]
+enabled = true
+
+[modules.ssti]
+enabled = true
+
+# Fingerprint di scanner/tool sul solo User-Agent (sqlmap/nuclei/… + domini OOB).
+[modules.scanner]
+enabled = true
+
+# Server-Side Includes injection (<!--#exec|include|…).
+[modules.ssi]
+enabled = true
+
+# XML External Entity (<!ENTITY / <!DOCTYPE…SYSTEM / encoding="UTF-7").
+[modules.xxe]
 enabled = true
 
 [modules.header_injection]

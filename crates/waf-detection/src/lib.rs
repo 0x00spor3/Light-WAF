@@ -9,9 +9,11 @@ pub mod rce;
 pub mod request_smuggling;
 pub mod scanner;
 pub mod sqli;
+pub mod ssi;
 pub mod ssrf;
 pub mod ssti;
 pub mod xss;
+pub mod xxe;
 
 use regex::RegexSet;
 use waf_core::{ParsedBody, RequestContext, Severity};
@@ -93,6 +95,8 @@ pub fn content_rules_split(paranoia: u8) -> (RuleList, RuleList) {
         mail::MAIL_RULES,
         ssti::SSTI_RULES,
         scanner::SCANNER_RULES,
+        ssi::SSI_RULES,
+        xxe::XXE_RULES,
     ] {
         for r in table.iter().filter(|r| r.paranoia <= paranoia) {
             main.push((r.id, r.pattern));

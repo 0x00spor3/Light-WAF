@@ -53,6 +53,41 @@ pub static CASES: &[Case] = &[
         rules: &["pt-unc-path"],
         desc: "UNC network path (Notice/PL3)",
     },
+    // ── gotestwaf path-traversal payloads (Fase 10b B3) ─────────────────────────
+    Case {
+        id: "pt-gotestwaf-resolved-passwd-path",
+        module: Module::PathTraversal,
+        field: Field::Path("/static/img/../../etc/passwd"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["pt-sensitive-unix"],
+        desc: "gotestwaf path-traversal: the normalizer RESOLVES `../` away, so the \
+               signature is the resolved target `/etc/passwd` (pt-sensitive-unix), not `../`",
+    },
+    Case {
+        id: "pt-unc-ipv6-localhost-query",
+        module: Module::PathTraversal,
+        field: Field::Query { name: "file", value: r"\\::1\c$\users\default\ntuser.dat" },
+        min_pl: 3,
+        expect: Expect::Triggers,
+        rules: &["pt-unc-path"],
+        desc: "gotestwaf path-traversal: UNC path to an IPv6-literal host (`\\\\::1\\c$\\`) — \
+               the `:` widening of pt-unc-path's host class is what catches it (Notice/PL3)",
+    },
+    Case {
+        // Overlong UTF-8 of `../../etc/passwd` (`%C0%AE`=`.`, `%C0%AF`=`/`). The
+        // normalizer's `from_utf8_lossy` maps the invalid overlong bytes to U+FFFD
+        // (NOT `.`/`/`), so no `/etc/passwd` signature ever forms. Closing it needs
+        // overlong-sequence decoding (ARCHITECTURE §6), deliberately out of 10b.
+        id: "pt-overlong-utf8-passwd-query",
+        module: Module::PathTraversal,
+        field: Field::RawQuery("file=%C0%AE%C0%AE%C0%AF%C0%AE%C0%AE%C0%AFetc%C0%AFpasswd"),
+        min_pl: 1,
+        expect: Expect::ExpectedMiss { until_phase: None },
+        rules: &[],
+        desc: "gotestwaf community-lfi: overlong-UTF8 `../../etc/passwd` — invalid bytes \
+               become U+FFFD, no signature forms; needs §6 overlong decode (documented limit)",
+    },
     // ── benign / traps ─────────────────────────────────────────────────────────
     Case {
         id: "pt-trap-system32-token",

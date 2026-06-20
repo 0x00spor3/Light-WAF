@@ -68,6 +68,8 @@ pub enum Module {
     Mail,
     Ssti,
     Scanner,
+    Ssi,
+    Xxe,
     HeaderInjection,
     RequestSmuggling,
 }
@@ -88,6 +90,8 @@ impl Module {
             Module::Mail => "mail",
             Module::Ssti => "ssti",
             Module::Scanner => "scanner",
+            Module::Ssi => "ssi",
+            Module::Xxe => "xxe",
             Module::HeaderInjection => "header_injection",
             Module::RequestSmuggling => "request_smuggling",
         }
@@ -140,7 +144,7 @@ pub enum Expect {
 /// The phase the corpus is currently validated at. `ExpectedMiss { until_phase }` rows
 /// whose phase is `<=` this MUST be caught (the oracle enforces the flip). Bump this when
 /// a phase lands, so its deferred gaps become required triggers.
-pub const CURRENT_PHASE: &str = "10a";
+pub const CURRENT_PHASE: &str = "10b";
 
 /// Has `until_phase` been reached at `current`? Phases in the `10x` family order by their
 /// string (`"10a" < "10b" < "10c"`), which is the only family `until_phase` uses.

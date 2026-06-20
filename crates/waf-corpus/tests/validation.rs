@@ -283,8 +283,8 @@ fn prefilter_covers_all_active_content_rules() {
     // drift a loud failure instead of a security hole.
     use std::collections::BTreeSet;
     use waf_detection::{
-        header_injection, ldap, lfi_rfi, mail, nosql, path_traversal, rce, scanner, sqli, ssrf,
-        ssti, xss, ContentPrefilter,
+        header_injection, ldap, lfi_rfi, mail, nosql, path_traversal, rce, scanner, sqli, ssi,
+        ssrf, ssti, xss, xxe, ContentPrefilter,
     };
 
     for pl in [1u8, 2, 3, 4] {
@@ -301,6 +301,8 @@ fn prefilter_covers_all_active_content_rules() {
             mail::MAIL_RULES,
             ssti::SSTI_RULES,
             scanner::SCANNER_RULES,
+            ssi::SSI_RULES,
+            xxe::XXE_RULES,
         ] {
             for r in table.iter().filter(|r| r.paranoia <= pl) {
                 expected.insert(r.id);

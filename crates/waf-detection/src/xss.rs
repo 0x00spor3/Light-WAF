@@ -16,7 +16,14 @@ pub static XSS_RULES: &[Rule] = &[
     },
     Rule {
         id: "xss-javascript-proto",
-        pattern: r"(?i)javascript\s*:",
+        // `javascript:` scheme leading into a function CALL: scheme, then any run of
+        // non-paren chars, then an identifier immediately followed by `(`. This is the
+        // FP-precise form (Fase 10b): the bare `(?i)javascript\s*:` matched benign prose
+        // like "JavaScript: Basics of JavaScript Language" (Critical/PL1 → 403). The
+        // `regex` crate has no lookaround (§8 linear-time), so precision is by structure:
+        // an attack `javascript:alert(…)` has the call, prose has no `(` after the colon.
+        // (Coverage of call-less sinks / entity-obfuscated schemes is later-batch work.)
+        pattern: r"(?i)javascript\s*:[^()]*[a-z_$][\w$]*\(",
         severity: Severity::Critical,
         paranoia: 1,
     },
@@ -25,7 +32,7 @@ pub static XSS_RULES: &[Rule] = &[
         // Inline event handlers: onerror=, onclick=, onload=, onmouseover=, etc.
         // Anchored to the real handler names (NOT `on\w+`, which matched benign
         // query params like ?online=true, ?onsale=1 at Critical/PL1).
-        pattern: r"(?i)\bon(?:error|load|click|mouse\w+|focus|blur|change|submit|key\w+|abort|drag\w+|drop|input|wheel|scroll|toggle|select|reset|resize|contextmenu|animation\w+|transition\w+|play|pause|ended|canplay)\s*=",
+        pattern: r"(?i)\bon(?:error|load|click|auxclick|mouse\w+|pointer\w+|focus|blur|change|submit|key\w+|abort|drag\w+|drop|input|wheel|scroll|toggle|beforetoggle|select|reset|resize|contextmenu|animation\w+|transition\w+|play|pause|ended|canplay|copy|cut|paste)\s*=",
         severity: Severity::Critical,
         paranoia: 1,
     },
@@ -43,8 +50,33 @@ pub static XSS_RULES: &[Rule] = &[
         paranoia: 2,
     },
     Rule {
+        id: "xss-js-sink-call",
+        // A JS sink invoked directly (`alert(…)`, `prompt(…)`) or via the
+        // parenthesized form (`(alert)(1)`) — gotestwaf xss-scripting bypasses without
+        // a tag/handler/scheme, and also the literal `alert(1)` left inside entity-
+        // obfuscated polyglots. NO `\s*` before `(`: that keeps benign prose with a
+        // paren ("confirm (your order)") clean while still catching the attack forms.
+        // Warning/PL2 = accumulation-only on this high-traffic module (anti-FP).
+        pattern: r"(?i)(?:\b(?:alert|confirm|prompt)(?:\?\.)?\(|\(\s*(?:alert|confirm|prompt)\s*\)\s*\()",
+        severity: Severity::Warning,
+        paranoia: 2,
+    },
+    Rule {
+        id: "xss-js-sink-invocation",
+        // A JS sink invoked via Function.prototype method: `alert.call(…)`,
+        // `confirm.apply(…)`, `prompt.bind(…)` — gotestwaf xss-scripting bypasses that
+        // carry no tag/handler/scheme (`confirm.call(null,1)`, `alert.apply(null,[1])`).
+        // `.call(`/`.apply(`/`.bind(` on a sink name is near-zero FP (prose never writes
+        // it), but Warning/PL2 keeps it accumulation-only on this high-traffic module.
+        pattern: r"(?i)\b(?:alert|confirm|prompt|eval)\s*\.\s*(?:call|apply|bind)\s*\(",
+        severity: Severity::Warning,
+        paranoia: 2,
+    },
+    Rule {
         id: "xss-document-cookie",
-        pattern: r"(?i)document\s*\.\s*cookie",
+        // Dot OR bracket access: `document.cookie`, `document["cookie"]`,
+        // `document['cookie']` (gotestwaf community-xss bracket-notation bypass).
+        pattern: r#"(?i)document\s*(?:\.\s*cookie|\[\s*['"]cookie)"#,
         severity: Severity::Warning,
         paranoia: 2,
     },

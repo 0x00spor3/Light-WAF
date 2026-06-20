@@ -16,9 +16,11 @@ pub mod rce;
 pub mod request_smuggling;
 pub mod scanner;
 pub mod sqli;
+pub mod ssi;
 pub mod ssrf;
 pub mod ssti;
 pub mod xss;
+pub mod xxe;
 
 /// All per-module case tables, in module order.
 pub static MODULE_TABLES: &[&[Case]] = &[
@@ -33,6 +35,8 @@ pub static MODULE_TABLES: &[&[Case]] = &[
     mail::CASES,
     ssti::CASES,
     scanner::CASES,
+    ssi::CASES,
+    xxe::CASES,
     header_injection::CASES,
     request_smuggling::CASES,
 ];

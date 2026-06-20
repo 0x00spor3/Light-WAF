@@ -18,6 +18,8 @@ strutturato), *sicuro by design* (fail-open / fail-closed espliciti per-scenario
 | SQLi, XSS, LFI/RFI, SSRF | body/query/cookie | content-inspection regex su dati canonicalizzati |
 | RCE/Cmd-inj | path + body/query/cookie | include la command-injection nel path URL (gotestwaf rce-urlpath) |
 | LDAP, NoSQL, Mail (SMTP/IMAP), SSTI | body/query/cookie | injection per categoria, firme inequivocabili → Critical |
+| SSI (Server-Side Includes) | body/query/cookie | direttiva `<!--#exec\|include\|printenv\|…` → Critical |
+| XXE (XML External Entity) | body/query/cookie | `<!ENTITY` / `<!DOCTYPE…SYSTEM` / `encoding="UTF-7"` → Critical |
 | Scanner / tool fingerprint | User-Agent | sqlmap/nuclei/OpenVAS/ffuf/… + domini OOB (Collaborator/interactsh/oast) |
 | Path traversal | request_line | path + query/cookie/body |
 | Header injection (CRLF) | path + headers/query/cookie/body | field-aware (scope per regola); CRLF smugglato nel path URL |

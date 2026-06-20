@@ -38,6 +38,36 @@ pub static SQLI_RULES: &[Rule] = &[
         paranoia: 1,
     },
     Rule {
+        id: "sqli-mysql-versioned-comment",
+        // MySQL executable comment `/*!...*/` (optionally version-gated `/*!50000`)
+        // wrapping a SQL keyword — the classic `/*!UNiOn*/ /*!SeLEct*/` evasion that
+        // splits keywords so `union\s+select` can't see them (Fase 10b, gotestwaf
+        // sql-injection). Requiring a SQL keyword after `/*!` excludes the benign
+        // CSS/JS minifier preservation comment `/*! license … */`.
+        pattern: r"(?i)/\*!\d*\s*(?:union|select|insert|update|delete|drop|alter|or|and|where|from|having|exec|cast|concat|sleep)",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "sqli-information-schema",
+        // Access to the DB metadata catalog — schema/table/column enumeration. The
+        // underscore token `information_schema` never appears in benign input ("the
+        // information schema of the form" has a space, not `_`). gotestwaf
+        // sql-injection `… from information_schema.columns …`.
+        pattern: r"(?i)\binformation_schema\b",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "sqli-json-function",
+        // MySQL JSON functions used in boolean/exfil SQLi (`OR JSON_EXTRACT(…)=…`,
+        // `AND JSON_DEPTH('{}')!=…`) — gotestwaf sql-injection. A `json_<fn>(` call in
+        // a user value is an unequivocal SQL signal (no benign API passes it as data).
+        pattern: r"(?i)\bjson_(?:extract|depth|keys|search|contains|contains_path|value|arrayagg|objectagg|object|array|quote|unquote|type|valid|length|merge\w*|set|insert|replace|remove|overlaps|table|pretty|storage_\w+)\s*\(",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
         id: "sqli-tautology-and",
         // Same narrowing as sqli-tautology-or (rejects benign `and word=word`).
         pattern: r#"(?i)\band\s+(?:\d+|['"`]?\w['"`]?)\s*=\s*(?:\d+|['"`]?\w['"`]?)"#,

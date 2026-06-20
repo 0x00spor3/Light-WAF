@@ -435,6 +435,10 @@ pub struct ModulesConfig {
     #[serde(default)]
     pub scanner: ModuleConfig,
     #[serde(default)]
+    pub ssi: ModuleConfig,
+    #[serde(default)]
+    pub xxe: ModuleConfig,
+    #[serde(default)]
     pub header_injection: ModuleConfig,
     /// HTTP request-smuggling framing checks (CL/TE). Structural security control,
     /// default on (see ARCHITECTURE §8).

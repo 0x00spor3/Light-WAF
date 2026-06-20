@@ -31,9 +31,11 @@ use waf_detection::rce::RceModule;
 use waf_detection::request_smuggling::RequestSmugglingModule;
 use waf_detection::scanner::ScannerModule;
 use waf_detection::sqli::SqliModule;
+use waf_detection::ssi::SsiModule;
 use waf_detection::ssrf::SsrfModule;
 use waf_detection::ssti::SstiModule;
 use waf_detection::xss::XssModule;
+use waf_detection::xxe::XxeModule;
 use waf_normalizer::Normalizer;
 use waf_pipeline::{Pipeline, PipelineVerdict};
 
@@ -229,6 +231,8 @@ fn build_pipeline(config: &Config) -> Pipeline {
         Box::new(MailModule::new()),
         Box::new(SstiModule::new()),
         Box::new(ScannerModule::new()),
+        Box::new(SsiModule::new()),
+        Box::new(XxeModule::new()),
         Box::new(HeaderInjectionModule::new()),
     ];
     Pipeline::new(config, modules)

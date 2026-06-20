@@ -28,7 +28,8 @@ use waf_detection::{
     mail::MailModule, nosql::NosqlModule, path_traversal::PathTraversalModule,
     rate_limit::{RateLimitModule, RateLimitState},
     rce::RceModule, request_smuggling::RequestSmugglingModule, scanner::ScannerModule,
-    sqli::SqliModule, ssrf::SsrfModule, ssti::SstiModule, xss::XssModule, ContentPrefilter,
+    sqli::SqliModule, ssi::SsiModule, ssrf::SsrfModule, ssti::SstiModule, xss::XssModule,
+    xxe::XxeModule, ContentPrefilter,
 };
 use waf_normalizer::Normalizer;
 use waf_pipeline::{NoopLogger, Pipeline, PipelineVerdict};
@@ -544,6 +545,12 @@ fn build_modules(config: &Config, rl_state: &RateLimitState) -> Vec<Box<dyn WafM
     }
     if config.modules.scanner.enabled {
         modules.push(Box::new(ScannerModule::new()));
+    }
+    if config.modules.ssi.enabled {
+        modules.push(Box::new(SsiModule::new()));
+    }
+    if config.modules.xxe.enabled {
+        modules.push(Box::new(XxeModule::new()));
     }
     if config.modules.header_injection.enabled {
         modules.push(Box::new(HeaderInjectionModule::new()));

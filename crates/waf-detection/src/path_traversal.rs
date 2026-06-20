@@ -48,8 +48,11 @@ pub static PATH_TRAVERSAL_RULES: &[Rule] = &[
     },
     Rule {
         id: "pt-unc-path",
-        // UNC network path: \\server\share — Windows remote file access.
-        pattern: r"(?i)\\\\[a-z0-9_.$-]+\\",
+        // UNC network path: \\server\share — Windows remote file access. The host
+        // class includes `:` so an IPv6-literal host (`\\::1\c$\…`, localhost over
+        // UNC) matches too; the literal backslashes survive normalization (Fase 2),
+        // only the host token needed widening. gotestwaf path-traversal.
+        pattern: r"(?i)\\\\[a-z0-9_.$:-]+\\",
         severity: Severity::Notice,
         paranoia: 3,
     },

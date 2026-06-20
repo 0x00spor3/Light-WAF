@@ -30,7 +30,7 @@ pub static RCE_RULES: &[Rule] = &[
     Rule {
         id: "rce-chained-command",
         // A shell separator immediately followed by a known command name.
-        pattern: r"(?i)[;&|]\s*(?:cat|ls|id|whoami|uname|pwd|wget|curl|nc|ncat|netcat|ping|bash|sh|zsh|python|perl|ruby|nslookup|dig|chmod|rm|cp|mv|kill|telnet|powershell|cmd)\b",
+        pattern: r"(?i)[;&|]\s*(?:cat|ls|id|whoami|uname|pwd|wget|curl|nc|ncat|netcat|ping|bash|sh|zsh|python|perl|ruby|nslookup|dig|getent|host|chmod|rm|cp|mv|kill|telnet|powershell|cmd)\b",
         severity: Severity::Critical,
         paranoia: 1,
     },
@@ -45,6 +45,15 @@ pub static RCE_RULES: &[Rule] = &[
         id: "rce-reverse-shell",
         // Common reverse-shell idioms.
         pattern: r"(?i)(?:/dev/tcp/|bash\s+-i|nc\s+-[a-z]*e|mkfifo)",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "rce-yaml-deserialization",
+        // Unsafe YAML deserialization gadgets (PyYAML `!!python/object/...`,
+        // `!!python/object/apply`, etc.) — gotestwaf rce-urlparam. The `!!python/`
+        // tag never appears in benign input → unequivocal RCE.
+        pattern: r"(?i)!!python/(?:object|module|name|apply)",
         severity: Severity::Critical,
         paranoia: 1,
     },
@@ -72,8 +81,10 @@ pub static RCE_RULES: &[Rule] = &[
     },
     Rule {
         id: "rce-windows-shell",
-        // Windows shell invocation: cmd /c ... or powershell -...
-        pattern: r"(?i)(?:cmd(?:\.exe)?\s*/c|powershell(?:\.exe)?\s+-)",
+        // Windows shell invocation: cmd /c …, powershell -…, or the built-in
+        // `set /a`|`set /p` (arithmetic/prompt — gotestwaf shell-injection `| set /a`).
+        // `/a\b`/`/p\b` anchors avoid matching `set /address` etc.
+        pattern: r"(?i)(?:cmd(?:\.exe)?\s*/c|powershell(?:\.exe)?\s+-|\bset\s+/[ap]\b)",
         severity: Severity::Warning,
         paranoia: 2,
     },
