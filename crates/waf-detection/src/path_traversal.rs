@@ -18,8 +18,14 @@ use crate::{all_matches, body_str_values, Rule};
 pub static PATH_TRAVERSAL_RULES: &[Rule] = &[
     Rule {
         id: "pt-dotdot-traversal",
-        // `../` or `..\` — the canonical traversal sequence (post-decode).
-        pattern: r"\.\.[\\/]",
+        // Two or more *consecutive* traversal segments (`../../`, `..\..\`,
+        // mixed) — the signature of an actual directory escape. A single `../`
+        // is left to `pt-sensitive-*` (which still flags traversal that reaches a
+        // sensitive target on the resolved path/value): requiring `{2,}` keeps a
+        // benign relative `../` (`docs/../report.pdf`, `../images/logo.png`) Clean
+        // without losing real escapes (`/static/img/../../etc/passwd` has `../../`).
+        // Structural narrowing (no lookahead — the `regex` crate has none). 10b-cont.
+        pattern: r"(?:\.\.[\\/]){2,}",
         severity: Severity::Critical,
         paranoia: 1,
     },

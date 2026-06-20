@@ -112,6 +112,15 @@ pub enum Field {
     FormBody(&'static str),
     /// Raw JSON body text.
     JsonBody(&'static str),
+    /// A single `multipart/form-data` file part. The runner assembles the raw
+    /// multipart body (fixed boundary) from the form field name, the `filename`
+    /// and the part `content`, so field-coverage cases can target the filename /
+    /// part value without hand-writing boundaries. (10b-cont field-coverage.)
+    MultipartFile {
+        field: &'static str,
+        filename: &'static str,
+        content: &'static str,
+    },
     /// Raw `Cookie` header value (`name=value; …`).
     Cookie(&'static str),
     /// A single raw header.

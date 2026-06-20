@@ -55,6 +55,19 @@ pub static CASES: &[Case] = &[
         rules: &["rfi-remote-url"],
         desc: "bare remote URL in a parameter (Notice/PL3)",
     },
+    Case {
+        id: "lfi-gotestwaf-file-scheme-query",
+        module: Module::LfiRfi,
+        field: Field::Query { name: "page", value: "file:///etc/./passwd" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        // The `file://` scheme is already in lfi-stream-wrapper; the `/./` segment is
+        // cosmetic (the scheme token matches regardless), so the gotestwaf community-lfi
+        // `file:///etc/./passwd` is covered by the EXISTING matcher — no broadening (D3).
+        rules: &["lfi-stream-wrapper"],
+        desc: "gotestwaf community-lfi `file:///etc/./passwd` — caught by the existing \
+               lfi-stream-wrapper `file://` scheme (D3: extend coverage, not the pattern)",
+    },
     // ── benign / traps ─────────────────────────────────────────────────────────
     Case {
         id: "lfi-benign-template-name",

@@ -199,10 +199,22 @@ pub(crate) fn body_str_values(body: &ParsedBody) -> Vec<String> {
             pairs.iter().map(|(_, v)| v.clone()).collect()
         }
         ParsedBody::Multipart(fields) => {
-            fields
-                .iter()
-                .filter_map(|f| std::str::from_utf8(&f.data).ok().map(str::to_owned))
-                .collect()
+            // Field-coverage (10b-cont): inspect each part's filename AND its data.
+            // A traversal/LFI payload often hides in `filename="../../etc/passwd"`
+            // of a file part — the part *value* (data) was already covered, the
+            // filename was the blind spot. Field NAMEs are control metadata, not
+            // attacker content, so they stay out. Binary parts that are not valid
+            // UTF-8 contribute their filename only.
+            let mut out = Vec::with_capacity(fields.len());
+            for f in fields {
+                if let Some(filename) = &f.filename {
+                    out.push(filename.clone());
+                }
+                if let Ok(s) = std::str::from_utf8(&f.data) {
+                    out.push(s.to_owned());
+                }
+            }
+            out
         }
         ParsedBody::Raw(bytes) => {
             std::str::from_utf8(bytes).ok().map(str::to_owned).into_iter().collect()

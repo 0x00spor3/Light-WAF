@@ -111,11 +111,14 @@ fn pt_encoded_traversal_detected_via_normalizer() {
 #[test]
 fn pt_double_encoded_traversal_detected_via_normalizer() {
     // %252e%252e%252f -> %2e%2e%2f -> ../ after the normalizer's second pass.
+    // A SINGLE resolved `../` no longer trips pt-dotdot-traversal (which now
+    // requires `{2,}` consecutive segments, 10b-cont) — the double-decode is
+    // still proven caught via the sensitive target `/etc/passwd` it reaches.
     let c = normalized_ctx("/", Some("p=%252e%252e%252fetc%252fpasswd"));
     assert!(c.normalized.double_encoding_detected, "expected double-encoding flag");
     let m = make_pt();
     assert!(
-        scores_contains(&m.inspect(&c), "pt-dotdot-traversal"),
+        scores_contains(&m.inspect(&c), "pt-sensitive-unix"),
         "params: {:?}",
         c.normalized.query_params
     );

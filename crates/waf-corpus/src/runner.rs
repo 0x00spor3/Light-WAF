@@ -202,6 +202,17 @@ fn build_ctx(field: &Field) -> RequestContext {
         Field::RawQuery(qs) => req.raw_query(qs).build(),
         Field::FormBody(raw) => req.method("POST").form_body(raw).build(),
         Field::JsonBody(raw) => req.method("POST").json_body(raw).build(),
+        Field::MultipartFile { field, filename, content } => {
+            const BOUNDARY: &str = "----corpusFieldCoverage";
+            let body = format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{field}\"; \
+                 filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n\
+                 {content}\r\n--{BOUNDARY}--\r\n"
+            );
+            req.method("POST")
+                .body(body.into_bytes(), &format!("multipart/form-data; boundary={BOUNDARY}"))
+                .build()
+        }
         Field::Cookie(raw) => req.cookie_header(raw).build(),
         Field::Header { name, value } => req.header(name, value).build(),
         Field::Path(path) => req.path(path).build(),
