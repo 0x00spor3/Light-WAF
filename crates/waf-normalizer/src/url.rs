@@ -85,6 +85,74 @@ pub fn canonicalize_value(raw: &str, plus_as_space: bool) -> (String, bool) {
     (canonical, double_enc)
 }
 
+// ── multipart deep normalization (B1-cont follow-up) ──────────────────────────
+
+/// Byte-level percent-decode (single pass). Unlike [`percent_decode`] this keeps
+/// the result as raw bytes — it does NOT run `from_utf8_lossy` — so invalid /
+/// overlong sequences survive for [`collapse_overlong`] to handle. `+` is treated
+/// literally (multipart values are not form-encoded).
+fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'%' && i + 2 < input.len() && is_hex(input[i + 1]) && is_hex(input[i + 2]) {
+            out.push((hex_val(input[i + 1]) << 4) | hex_val(input[i + 2]));
+            i += 3;
+        } else {
+            out.push(input[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Collapse **overlong** 2-byte UTF-8 sequences that encode a 7-bit ASCII byte
+/// back to that byte: `0xC0 0xAE` → `.`, `0xC0 0xAF` → `/`, `0xC1 …` → the
+/// corresponding char. These are illegal UTF-8 (a `.`/`/` must be a single byte),
+/// so a normal decode maps them to U+FFFD and the `../` / `/etc/passwd` signature
+/// is lost — the classic overlong path-traversal evasion. Lead bytes `0xC0`/`0xC1`
+/// can ONLY introduce an overlong (codepoint < 0x80), so mapping them is sound.
+fn collapse_overlong(bytes: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if (b == 0xC0 || b == 0xC1) && i + 1 < bytes.len() && (0x80..=0xBF).contains(&bytes[i + 1]) {
+            // cp = ((b & 0x1F) << 6) | (b2 & 0x3F); always < 0x80 for 0xC0/0xC1.
+            out.push(((b & 0x1F) << 6) | (bytes[i + 1] & 0x3F));
+            i += 2;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Deep canonicalization for a multipart field (name / filename / value).
+///
+/// The multipart surface is a known traversal-smuggling vector (gotestwaf
+/// `community-lfi-multipart`) that hides `../` in the part `name`, `filename` or
+/// value, often **double-/overlong-encoded**. This applies a stronger decode than
+/// the shared single+conditional pass before the traversal/LFI rules see it:
+///   1. **recursive** percent-decode + overlong collapse until the byte stream is
+///      stable (capped at `MAX_PASSES` to bound work and avoid loops): peels
+///      `%25C0%25AE` → `%C0%AE` → `0xC0 0xAE` → `.`;
+///   2. UTF-8 (lossy on anything still invalid) then **NFKC**, as elsewhere.
+/// Separator normalization (`%2f`→`/`, `%5c`→`\`) falls out of step 1.
+pub fn canonicalize_multipart_field(raw: &str) -> String {
+    const MAX_PASSES: usize = 5;
+    let mut bytes = raw.as_bytes().to_vec();
+    for _ in 0..MAX_PASSES {
+        let next = collapse_overlong(&percent_decode_bytes(&bytes));
+        if next == bytes {
+            break;
+        }
+        bytes = next;
+    }
+    String::from_utf8_lossy(&bytes).nfkc().collect()
+}
+
 /// Normalize a URL path.
 ///
 /// Steps:

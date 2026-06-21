@@ -17,6 +17,7 @@ pub mod xxe;
 
 use regex::RegexSet;
 use waf_core::{ParsedBody, RequestContext, Severity};
+use waf_normalizer::url::canonicalize_multipart_field;
 
 /// Highest paranoia level any shipped rule currently declares. The config
 /// contract allows up to `waf_core::MAX_PARANOIA_LEVEL` (4), but no rule uses 4
@@ -199,19 +200,22 @@ pub(crate) fn body_str_values(body: &ParsedBody) -> Vec<String> {
             pairs.iter().map(|(_, v)| v.clone()).collect()
         }
         ParsedBody::Multipart(fields) => {
-            // Field-coverage (10b-cont): inspect each part's filename AND its data.
-            // A traversal/LFI payload often hides in `filename="../../etc/passwd"`
-            // of a file part — the part *value* (data) was already covered, the
-            // filename was the blind spot. Field NAMEs are control metadata, not
-            // attacker content, so they stay out. Binary parts that are not valid
-            // UTF-8 contribute their filename only.
-            let mut out = Vec::with_capacity(fields.len());
+            // Field-coverage (10b-cont fix): inspect EVERY part field — the form
+            // `name`, the `filename`, AND the value — because gotestwaf's
+            // `community-lfi-multipart` smuggles the traversal in the part `name`
+            // (no filename) or in the value, often double-/overlong-encoded. Each is
+            // run through `canonicalize_multipart_field` (recursive decode + overlong
+            // UTF-8 collapse + NFKC) so `%25C0%25AE…` / `..%2f` resolve to `../`
+            // BEFORE the rules see them. Binary values that are not valid UTF-8
+            // contribute name+filename only.
+            let mut out = Vec::with_capacity(fields.len() * 2);
             for f in fields {
+                out.push(canonicalize_multipart_field(&f.name));
                 if let Some(filename) = &f.filename {
-                    out.push(filename.clone());
+                    out.push(canonicalize_multipart_field(filename));
                 }
                 if let Ok(s) = std::str::from_utf8(&f.data) {
-                    out.push(s.to_owned());
+                    out.push(canonicalize_multipart_field(s));
                 }
             }
             out

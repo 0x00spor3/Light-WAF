@@ -5,10 +5,10 @@ edition = "2021"
 
 [dependencies]
 waf-core = { path = "../waf-core" }
+waf-normalizer = { path = "../waf-normalizer" }
 regex = "1"
 tracing = "0.1"
 
 [dev-dependencies]
-waf-normalizer = { path = "../waf-normalizer" }
 waf-pipeline = { path = "../waf-pipeline" }
 bytes = "1"

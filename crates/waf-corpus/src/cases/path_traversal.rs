@@ -93,7 +93,7 @@ pub static CASES: &[Case] = &[
         module: Module::PathTraversal,
         field: Field::MultipartFile {
             field: "upload",
-            filename: "/static/img/../../etc/passwd",
+            filename: Some("/static/img/../../etc/passwd"),
             content: "harmless file body",
         },
         min_pl: 1,
@@ -105,6 +105,43 @@ pub static CASES: &[Case] = &[
         rules: &["pt-sensitive-unix"],
         desc: "gotestwaf community-lfi-multipart faro: `/static/img/../../etc/passwd` in a \
                multipart FILENAME — field-coverage extension, not pattern broadening (10b-cont)",
+    },
+    Case {
+        id: "pt-gotestwaf-faro-multipart-name",
+        module: Module::PathTraversal,
+        field: Field::MultipartFile {
+            field: "/static/img/../../etc/passwd",
+            filename: None,
+            content: "Test",
+        },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        // gotestwaf's REAL shape: the traversal is the part `name=` (no filename), the
+        // value is benign. `name` is now inspected (canonicalize_multipart_field) →
+        // pt-sensitive-unix + pt-dotdot `{2,}` on `../../`. This is the bypass the
+        // filename-only B1-cont fix missed.
+        rules: &["pt-sensitive-unix"],
+        desc: "gotestwaf community-lfi-multipart: traversal in the part NAME (no filename) — \
+               the field actually used by gotestwaf; name-coverage closes it (10b-cont fix)",
+    },
+    Case {
+        id: "pt-gotestwaf-multipart-overlong-value",
+        module: Module::PathTraversal,
+        field: Field::MultipartFile {
+            field: "32c7608727",
+            filename: None,
+            content: "%25C0%25AE%25C0%25AE%25C0%25AF%25C0%25AE%25C0%25AE%25C0%25AFetc%25C0%25AFpasswd",
+        },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        // Double-encoded overlong UTF-8 in the part VALUE: `%25C0%25AE` → `%C0%AE` →
+        // byte `0xC0 0xAE` → `.`. The multipart deep-normalization (recursive decode +
+        // overlong collapse) resolves it to `../../etc/passwd` BEFORE the rules run.
+        // NB: the same payload in a QUERY stays ExpectedMiss (query keeps the shared
+        // pass; overlong decode is scoped to the multipart smuggling surface).
+        rules: &["pt-sensitive-unix"],
+        desc: "gotestwaf community-lfi-multipart: overlong+double-encoded `../../etc/passwd` in \
+               the part VALUE — closed by multipart deep-normalization (10b-cont fix)",
     },
     Case {
         // Base64Flat encoder: the corpus has no base64-decode (ARCHITECTURE §6 / 10c),
@@ -211,7 +248,7 @@ pub static CASES: &[Case] = &[
         module: Module::PathTraversal,
         field: Field::MultipartFile {
             field: "upload",
-            filename: "report-2026.pdf",
+            filename: Some("report-2026.pdf"),
             content: "quarterly numbers",
         },
         min_pl: 1,
@@ -219,5 +256,19 @@ pub static CASES: &[Case] = &[
         rules: &[],
         desc: "legit multipart upload filename (no `../`, no sensitive target) — field-coverage \
                must not turn ordinary filenames into false positives (10b-cont trap)",
+    },
+    Case {
+        id: "pt-benign-multipart-name-value",
+        module: Module::PathTraversal,
+        field: Field::MultipartFile {
+            field: "profile_photo",
+            filename: None,
+            content: "see docs/../report.pdf for the layout",
+        },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "ordinary part name + a value with a single benign `../` — name/value coverage \
+               must stay Clean under pt-dotdot `{2,}` (10b-cont fix trap)",
     },
 ];

@@ -204,10 +204,13 @@ fn build_ctx(field: &Field) -> RequestContext {
         Field::JsonBody(raw) => req.method("POST").json_body(raw).build(),
         Field::MultipartFile { field, filename, content } => {
             const BOUNDARY: &str = "----corpusFieldCoverage";
+            let disposition = match filename {
+                Some(fname) => format!("name=\"{field}\"; filename=\"{fname}\""),
+                None => format!("name=\"{field}\""),
+            };
             let body = format!(
-                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{field}\"; \
-                 filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n\
-                 {content}\r\n--{BOUNDARY}--\r\n"
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; {disposition}\r\n\
+                 Content-Type: application/octet-stream\r\n\r\n{content}\r\n--{BOUNDARY}--\r\n"
             );
             req.method("POST")
                 .body(body.into_bytes(), &format!("multipart/form-data; boundary={BOUNDARY}"))

@@ -114,12 +114,19 @@ fn parse_multipart(body: &Bytes, boundary: &str) -> Result<ParsedBody, Normaliza
         for (hname, hval) in &headers {
             match hname.to_lowercase().as_str() {
                 "content-disposition" => {
+                    // Attribute keys are case-insensitive (`name`/`Name`/`FILENAME`);
+                    // gotestwaf sends `Content-disposition` + lowercase `name=`, but
+                    // be robust to any casing. Split on the first `=` so a value that
+                    // itself contains `=` is preserved.
                     for param in hval.split(';') {
                         let param = param.trim();
-                        if let Some(v) = param.strip_prefix("name=") {
-                            name = v.trim_matches('"').to_string();
-                        } else if let Some(v) = param.strip_prefix("filename=") {
-                            filename = Some(v.trim_matches('"').to_string());
+                        let Some(eq) = param.find('=') else { continue };
+                        let key = param[..eq].trim().to_lowercase();
+                        let value = param[eq + 1..].trim().trim_matches('"').to_string();
+                        match key.as_str() {
+                            "name" => name = value,
+                            "filename" => filename = Some(value),
+                            _ => {}
                         }
                     }
                 }
