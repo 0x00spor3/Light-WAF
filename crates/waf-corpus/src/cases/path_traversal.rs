@@ -144,6 +144,26 @@ pub static CASES: &[Case] = &[
                the part VALUE — closed by multipart deep-normalization (10b-cont fix)",
     },
     Case {
+        // ── WIRE GROUND-TRUTH (Fase 10c REOPEN, pcap bypass.txt line 591) ──────────
+        // EXACT bytes: JSON body whose string value is `\u`-escaped. serde unescapes
+        // to `%25C0%25AE…` (double-encoded overlong `../../etc/passwd`) — but the JSON
+        // leaf is then read RAW: `body_str_values`/`body_canonical_strings` clone the
+        // JSON value WITHOUT canonicalize_value, so no percent-decode/overlong runs and
+        // the modules see `%25C0%25AE…` (no `../` signature). CONTRAST: the SAME bytes
+        // in a query param ARE canonicalized → caught (score 12). Probe-confirmed BYPASS
+        // (score 0). STEP-1 ground-truth; STEP 2 closes it by canonicalizing JSON leaves.
+        id: "pt-wire-json-unicode-overlong",
+        module: Module::PathTraversal,
+        field: Field::JsonBody(
+            r#"{"test": true, "bcbd6bdb4d": "\u0025\u0032\u0035\u0043\u0030\u0025\u0032\u0035\u0041\u0045\u0025\u0032\u0035\u0043\u0030\u0025\u0032\u0035\u0041\u0045\u0025\u0032\u0035\u0043\u0030\u0025\u0032\u0035\u0041\u0046\u0025\u0032\u0035\u0043\u0030\u0025\u0032\u0035\u0041\u0045\u0025\u0032\u0035\u0043\u0030\u0025\u0032\u0035\u0041\u0045\u0025\u0032\u0035\u0043\u0030\u0025\u0032\u0035\u0041\u0046\u0065\u0074\u0063\u0025\u0032\u0035\u0043\u0030\u0025\u0032\u0035\u0041\u0046\u0070\u0061\u0073\u0073\u0077\u0064"}"#,
+        ),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["pt-sensitive-unix"],
+        desc: "WIRE pcap L591: JSON \\u-escaped overlong ../../etc/passwd — JSON leaf never \
+               canonicalized (root cause refined: serde DOES unescape; canonicalize missing)",
+    },
+    Case {
         // Base64Flat encoder, CAUGHT at 10c: §6 base64-decode produces the derived
         // `/static/img/../../etc/passwd`, which trips pt-sensitive-unix (+ pt-dotdot
         // on `../../`). Bite-verified: break base64-decode → this goes RED.
@@ -267,5 +287,51 @@ pub static CASES: &[Case] = &[
         rules: &[],
         desc: "ordinary part name + a value with a single benign `../` — name/value coverage \
                must stay Clean under pt-dotdot `{2,}` (10b-cont fix trap)",
+    },
+    // ── Fase 10c: nested-JSON recursion lock + JSON-leaf FP traps (FIX #1) ────────
+    Case {
+        id: "pt-wire-json-nested-overlong",
+        module: Module::PathTraversal,
+        field: Field::JsonBody(
+            r#"{"outer": {"inner": ["x", "%25C0%25AE%25C0%25AE%25C0%25AFetc%25C0%25AFpasswd"]}}"#,
+        ),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        // Recursion lock (guardrail #3): the overlong payload is nested under an object
+        // AND inside an array. flatten_json descends both, so json_leaf_derived runs on
+        // every leaf → the canonical `../etc/passwd` reaches the derived channel.
+        rules: &["pt-sensitive-unix"],
+        desc: "10c: NESTED JSON object+array leaf carrying overlong `../etc/passwd` — locks \
+               recursive leaf canonicalization (a wrapper must not reintroduce the bypass)",
+    },
+    Case {
+        id: "pt-benign-json-percent-path",
+        module: Module::PathTraversal,
+        field: Field::JsonBody(r#"{"path": "%2Fhome%2Fuser%2Freport.pdf"}"#),
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "10c FP trap: benign percent-encoded JSON leaf → `/home/user/report.pdf` (no `../`, \
+               no sensitive target) must stay Clean after leaf canonicalization",
+    },
+    Case {
+        id: "pt-benign-json-base64-text",
+        module: Module::PathTraversal,
+        field: Field::JsonBody(r#"{"note": "V2VsY29tZSB0byBvdXIgd2Vic2l0ZSwgZW5qb3kgeW91ciBzdGF5"}"#),
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "10c FP trap: benign base64 JSON leaf decoding to printable prose (no rule signature) \
+               must stay Clean — decode-then-match-then-discard",
+    },
+    Case {
+        id: "pt-benign-json-base64-entropy",
+        module: Module::PathTraversal,
+        field: Field::JsonBody(r#"{"token": "jyrRB7xEnm8D4VWq+xKQfcwx"}"#),
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "10c FP trap: high-entropy base64 JSON leaf (session-token-like) decodes to binary → \
+               mostly_printable rejects it before the rules → must stay Clean",
     },
 ];

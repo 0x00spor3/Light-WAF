@@ -135,8 +135,23 @@ impl Normalizer {
             .map(|(_, v)| v.as_str());
 
         let parsed_body = parse_body(content_type, &ctx.body, limits)?;
-        for s in body_canonical_strings(&parsed_body) {
-            derived.extend(url::base64_derived(&s));
+        // Body-derived inspection surface (10c). JSON leaves get the FULL decode
+        // (percent + overlong + base64) into the derived channel because
+        // `body_str_values` inspects JSON values RAW (serde unescapes `\u` but does NOT
+        // percent/overlong-decode; form & multipart already canonicalize their values).
+        // EVERY flattened leaf is processed → nested objects/arrays are covered too.
+        // Other body types only contribute base64-derived variants (already canonical).
+        match &parsed_body {
+            waf_core::ParsedBody::JsonFlattened(pairs) => {
+                for (_, v) in pairs {
+                    derived.extend(url::json_leaf_derived(v));
+                }
+            }
+            other => {
+                for s in body_canonical_strings(other) {
+                    derived.extend(url::base64_derived(&s));
+                }
+            }
         }
 
         // base64-derived from header VALUES, minus the structural per-name exclusion

@@ -229,6 +229,33 @@ pub fn base64_derived(value: &str) -> Vec<String> {
     out
 }
 
+/// Derived inspection variants of a single JSON STRING leaf (Fase 10c).
+///
+/// `serde_json::from_str` already unescapes JSON `\uXXXX`/`\n`/… so `raw` is the
+/// unescaped leaf — but it is stored AND inspected raw: unlike form-urlencoded (decoded
+/// at parse) and multipart (decoded in `body_str_values`), the JSON leaf never sees
+/// `canonicalize_value`. So an encoded leaf (`%25C0%25AE…`, `%3CsvG…`) reaches the
+/// modules still encoded → bypass (pcap 10c). This feeds the DECODED form to the derived
+/// channel instead of mutating the stored leaf (decode-then-match-then-discard):
+///   - percent + overlong fixed-point → the `canonical`, pushed ONLY when it differs
+///     from `raw` (when unchanged, `body_str_values` already inspects the raw leaf, so
+///     pushing would be redundant — `all_matches` dedups by rule anyway);
+///   - base64 expansion of the canonical.
+/// Both stages share the ONE [`PIPELINE_CAP`] budget — no new cap (same invariant as
+/// the overlong/base64 channels). Recursion across nesting levels is automatic: the
+/// caller iterates EVERY flattened leaf (`flatten_json` descends objects + arrays).
+pub fn json_leaf_derived(raw: &str) -> Vec<String> {
+    let mut budget = PIPELINE_CAP;
+    let mut out = Vec::new();
+    let (bytes, _) = percent_overlong_fixpoint(raw.as_bytes(), false, &mut budget);
+    let canonical: String = String::from_utf8_lossy(&bytes).nfkc().collect();
+    expand_base64(&canonical, &mut budget, &mut out);
+    if canonical != raw {
+        out.push(canonical);
+    }
+    out
+}
+
 /// Collapse **overlong** 2-byte UTF-8 sequences that encode a 7-bit ASCII byte
 /// back to that byte: `0xC0 0xAE` → `.`, `0xC0 0xAF` → `/`, `0xC1 …` → the
 /// corresponding char. These are illegal UTF-8 (a `.`/`/` must be a single byte),

@@ -135,6 +135,22 @@ pub static CASES: &[Case] = &[
         rules: &["xss-script-tag"],
         desc: "base64(`<script>alert(1)</script>`) — caught at 10c via base64-decode",
     },
+    // ── WIRE GROUND-TRUTH (Fase 10c REOPEN, pcap bypass.txt line 1220) ──────────
+    // EXACT bytes: JSON body, backslash-u escaped. serde unescapes to
+    // `%3CsvG%2Fx=%22%3E%22%2FoNloaD=confirm%28%29%2F%2F`; ONE percent-decode would
+    // give `<svG/x=">"/oNloaD=confirm()//` → xss-event-handler (onload). But the JSON
+    // leaf reaches the modules RAW (no canonicalize_value on JSON values) → no decode →
+    // BYPASS (probe score 0). STEP-1 ground-truth; STEP 2 canonicalizes JSON leaves.
+    Case {
+        id: "xss-wire-json-unicode-svg-onload",
+        module: Module::Xss,
+        field: Field::JsonBody(r#"{"test": true, "7a756a623d": "\u0025\u0033\u0043\u0073\u0076\u0047\u0025\u0032\u0046\u0078\u003d\u0025\u0032\u0032\u0025\u0033\u0045\u0025\u0032\u0032\u0025\u0032\u0046\u006f\u004e\u006c\u006f\u0061\u0044\u003d\u0063\u006f\u006e\u0066\u0069\u0072\u006d\u0025\u0032\u0038\u0025\u0032\u0039\u0025\u0032\u0046\u0025\u0032\u0046"}"#),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["xss-event-handler"],
+        desc: "WIRE pcap L1220: JSON backslash-u svg/onload XSS — JSON leaf never canonicalized \
+               (single percent-decode would catch it; serde unescape alone is not enough)",
+    },
     // ── documented limits (need §6 HTML normalization — out of 10b rules-only) ───
     Case {
         id: "xss-mutation-tag-break",
