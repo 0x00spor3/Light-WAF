@@ -78,7 +78,29 @@ pub static CASES: &[Case] = &[
         rules: &["ssti-template-arithmetic"],
         desc: "Jinja arithmetic in the URL PATH — gotestwaf sst-injection URLPath; path now inspected",
     },
+    // ── Base64Flat-in-PATH (10c REOPEN, pcap): gotestwaf places the b64 blob AS the path.
+    //    The decode channel now reads the (case-preserved) path segments too. ──────────
+    Case {
+        id: "ssti-urlpath-b64",
+        module: Module::Ssti,
+        field: Field::Path("/e3sxMzM3KjEzMzh9fQ"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["ssti-template-arithmetic"],
+        desc: "base64(`{{1337*1338}}`) UNPADDED as the URL PATH — gotestwaf Base64Flat URLPath; \
+               path-segment base64-derive closes it (10c REOPEN)",
+    },
     // ── benign guards (must stay 200): template delimiters WITHOUT eval payload ───
+    Case {
+        id: "ssti-benign-b64-path-noise",
+        module: Module::Ssti,
+        field: Field::Path("/assets/build/app.e3sxMzM3.chunk.js"),
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "FP trap: a normal hashed-asset path segment must NOT be treated as a b64 attack \
+               (segments fail candidacy / decode to noise → mostly_printable discards)",
+    },
     Case {
         id: "ssti-benign-template-var",
         module: Module::Ssti,

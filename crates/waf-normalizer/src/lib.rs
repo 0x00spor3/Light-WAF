@@ -118,6 +118,18 @@ impl Normalizer {
         // ── 5. Normalize path ─────────────────────────────────────────────────
         let (norm_path, path_double_enc) = normalize_path(&ctx.raw_path);
 
+        // base64-derived from the URL PATH segments (10c REOPEN, pcap-confirmed:
+        // gotestwaf places Base64Flat blobs AS the path, e.g. `/PGJvZHkg…`). The path
+        // rules already scan `norm_path`, but the DECODE channel must reach it too.
+        // Use the RAW path (case-PRESERVED — base64 is case-sensitive and normalize_path
+        // lowercases), split on the literal `/` separators, percent-decode each segment
+        // (path mode → `+` is literal), then derive. Normal path segments fail candidacy
+        // (too short / non-alphabet) → no cost, no FP.
+        for raw_seg in ctx.raw_path.split('/').filter(|s| !s.is_empty()) {
+            let (seg, _) = url::percent_decode(raw_seg, false);
+            derived.extend(url::base64_derived(&seg));
+        }
+
         // ── 6. Parse query params (+ base64-derived) ──────────────────────────
         let (query_params, query_double_enc) = match &ctx.query {
             Some(q) => {
