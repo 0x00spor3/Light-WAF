@@ -78,6 +78,16 @@ pub static CASES: &[Case] = &[
         rules: &["ldap-logical-filter"],
         desc: "compound LDAP filter in the URL PATH — gotestwaf ldap-injection URLPath; path now inspected",
     },
+    // ── P1-B: header-surface (custom x-* allowlist) ─────────────────────────────
+    Case {
+        id: "ldap-header-xcustom",
+        module: Module::Ldap,
+        field: Field::Header { name: "x-foo", value: "(&(uid=admin)(!(&(1=0)(userPassword=q))))" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["ldap-logical-filter"],
+        desc: "LDAP filter injection in a custom X- header — gotestwaf Header placeholder; allowlist (P1-B)",
+    },
     // ── benign guards (must stay 200): the FP traps of this class ────────────────
     Case {
         id: "ldap-benign-single-filter",

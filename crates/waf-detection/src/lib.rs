@@ -196,6 +196,19 @@ impl ContentPrefilter {
     }
 }
 
+/// Header VALUES that content modules inspect — the closed allowlist (P1-B):
+/// `Referer`, `X-Forwarded-{For,Host,Proto}` and custom `x-*`, minus the deny-list
+/// (auth/cookie/UA/negotiation/content-*/validators/hop-by-hop/`*-token`). gotestwaf
+/// injects payloads into `X-<random>` headers; this is the surface that reaches them.
+/// The prefilter already over-scans ALL headers (sound); the modules read this subset.
+pub(crate) fn inspectable_header_values(ctx: &RequestContext) -> impl Iterator<Item = &str> {
+    ctx.normalized
+        .headers
+        .iter()
+        .filter(|(name, _)| waf_normalizer::header_content_inspectable(name))
+        .map(|(_, v)| v.as_str())
+}
+
 /// Collect all inspectable string values from a parsed body.
 /// Binary multipart parts that are not valid UTF-8 are silently skipped.
 pub(crate) fn body_str_values(body: &ParsedBody) -> Vec<String> {

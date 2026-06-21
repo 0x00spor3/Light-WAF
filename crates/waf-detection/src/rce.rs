@@ -2,7 +2,7 @@ use regex::RegexSet;
 use tracing::warn;
 use waf_core::{Config, Decision, Phase, RequestContext, ScoreItem, Severity, WafModule};
 
-use crate::{all_matches, body_str_values, Rule};
+use crate::{all_matches, body_str_values, inspectable_header_values, Rule};
 
 // ── rules ─────────────────────────────────────────────────────────────────────
 //
@@ -96,6 +96,18 @@ pub static RCE_RULES: &[Rule] = &[
         severity: Severity::Notice,
         paranoia: 3,
     },
+    Rule {
+        id: "rce-expression-language",
+        // Server-side expression-language / template code execution: a `${…}` or `#{…}`
+        // block that CALLS a dangerous function — PHP `${@print(…)}` (gotestwaf
+        // community-rce-rawrequests), SpEL/EL `#{…Runtime.exec(…)}`, etc. Scoped to a
+        // dangerous-function CALL inside the braces so it stays distinct from SSTI
+        // (`{{…}}` / `${n*n}` arithmetic) and benign interpolation (`${base_url}`,
+        // `#{user.name}`) which have no such call. `[^}]*` keeps it within one block.
+        pattern: r"(?i)[#$]\{[^}]*\b(?:print|eval|exec|system|passthru|assert|shell_exec|popen|phpinfo|file_get_contents|getruntime|runtime|processbuilder)\s*\(",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
 ];
 
 // ── module ────────────────────────────────────────────────────────────────────
@@ -147,7 +159,9 @@ impl WafModule for RceModule {
         let body = body_vals.iter().map(String::as_str);
         let derived = ctx.normalized.derived_decoded.iter().map(String::as_str);
 
-        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived));
+        // P1-B: also scan the allowlisted request headers (Referer / X-Forwarded-* / custom x-*).
+        let headers = inspectable_header_values(ctx);
+        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived).chain(headers));
         if matched.is_empty() {
             return Decision::Allow;
         }

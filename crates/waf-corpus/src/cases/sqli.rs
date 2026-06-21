@@ -136,6 +136,16 @@ pub static CASES: &[Case] = &[
         rules: &["sqli-time-based"],
         desc: "blind time-based SQLi in the URL PATH — gotestwaf sql-injection URLPath; path now inspected",
     },
+    // ── P1-B: header-surface (custom x-* allowlist) ─────────────────────────────
+    Case {
+        id: "sqli-header-xcustom",
+        module: Module::Sqli,
+        field: Field::Header { name: "x-9ebec49770", value: "123) AND JSON_DEPTH('{}') != 2521" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["sqli-json-function"],
+        desc: "SQLi JSON-function in a custom X- header — gotestwaf Header placeholder; allowlist (P1-B)",
+    },
     // ── benign / traps ─────────────────────────────────────────────────────────
     Case {
         id: "sqli-benign-css-comment",

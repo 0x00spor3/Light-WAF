@@ -2,7 +2,7 @@ use regex::RegexSet;
 use tracing::warn;
 use waf_core::{Config, Decision, Phase, RequestContext, ScoreItem, Severity, WafModule};
 
-use crate::{all_matches, body_str_values, Rule};
+use crate::{all_matches, body_str_values, inspectable_header_values, Rule};
 
 // ── rules (Fase 10b) ────────────────────────────────────────────────────────────
 //
@@ -75,7 +75,9 @@ impl WafModule for SsiModule {
         // URL PATH; this module must scan the resolved path too (mirrors rce/xss), else a
         // path-placed payload bypasses. The prefilter already scans the path (sound).
         let path = std::iter::once(ctx.normalized.path.as_str());
-        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived));
+        // P1-B: also scan the allowlisted request headers (Referer / X-Forwarded-* / custom x-*).
+        let headers = inspectable_header_values(ctx);
+        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived).chain(headers));
         if matched.is_empty() {
             return Decision::Allow;
         }

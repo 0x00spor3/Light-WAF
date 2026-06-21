@@ -2,7 +2,7 @@ use regex::RegexSet;
 use tracing::warn;
 use waf_core::{Config, Decision, Phase, RequestContext, ScoreItem, Severity, WafModule};
 
-use crate::{all_matches, body_str_values, Rule};
+use crate::{all_matches, body_str_values, inspectable_header_values, Rule};
 
 // ── rules ─────────────────────────────────────────────────────────────────────
 
@@ -147,7 +147,9 @@ impl WafModule for XssModule {
         let body = body_vals.iter().map(String::as_str);
         let derived = ctx.normalized.derived_decoded.iter().map(String::as_str);
 
-        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived));
+        // P1-B: also scan the allowlisted request headers (Referer / X-Forwarded-* / custom x-*).
+        let headers = inspectable_header_values(ctx);
+        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived).chain(headers));
         if matched.is_empty() {
             return Decision::Allow;
         }

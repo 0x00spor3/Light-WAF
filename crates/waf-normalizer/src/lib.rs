@@ -209,6 +209,36 @@ fn header_base64_excluded(name: &str) -> bool {
     EXCLUDED.contains(&name) || name.ends_with("-token")
 }
 
+/// Closed ALLOWLIST of header names whose VALUE the content-inspection modules scan
+/// (P1-B). Unlike query/body, request headers are mostly NOT attacker payload carriers,
+/// so we invert the policy: inspect ONLY the user-controlled forwarding headers
+/// (`Referer`, `X-Forwarded-{For,Host,Proto}`) and custom `x-*` headers (gotestwaf
+/// injects into `X-<random>`), and EXCLUDE everything else — even an `x-*` that is really
+/// infra/secret (`*-token`, `proxy-*`) or negotiation/validators (`accept*`, `content-*`,
+/// `etag`, `if-*`) or hop-by-hop. Names are pre-lowercased. The deny-list takes
+/// precedence over the `x-*` allowance. (Distinct from [`header_base64_excluded`], which
+/// is a deny-list for the separate base64-derive channel.)
+pub fn header_content_inspectable(name: &str) -> bool {
+    // Deny-list FIRST (overrides the x-* allowance).
+    const DENY_EXACT: &[&str] = &[
+        "authorization", "proxy-authorization", "cookie", "set-cookie",
+        "user-agent", "host", "etag", "if-none-match", "if-match",
+        // hop-by-hop (RFC 7230 §6.1) + framing controls
+        "connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade",
+    ];
+    if DENY_EXACT.contains(&name)
+        || name.ends_with("-token")
+        || name.starts_with("accept")
+        || name.starts_with("content-")
+        || name.starts_with("proxy-")
+    {
+        return false;
+    }
+    // Allow-list: forwarding headers + Referer + any custom x-*.
+    matches!(name, "referer" | "x-forwarded-for" | "x-forwarded-host" | "x-forwarded-proto")
+        || name.starts_with("x-")
+}
+
 /// Canonical inspectable strings of a parsed body (form values, JSON leaf values,
 /// multipart name/filename/UTF-8 value) — the surface the base64-derive channel scans.
 /// Mirrors detection's `body_str_values` but lives here so the normalizer can build
