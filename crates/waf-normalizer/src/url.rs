@@ -62,40 +62,53 @@ pub fn percent_decode(input: &str, plus_as_space: bool) -> (String, bool) {
     (decoded, double_enc)
 }
 
-/// Canonicalize a single field value exactly as query/body params are:
-/// one percent-decode pass, then a **second pass only when double-encoding is
-/// detected** (the Fase 2 anti-double-encoding defense), then NFKC
-/// normalization. This is the single source of truth for value canonicalization
-/// shared by query, body and cookies.
+/// Canonicalize a single field value: recursive percent-decode + **overlong-UTF8
+/// collapse** to a fixed point (Fase 10c — overlong is now folded into the canonical
+/// surface PIPELINE-WIDE, not scoped to multipart), then NFKC normalization. The
+/// single source of truth for value canonicalization shared by query, body, cookies
+/// and multipart. Overlong collapse is a *canonical* transform (the same value, a
+/// legal re-encoding decoded) — distinct from the *derived* base64 channel below.
 ///
 /// `plus_as_space` follows the form-encoding convention: `true` for query/body,
 /// `false` for cookies (RFC 6265 treats `+` as a literal, not a space).
 ///
 /// Returns `(canonical, double_encoding_detected)`.
 pub fn canonicalize_value(raw: &str, plus_as_space: bool) -> (String, bool) {
-    let (decoded, double_enc) = percent_decode(raw, plus_as_space);
-    // Second decode resolves double-encoded content to its canonical form.
-    let decoded = if double_enc {
-        percent_decode(&decoded, false).0
-    } else {
-        decoded
-    };
-    // NFKC catches fullwidth / compatibility character evasion.
-    let canonical: String = decoded.nfkc().collect();
-    (canonical, double_enc)
+    let mut budget = PIPELINE_CAP;
+    let (bytes, passes) = percent_overlong_fixpoint(raw.as_bytes(), plus_as_space, &mut budget);
+    let canonical: String = String::from_utf8_lossy(&bytes).nfkc().collect();
+    (canonical, passes >= 2)
 }
 
-// ── multipart deep normalization (B1-cont follow-up) ──────────────────────────
+// ── §6 decode pipeline (Fase 10c) ─────────────────────────────────────────────
+//
+// TWO stages with ONE shared budget (`PIPELINE_CAP`):
+//   - **overlong** (this is a CANONICAL transform): folded into the value above and
+//     into `normalize_path` — applies pipeline-wide, no per-name exclusion;
+//   - **base64** (a DERIVED channel): `derived_decoded` variants, decode-then-match-
+//     then-discard, gated by `is_base64_candidate` + a per-NAME structural exclusion
+//     on the header surface (Authorization/Cookie/ETag/…). See `expand_base64`.
 
-/// Byte-level percent-decode (single pass). Unlike [`percent_decode`] this keeps
-/// the result as raw bytes — it does NOT run `from_utf8_lossy` — so invalid /
-/// overlong sequences survive for [`collapse_overlong`] to handle. `+` is treated
-/// literally (multipart values are not form-encoded).
-fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
+/// Shared fixed-point decode budget across overlong + base64 (10c). One constant,
+/// not two: an attacker chaining encodings cannot exceed it.
+pub const PIPELINE_CAP: usize = 5;
+
+/// Minimum base64 length to even attempt a decode. A COST gate, not a security gate
+/// (the security gate is decode-then-match): probe-measured floor = 12, the length
+/// of the shortest tracked attack (`base64("\r\nQUIT\r\n")`). Below 12 only adds work.
+pub const BASE64_MIN_LEN: usize = 12;
+
+/// Byte-level percent-decode (single pass). Unlike [`percent_decode`] this keeps the
+/// result as raw bytes — no `from_utf8_lossy` — so overlong sequences survive for
+/// [`collapse_overlong`]. `+`→space only when `plus_as_space` (form-encoding).
+fn percent_decode_bytes(input: &[u8], plus_as_space: bool) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(input.len());
     let mut i = 0;
     while i < input.len() {
-        if input[i] == b'%' && i + 2 < input.len() && is_hex(input[i + 1]) && is_hex(input[i + 2]) {
+        if input[i] == b'+' && plus_as_space {
+            out.push(b' ');
+            i += 1;
+        } else if input[i] == b'%' && i + 2 < input.len() && is_hex(input[i + 1]) && is_hex(input[i + 2]) {
             out.push((hex_val(input[i + 1]) << 4) | hex_val(input[i + 2]));
             i += 3;
         } else {
@@ -103,6 +116,116 @@ fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
             i += 1;
         }
     }
+    out
+}
+
+/// Recursive percent-decode + overlong-collapse to a fixed point, consuming the
+/// shared `budget`. `+`→space only on the FIRST pass (form-encoding; a literal `+`
+/// in decoded content must not keep collapsing). Returns `(bytes, passes_applied)`.
+fn percent_overlong_fixpoint(raw: &[u8], plus_as_space: bool, budget: &mut usize) -> (Vec<u8>, usize) {
+    let mut bytes = raw.to_vec();
+    let mut passes = 0;
+    while *budget > 0 {
+        let next = collapse_overlong(&percent_decode_bytes(&bytes, plus_as_space && passes == 0));
+        if next == bytes {
+            break;
+        }
+        bytes = next;
+        passes += 1;
+        *budget -= 1;
+    }
+    (bytes, passes)
+}
+
+/// Collapse overlong UTF-8 to ASCII and return a lossy string. Pub for §6 docs /
+/// tests; the pipeline uses the byte-level [`collapse_overlong`] inside the fixpoint.
+pub fn decode_overlong_utf8(input: &str) -> String {
+    String::from_utf8_lossy(&collapse_overlong(input.as_bytes())).into_owned()
+}
+
+/// Base64 CANDIDACY (cost gate): strict alphabet `[A-Za-z0-9+/]` + `=` padding,
+/// length a multiple of 4, and `>= len_min`. NOT a security gate — a benign token
+/// that passes still cannot cause an FP because the decoded value only contributes
+/// if it matches a module rule (decode-then-match-then-discard). Probe-verified
+/// `benign_FP=[]` at every threshold.
+pub fn is_base64_candidate(s: &str, len_min: usize) -> bool {
+    if s.len() < len_min || s.len() % 4 != 0 {
+        return false;
+    }
+    let core = s.trim_end_matches('=');
+    !core.is_empty() && core.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'+' || c == b'/')
+}
+
+/// Hand-rolled standard base64 decode (alphabet `+/`, `=` padding). Returns `None`
+/// on any non-alphabet byte. No new dependency (mirrors the hand-rolled percent /
+/// overlong decoders); property-tested in the differential suite.
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let core = s.trim_end_matches('=');
+    let mut out: Vec<u8> = Vec::with_capacity(core.len() * 3 / 4);
+    let (mut buf, mut bits) = (0u32, 0u32);
+    for &c in core.as_bytes() {
+        buf = (buf << 6) | val(c)? as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// A decoded blob is worth inspecting only if it is mostly text — a random
+/// token/hash decodes to high-entropy bytes (no module signature), so we discard it
+/// before it even reaches the rules. ≥90% printable ASCII (CR/LF/TAB allowed).
+fn mostly_printable(b: &[u8]) -> bool {
+    if b.is_empty() {
+        return false;
+    }
+    let p = b
+        .iter()
+        .filter(|&&c| matches!(c, b'\r' | b'\n' | b'\t') || (0x20..=0x7e).contains(&c))
+        .count();
+    p * 100 / b.len() >= 90
+}
+
+/// Base64-DERIVED variants of `value`, sharing `budget` with the overlong stage.
+/// If `value` is a confident base64 candidate that decodes to mostly-printable text,
+/// canonicalize the decode (so a base64 wrapping a percent/overlong payload still
+/// resolves) and push it; recurse for nested base64. Each derived string is
+/// inspection-only ("discard if it matches nothing"). Caller pre-applies the header
+/// per-name exclusion (this fn is alphabet-only and surface-agnostic).
+pub fn expand_base64(value: &str, budget: &mut usize, out: &mut Vec<String>) {
+    if *budget == 0 || !is_base64_candidate(value, BASE64_MIN_LEN) {
+        return;
+    }
+    let Some(decoded) = base64_decode(value) else { return };
+    if !mostly_printable(&decoded) {
+        return;
+    }
+    *budget -= 1;
+    // The decode may itself carry percent/overlong encodings → canonicalize (shared
+    // budget), then recurse for base64-of-base64.
+    let (bytes, _) = percent_overlong_fixpoint(&decoded, false, budget);
+    let canon: String = String::from_utf8_lossy(&bytes).nfkc().collect();
+    expand_base64(&canon, budget, out);
+    out.push(canon);
+}
+
+/// Collect base64-derived variants from `value` with a FRESH shared budget. The
+/// single entry the normalizer calls per inspected field value.
+pub fn base64_derived(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    expand_base64(value, &mut PIPELINE_CAP.clone(), &mut out);
     out
 }
 
@@ -129,28 +252,13 @@ fn collapse_overlong(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Deep canonicalization for a multipart field (name / filename / value).
-///
-/// The multipart surface is a known traversal-smuggling vector (gotestwaf
-/// `community-lfi-multipart`) that hides `../` in the part `name`, `filename` or
-/// value, often **double-/overlong-encoded**. This applies a stronger decode than
-/// the shared single+conditional pass before the traversal/LFI rules see it:
-///   1. **recursive** percent-decode + overlong collapse until the byte stream is
-///      stable (capped at `MAX_PASSES` to bound work and avoid loops): peels
-///      `%25C0%25AE` → `%C0%AE` → `0xC0 0xAE` → `.`;
-///   2. UTF-8 (lossy on anything still invalid) then **NFKC**, as elsewhere.
-/// Separator normalization (`%2f`→`/`, `%5c`→`\`) falls out of step 1.
+/// Canonicalize a multipart field (name / filename / value). Since 10c folded the
+/// recursive percent + overlong decode into [`canonicalize_value`] PIPELINE-WIDE,
+/// this is just that canonical transform (multipart `+` is literal). Kept as a named
+/// entry for the multipart call sites (10b-cont). Base64-derived variants from
+/// multipart values are collected separately by the normalizer (`base64_derived`).
 pub fn canonicalize_multipart_field(raw: &str) -> String {
-    const MAX_PASSES: usize = 5;
-    let mut bytes = raw.as_bytes().to_vec();
-    for _ in 0..MAX_PASSES {
-        let next = collapse_overlong(&percent_decode_bytes(&bytes));
-        if next == bytes {
-            break;
-        }
-        bytes = next;
-    }
-    String::from_utf8_lossy(&bytes).nfkc().collect()
+    canonicalize_value(raw, false).0
 }
 
 /// Normalize a URL path.
@@ -165,21 +273,16 @@ pub fn canonicalize_multipart_field(raw: &str) -> String {
 ///
 /// Returns `(normalized_path, double_encoding_detected)`.
 pub fn normalize_path(raw: &str) -> (String, bool) {
-    let (decoded, double_enc) = percent_decode(raw, false);
-
-    let working = if double_enc {
-        let (second, _) = percent_decode(&decoded, false);
-        second
-    } else {
-        decoded
-    };
-
-    let nfkc: String = working.nfkc().collect();
+    // 10c: recursive percent + overlong fixpoint (shared cap), then NFKC / strip
+    // NUL / lowercase / resolve. Overlong now collapses on the path too (`%C0%AE`→`.`).
+    let mut budget = PIPELINE_CAP;
+    let (bytes, passes) = percent_overlong_fixpoint(raw.as_bytes(), false, &mut budget);
+    let nfkc: String = String::from_utf8_lossy(&bytes).nfkc().collect();
     let no_nulls: String = nfkc.chars().filter(|&c| c != '\0').collect();
     let lower = no_nulls.to_lowercase();
     let resolved = resolve_path(&lower);
 
-    (resolved, double_enc)
+    (resolved, passes >= 2)
 }
 
 fn resolve_path(path: &str) -> String {
@@ -206,15 +309,16 @@ fn resolve_path(path: &str) -> String {
 
 /// Parse a query string into decoded key-value pairs (`+` treated as space).
 ///
-/// Values are fully canonicalized: percent-decoded (with double-encoding
-/// resolved), then NFKC-normalized so detection modules see canonical form.
-/// Returns `(params, double_encoding_detected)`.
+/// Values are fully canonicalized (percent + overlong fixpoint + NFKC). Also returns
+/// the **base64-derived** variants of the values (10c, decode-then-match-then-discard).
+/// Returns `(params, double_encoding_detected, derived_decoded)`.
 pub fn parse_query(
     query: &str,
     limits: &LimitsConfig,
-) -> Result<(Vec<(String, String)>, bool), NormalizationError> {
+) -> Result<(Vec<(String, String)>, bool, Vec<String>), NormalizationError> {
     let mut params = Vec::new();
     let mut double_enc = false;
+    let mut derived = Vec::new();
 
     for pair in query.split('&') {
         if pair.is_empty() {
@@ -232,10 +336,13 @@ pub fn parse_query(
         if de_k || de_v {
             double_enc = true;
         }
+        // Base64-derived from the canonical VALUE only (param names aren't attacker
+        // payload carriers; keys stay out, like multipart field names).
+        derived.extend(base64_derived(&dv));
         params.push((dk, dv));
     }
 
-    Ok((params, double_enc))
+    Ok((params, double_enc, derived))
 }
 
 /// Parse a Cookie header value into name-value pairs, enforcing `max_cookies`.

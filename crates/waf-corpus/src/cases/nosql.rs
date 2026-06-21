@@ -47,33 +47,33 @@ pub static CASES: &[Case] = &[
         rules: &["nosql-js-timing"],
         desc: "busy-loop timing payload (server-side JS) — gotestwaf nosql-injection (URL)",
     },
-    // ── Base64Flat duplicates → 10c (must flip once §6 base64-decodes) ───────────
+    // ── Base64Flat duplicates — CAUGHT at 10c via §6 base64-decode (derived) ─────
     Case {
         id: "nosql-shell-method-b64",
         module: Module::Nosql,
         field: Field::Query { name: "q", value: "ZGIuaW5qZWN0aW9uLmluc2VydCh7c3VjY2VzczoxfSk7" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the Mongo shell method — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["nosql-shell-method"],
+        desc: "base64(`db.injection.insert({success:1});`) — caught at 10c via base64-decode",
     },
     Case {
         id: "nosql-where-js-b64",
         module: Module::Nosql,
         field: Field::Query { name: "q", value: "dHJ1ZSwgJHdoZXJlOiAnOTkgPT0gODgn" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the $where predicate — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["nosql-where-js"],
+        desc: "base64(`true, $where: '99 == 88'`) — caught at 10c via base64-decode",
     },
     Case {
         id: "nosql-operator-b64",
         module: Module::Nosql,
         field: Field::Query { name: "q", value: "JywgJG9yOiBbIHt9LCB7ICdvcmRlcic6J29yZGVy" },
         min_pl: 2,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the $or operator — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["nosql-operator"],
+        desc: "base64(`', $or: [ {}, …`) — caught at 10c via base64-decode (Warning/PL2)",
     },
     // ── benign guards (must stay 200): the FP traps of this class ────────────────
     Case {

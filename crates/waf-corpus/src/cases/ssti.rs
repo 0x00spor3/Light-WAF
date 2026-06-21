@@ -37,24 +37,24 @@ pub static CASES: &[Case] = &[
         rules: &["ssti-freemarker-directive"],
         desc: "FreeMarker `<#assign …?new()>` RCE — gotestwaf sst-injection (URL)",
     },
-    // ── Base64Flat duplicates → 10c (must flip once §6 base64-decodes) ───────────
+    // ── Base64Flat duplicates — CAUGHT at 10c via §6 base64-decode (derived) ─────
     Case {
         id: "ssti-jinja-arithmetic-b64",
         module: Module::Ssti,
         field: Field::Query { name: "name", value: "e3sxMzM3KjEzMzh9fQ==" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of `{{1337*1338}}` — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["ssti-template-arithmetic"],
+        desc: "base64(`{{1337*1338}}`) — caught at 10c via base64-decode",
     },
     Case {
         id: "ssti-expr-interpolation-b64",
         module: Module::Ssti,
         field: Field::Query { name: "q", value: "YWFhYScrI3sxNio4Nzg3fSsnYmJi" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the `#{16*8787}` payload — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["ssti-template-arithmetic"],
+        desc: "base64(`aaaa'+#{16*8787}+'bbb`) — caught at 10c via base64-decode",
     },
     Case {
         id: "ssti-freemarker-execute-b64",
@@ -64,9 +64,9 @@ pub static CASES: &[Case] = &[
             value: "PCNhc3NpZ24gZXggPSAiZnJlZW1hcmtlci50ZW1wbGF0ZS51dGlsaXR5LkV4ZWN1dGUiP25ldygpPiR7IGV4KCJpZCIpfQ==",
         },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the FreeMarker payload — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["ssti-freemarker-directive"],
+        desc: "base64(FreeMarker `<#assign…Execute…>`) — caught at 10c via base64-decode",
     },
     // ── benign guards (must stay 200): template delimiters WITHOUT eval payload ───
     Case {

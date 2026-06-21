@@ -38,33 +38,35 @@ pub static CASES: &[Case] = &[
         rules: &["ldap-extensible-match"],
         desc: "extensible-match OID injection — gotestwaf ldap-injection (URL)",
     },
-    // ── Base64Flat duplicates → 10c (no base64-decode in §6 yet): must flip at 10c ─
+    // ── Base64Flat duplicates — CAUGHT at 10c via §6 base64-decode (derived) ─────
     Case {
         id: "ldap-logical-filter-b64",
         module: Module::Ldap,
         field: Field::Query { name: "user", value: "KCYodWlkPWFkbWluKSghKCYoMT0wKSh1c2VyUGFzc3dvcmQ9cSkpKSk=" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the compound LDAP filter — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["ldap-logical-filter"],
+        desc: "base64(`(&(uid=admin)…`) — caught at 10c via base64-decode",
     },
     Case {
         id: "ldap-objectclass-enum-b64",
         module: Module::Ldap,
         field: Field::Query { name: "search", value: "Kih8KG9iamVjdGNsYXNzPSopKQ==" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the objectclass-enum filter — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        // decodes to `*(|(objectclass=*))` → the `(|(` compound-filter signature, so
+        // ldap-logical-filter is the firing rule (not a dedicated objectclass rule).
+        rules: &["ldap-logical-filter"],
+        desc: "base64(`*(|(objectclass=*))`) — caught at 10c; fires ldap-logical-filter on the `(|(`",
     },
     Case {
         id: "ldap-extensible-match-b64",
         module: Module::Ldap,
         field: Field::Query { name: "attr", value: "dXNlclBhc3N3b3JkOjIuNS4xMy4xODo9MTIz" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the extensible-match OID — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["ldap-extensible-match"],
+        desc: "base64(`userPassword:2.5.13.18:=123`) — caught at 10c via base64-decode",
     },
     // ── benign guards (must stay 200): the FP traps of this class ────────────────
     Case {

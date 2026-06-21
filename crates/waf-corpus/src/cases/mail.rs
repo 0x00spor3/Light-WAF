@@ -38,33 +38,33 @@ pub static CASES: &[Case] = &[
         rules: &["mail-command-injection"],
         desc: "injected SMTP RCPT TO after LF — gotestwaf mail-injection (URL)",
     },
-    // ── Base64Flat duplicates → 10c (must flip once §6 base64-decodes) ───────────
+    // ── Base64Flat duplicates — CAUGHT at 10c via §6 base64-decode (derived) ─────
     Case {
         id: "mail-imap-capability-b64",
         module: Module::Mail,
         field: Field::Query { name: "id", value: "VjEwMCBDQVBBQklMSVRZDQpWMTAxIEZFVENIIDQ3OTE=" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the IMAP CAPABILITY payload — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["mail-command-injection"],
+        desc: "base64(IMAP CAPABILITY + CRLF) — §6 base64-decode (10c) feeds the derived form to mail",
     },
     Case {
         id: "mail-smtp-quit-b64",
         module: Module::Mail,
         field: Field::Query { name: "id", value: "DQpRVUlUDQo=" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the SMTP QUIT payload — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["mail-command-injection"],
+        desc: "base64(`\\r\\nQUIT\\r\\n`) — the 12-char floor case; caught at 10c via base64-decode",
     },
     Case {
         id: "mail-smtp-rcpt-b64",
         module: Module::Mail,
         field: Field::Query { name: "to", value: "ClJDUFQgVE86IHRlc3RAZXZpbC5jb20K" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "base64 of the SMTP RCPT TO payload — fires once §6 base64-decodes (10c)",
+        expect: Expect::Triggers,
+        rules: &["mail-command-injection"],
+        desc: "base64(`\\nRCPT TO: test@evil.com\\n`) — caught at 10c via base64-decode",
     },
     // ── benign guards (must stay 200): CR/LF-free, so they isolate the mail rule ──
     Case {

@@ -37,6 +37,17 @@ pub static CASES: &[Case] = &[
         rules: &["ssi-directive"],
         desc: "SSI #exec cmd=\"ls\" — gotestwaf ss-include (also trips sqli-quote-comment, declared)",
     },
+    // ── Base64Flat harvest (Fase 10c) — recall-lock under §6 base64-decode ───────
+    // Not a gotestwaf-tracked deferral; pins that the derived channel feeds SSI too.
+    Case {
+        id: "ssi-exec-directive-b64",
+        module: Module::Ssi,
+        field: Field::Query { name: "q", value: "PCEtLSNleGVjIGNtZD1pZC0tPg==" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["ssi-directive"],
+        desc: "base64(`<!--#exec cmd=id-->`) — caught at 10c via base64-decode",
+    },
     // ── benign guards (must stay 200) ────────────────────────────────────────────
     Case {
         id: "ssi-benign-html-comment",

@@ -154,7 +154,7 @@ pub enum Expect {
 /// The phase the corpus is currently validated at. `ExpectedMiss { until_phase }` rows
 /// whose phase is `<=` this MUST be caught (the oracle enforces the flip). Bump this when
 /// a phase lands, so its deferred gaps become required triggers.
-pub const CURRENT_PHASE: &str = "10b";
+pub const CURRENT_PHASE: &str = "10c";
 
 /// Has `until_phase` been reached at `current`? Phases in the `10x` family order by their
 /// string (`"10a" < "10b" < "10c"`), which is the only family `until_phase` uses.

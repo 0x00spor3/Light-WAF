@@ -53,7 +53,7 @@ proptest! {
         s in "(&|=|%26|%3D|%25|[a-z0-9]){0,60}",
     ) {
         let lim = limits(8);
-        let ours = parse_query(&s, &lim).map(|(p, _)| p).map_err(|_| ());
+        let ours = parse_query(&s, &lim).map(|(p, _, _)| p).map_err(|_| ());
         prop_assert_eq!(ours, oracle(&s, lim.max_params));
     }
 }
@@ -63,7 +63,7 @@ proptest! {
     #[test]
     fn prop_query_non_panic_and_bounded(s in ".{0,128}") {
         let lim = limits(8);
-        if let Ok((params, _)) = parse_query(&s, &lim) {
+        if let Ok((params, _, _)) = parse_query(&s, &lim) {
             prop_assert!(params.len() <= lim.max_params);
         }
     }
@@ -73,13 +73,13 @@ proptest! {
 fn encoded_delimiters_stay_in_value() {
     let l = LimitsConfig::default();
     // (4) `%26` (&) inside a value is NOT a delimiter → one param, value "b&c".
-    let (p, _) = parse_query("a=b%26c", &l).unwrap();
+    let (p, _, _) = parse_query("a=b%26c", &l).unwrap();
     assert_eq!(p, vec![("a".to_string(), "b&c".to_string())]);
     // (4) `%3D` (=) inside a value is NOT a delimiter → value "b=c".
-    let (p, _) = parse_query("a=b%3Dc", &l).unwrap();
+    let (p, _, _) = parse_query("a=b%3Dc", &l).unwrap();
     assert_eq!(p, vec![("a".to_string(), "b=c".to_string())]);
     // First raw `=` splits; later raw `=` stays in the value.
-    let (p, _) = parse_query("a=b=c", &l).unwrap();
+    let (p, _, _) = parse_query("a=b=c", &l).unwrap();
     assert_eq!(p, vec![("a".to_string(), "b=c".to_string())]);
 }
 

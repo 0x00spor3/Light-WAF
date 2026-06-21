@@ -124,6 +124,17 @@ pub static CASES: &[Case] = &[
         rules: &["xss-document-cookie"],
         desc: "bracket-notation document[\"cookie\"] access — gotestwaf community-xss; Fase 10b",
     },
+    // ── Base64Flat harvest (Fase 10c) — recall-lock under §6 base64-decode ───────
+    // Not a gotestwaf-tracked deferral; pins that the derived channel feeds XSS too.
+    Case {
+        id: "xss-script-tag-b64",
+        module: Module::Xss,
+        field: Field::Query { name: "q", value: "PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["xss-script-tag"],
+        desc: "base64(`<script>alert(1)</script>`) — caught at 10c via base64-decode",
+    },
     // ── documented limits (need §6 HTML normalization — out of 10b rules-only) ───
     Case {
         id: "xss-mutation-tag-break",

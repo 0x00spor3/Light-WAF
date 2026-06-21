@@ -96,6 +96,12 @@ impl Normalizer {
         // BEFORE any decoding — so an encoded cookie that expands cannot bypass
         // them. Decoding then uses the SAME pass as query/body (canonicalize_value),
         // except `+` stays literal (RFC 6265 cookies are not form-encoded).
+        // `derived_decoded`: base64 (10c) variants of inspected values, collected as
+        // we go. Decode-then-match-then-discard. Cookies are EXCLUDED from the base64
+        // channel (D3 — session cookies are base64-benign-heavy); they still get the
+        // canonical (overlong) decode.
+        let mut derived: Vec<String> = Vec::new();
+
         let mut cookies = Vec::new();
         let mut cookie_double_enc = false;
         for (name, value) in &norm_headers {
@@ -104,7 +110,7 @@ impl Normalizer {
                     let (dk, de_k) = canonicalize_value(&k, false);
                     let (dv, de_v) = canonicalize_value(&v, false);
                     cookie_double_enc |= de_k || de_v;
-                    cookies.push((dk, dv));
+                    cookies.push((dk, dv)); // NB: no base64_derived — cookie surface excluded
                 }
             }
         }
@@ -112,19 +118,36 @@ impl Normalizer {
         // ── 5. Normalize path ─────────────────────────────────────────────────
         let (norm_path, path_double_enc) = normalize_path(&ctx.raw_path);
 
-        // ── 6. Parse query params ─────────────────────────────────────────────
+        // ── 6. Parse query params (+ base64-derived) ──────────────────────────
         let (query_params, query_double_enc) = match &ctx.query {
-            Some(q) => parse_query(q, limits)?,
+            Some(q) => {
+                let (p, de, d) = parse_query(q, limits)?;
+                derived.extend(d);
+                (p, de)
+            }
             None => (Vec::new(), false),
         };
 
-        // ── 7. Parse body ─────────────────────────────────────────────────────
+        // ── 7. Parse body (+ base64-derived from body values) ─────────────────
         let content_type = norm_headers
             .iter()
             .find(|(k, _)| k == "content-type")
             .map(|(_, v)| v.as_str());
 
         let parsed_body = parse_body(content_type, &ctx.body, limits)?;
+        for s in body_canonical_strings(&parsed_body) {
+            derived.extend(url::base64_derived(&s));
+        }
+
+        // base64-derived from header VALUES, minus the structural per-name exclusion
+        // (Authorization/Cookie/ETag/conditional-GET/`*-token`). Overlong is NOT
+        // excluded here — but header values are kept raw for header_injection; only the
+        // base64 channel reads them (the candidate is canonicalized inside base64_derived).
+        for (name, value) in &norm_headers {
+            if !header_base64_excluded(name) {
+                derived.extend(url::base64_derived(value));
+            }
+        }
 
         // ── 8. Write results ──────────────────────────────────────────────────
         ctx.normalized.path = norm_path;
@@ -135,7 +158,57 @@ impl Normalizer {
         ctx.normalized.body = parsed_body;
         ctx.normalized.double_encoding_detected =
             path_double_enc || query_double_enc || cookie_double_enc;
+        ctx.normalized.derived_decoded = derived;
 
         Ok(())
+    }
+}
+
+/// Header names STRUCTURALLY excluded from the base64-derive channel (D3): their
+/// values are base64-benign-heavy and high-volume (Basic/Bearer auth, cookies, ETag
+/// / conditional-GET validators) so a per-name exclusion beats the statistical
+/// decode-then-match bet there. Case-insensitive (names are pre-lowercased). The
+/// OVERLONG channel is NOT subject to this — it stays pipeline-wide.
+fn header_base64_excluded(name: &str) -> bool {
+    const EXCLUDED: &[&str] = &[
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "etag",
+        "if-none-match",
+        "if-match",
+    ];
+    EXCLUDED.contains(&name) || name.ends_with("-token")
+}
+
+/// Canonical inspectable strings of a parsed body (form values, JSON leaf values,
+/// multipart name/filename/UTF-8 value) — the surface the base64-derive channel scans.
+/// Mirrors detection's `body_str_values` but lives here so the normalizer can build
+/// `derived_decoded` once (the prefilter + every module then read it).
+fn body_canonical_strings(body: &waf_core::ParsedBody) -> Vec<String> {
+    use waf_core::ParsedBody;
+    match body {
+        ParsedBody::FormUrlEncoded(p) => p.iter().map(|(_, v)| v.clone()).collect(),
+        ParsedBody::JsonFlattened(p) => {
+            p.iter().map(|(_, v)| url::canonicalize_value(v, false).0).collect()
+        }
+        ParsedBody::Multipart(fields) => {
+            let mut out = Vec::with_capacity(fields.len() * 2);
+            for f in fields {
+                out.push(url::canonicalize_multipart_field(&f.name));
+                if let Some(fname) = &f.filename {
+                    out.push(url::canonicalize_multipart_field(fname));
+                }
+                if let Ok(s) = std::str::from_utf8(&f.data) {
+                    out.push(url::canonicalize_multipart_field(s));
+                }
+            }
+            out
+        }
+        ParsedBody::Raw(b) => {
+            std::str::from_utf8(b).ok().map(|s| url::canonicalize_value(s, false).0).into_iter().collect()
+        }
+        ParsedBody::None => Vec::new(),
     }
 }

@@ -144,46 +144,43 @@ pub static CASES: &[Case] = &[
                the part VALUE — closed by multipart deep-normalization (10b-cont fix)",
     },
     Case {
-        // Base64Flat encoder: the corpus has no base64-decode (ARCHITECTURE §6 / 10c),
-        // so the encoded faro carries no `/etc/passwd` or `../` signature yet. The
-        // oracle FLIPS this to a required Triggers once CURRENT_PHASE reaches 10c.
+        // Base64Flat encoder, CAUGHT at 10c: §6 base64-decode produces the derived
+        // `/static/img/../../etc/passwd`, which trips pt-sensitive-unix (+ pt-dotdot
+        // on `../../`). Bite-verified: break base64-decode → this goes RED.
         id: "pt-gotestwaf-faro-base64-query",
         module: Module::PathTraversal,
         field: Field::Query { name: "file", value: "L3N0YXRpYy9pbWcvLi4vLi4vZXRjL3Bhc3N3ZA==" },
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "gotestwaf path-traversal faro, Base64Flat: base64(`/static/img/../../etc/passwd`) \
-               — needs §6 base64-decode (10c); no signature survives until then",
+        expect: Expect::Triggers,
+        rules: &["pt-sensitive-unix"],
+        desc: "base64(`/static/img/../../etc/passwd`) — caught at 10c via base64-decode \
+               (pt-dotdot `{2,}` overlap declared)",
     },
     Case {
-        // UNC `\\::1\c$\…` URL/Plain is ALREADY caught by pt-unc-path (the `:` host
-        // widening from B3, see pt-unc-ipv6-localhost-query). Only its Base64Flat
-        // form is missed — deferred to 10c with the other base64 payloads. The D1
-        // "defer Windows-backslash broadening to 10b-bis" decision means NO new UNC
-        // pattern work this batch; the existing coverage stands.
+        // UNC `\\::1\c$\…` URL/Plain is caught by pt-unc-path (the `:` host widening
+        // from B3). Its Base64Flat form is now caught at 10c: base64-decode → the UNC
+        // string → pt-unc-path. (10b-bis backslash broadening stays out of scope.)
         id: "pt-gotestwaf-unc-base64-query",
         module: Module::PathTraversal,
         field: Field::Query { name: "file", value: "XFw6OjFcYyQpdXNlcnNcZGVmYXVsdFxudHVzZXIuZGF0" },
         min_pl: 3,
-        expect: Expect::ExpectedMiss { until_phase: Some("10c") },
-        rules: &[],
-        desc: "gotestwaf path-traversal UNC IPv6-localhost, Base64Flat — needs §6 base64-decode \
-               (10c); URL/Plain UNC already caught by pt-unc-path (D1: no 10b-bis broadening)",
+        expect: Expect::Triggers,
+        rules: &["pt-unc-path"],
+        desc: "base64(UNC `\\\\::1\\c$\\…`) — caught at 10c via base64-decode → pt-unc-path",
     },
     Case {
-        // Overlong UTF-8 of `../../etc/passwd` (`%C0%AE`=`.`, `%C0%AF`=`/`). The
-        // normalizer's `from_utf8_lossy` maps the invalid overlong bytes to U+FFFD
-        // (NOT `.`/`/`), so no `/etc/passwd` signature ever forms. Closing it needs
-        // overlong-sequence decoding (ARCHITECTURE §6), deliberately out of 10b.
+        // Overlong UTF-8 of `../../etc/passwd` (`%C0%AE`=`.`, `%C0%AF`=`/`), CAUGHT at
+        // 10c: the overlong collapse (folded PIPELINE-WIDE into canonicalize_value)
+        // resolves the bytes to `../../etc/passwd` → pt-sensitive-unix + pt-dotdot.
+        // Bite-verified: break the overlong collapse → this goes RED.
         id: "pt-overlong-utf8-passwd-query",
         module: Module::PathTraversal,
         field: Field::RawQuery("file=%C0%AE%C0%AE%C0%AF%C0%AE%C0%AE%C0%AFetc%C0%AFpasswd"),
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: None },
-        rules: &[],
-        desc: "gotestwaf community-lfi: overlong-UTF8 `../../etc/passwd` — invalid bytes \
-               become U+FFFD, no signature forms; needs §6 overlong decode (documented limit)",
+        expect: Expect::Triggers,
+        rules: &["pt-sensitive-unix"],
+        desc: "overlong-UTF8 `../../etc/passwd` — caught at 10c via overlong-decode in §6 \
+               (the documented limit is now closed; pt-dotdot `{2,}` overlap declared)",
     },
     // ── benign / traps ─────────────────────────────────────────────────────────
     Case {

@@ -112,6 +112,20 @@ pub static CASES: &[Case] = &[
         rules: &["sqli-json-function"],
         desc: "boolean SQLi with JSON_EXTRACT() function operand — gotestwaf (URL)",
     },
+    // ── Base64Flat harvest (Fase 10c) — recall-lock under §6 base64-decode ───────
+    // Not a gotestwaf-tracked deferral; pins that the derived channel feeds SQLi too.
+    Case {
+        id: "sqli-information-schema-b64",
+        module: Module::Sqli,
+        field: Field::Query {
+            name: "id",
+            value: "MSBVTklPTiBTRUxFQ1QgdXNlciBGUk9NIGluZm9ybWF0aW9uX3NjaGVtYS50YWJsZXM=",
+        },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["sqli-union-select", "sqli-information-schema"],
+        desc: "base64(`1 UNION SELECT user FROM information_schema.tables`) — caught at 10c via base64-decode",
+    },
     // ── benign / traps ─────────────────────────────────────────────────────────
     Case {
         id: "sqli-benign-css-comment",

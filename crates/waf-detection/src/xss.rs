@@ -145,8 +145,9 @@ impl WafModule for XssModule {
         let cookies = ctx.normalized.cookies.iter().map(|(_, v)| v.as_str());
         let body_vals = body_str_values(&ctx.normalized.body);
         let body = body_vals.iter().map(String::as_str);
+        let derived = ctx.normalized.derived_decoded.iter().map(String::as_str);
 
-        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body));
+        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived));
         if matched.is_empty() {
             return Decision::Allow;
         }

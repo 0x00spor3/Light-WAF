@@ -47,7 +47,7 @@ proptest! {
     fn prop_form_valid_utf8_equals_query(s in "(&|=|%26|%3D|%25|[a-z0-9+]){0,60}") {
         let lim = limits(8);
         let form = parse_form(s.as_bytes(), &lim);
-        let query = parse_query(&s, &lim).map(|(p, _)| p).map_err(|_| ());
+        let query = parse_query(&s, &lim).map(|(p, _, _)| p).map_err(|_| ());
         prop_assert_eq!(form, query);
     }
 }

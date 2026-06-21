@@ -181,6 +181,13 @@ impl ContentPrefilter {
         if body_str_values(&n.body).iter().any(|v| self.main.is_match(v)) {
             return true;
         }
+        // Base64-DERIVED surface (10c): the modules inspect `derived_decoded`, so the
+        // prefilter MUST scan it too — else a Base64Flat payload (raw value matches no
+        // pattern) would be wrongly skipped by the fast-path while full inspection
+        // fires on the decode. Soundness = scan the same surface the modules read.
+        if n.derived_decoded.iter().any(|v| self.main.is_match(v)) {
+            return true;
+        }
         // HOST bucket over host header values only.
         n.headers
             .iter()

@@ -125,6 +125,22 @@ pub static CASES: &[Case] = &[
         desc: "overlong-unicode CR/LF — documented limit, normalizer decodes to 嘍 not CR/LF",
     },
     Case {
+        // 10c DEFERRAL (tracked, not silent): overlong LF `%C0%8A` (= `\n`) in a HEADER
+        // VALUE inspected by header_injection. 10c folds overlong into query/body/cookie/
+        // path, but NOT into the stored header values header_injection reads — extending
+        // it there is a CANONICAL CHANGE to a CRLF module's input surface, and 10c has no
+        // bite for it. Deferred to 10d, where it closes with full rigour (re-run P1/P2/P3
+        // + dedicated bite). Until then this stays an honest, under-test gap.
+        id: "hdr-overlong-crlf-header-value",
+        module: Module::HeaderInjection,
+        field: Field::Header { name: "x-trace-id", value: "%C0%8ASet-Cookie:sessionid=evil" },
+        min_pl: 1,
+        expect: Expect::ExpectedMiss { until_phase: Some("10d") },
+        rules: &[],
+        desc: "overlong LF `%C0%8A`→`\\n` in a header value — header values are NOT overlong-folded \
+               (out of 10c by §13: canonical change with no bite); flips to caught at 10d",
+    },
+    Case {
         id: "hdr-benign-path-text",
         module: Module::HeaderInjection,
         field: Field::Path("/api/v1/articles/2024/summary.html"),

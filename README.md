@@ -26,7 +26,8 @@ strutturato), *sicuro by design* (fail-open / fail-closed espliciti per-scenario
 | Request smuggling (CL/TE) | connection | validazione strutturale del framing → 400 |
 | Rate limiting L7 | connection | token bucket per IP risolto |
 
-Più: normalizzazione anti-evasione (percent-decode anti-doppia-codifica + NFKC),
+Più: normalizzazione anti-evasione (percent-decode anti-doppia-codifica + NFKC +
+collapse-overlong UTF-8 pipeline-wide + canale base64-derived `decode-then-match-then-discard`),
 anomaly scoring cumulativo configurabile, livelli di paranoia (PL1–4), config esterna
 con hot reload (SIGHUP, Unix), risoluzione IP client trusted-proxy, e un **fast-path**
 che salta l'ispezione sul traffico provabilmente benigno (equivalenza testata).

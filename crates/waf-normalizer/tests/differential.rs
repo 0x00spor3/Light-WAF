@@ -9,13 +9,15 @@
 //!
 //! - (A) single-pass decode == oracle, BYTE-EXACT — pure correctness of our loop.
 //! - (B) the canonical is an NFKC fixed-point — proves NFKC was actually applied.
-//! - (C) vs full `decode_until_stable`, our 2-pass canonical diverges ONLY on inputs
-//!   encoded >2 times. The test FALSIFIES this in both directions: `<=2`-encoded must
-//!   NOT diverge (property), and known `>2`-encoded MUST diverge as predicted (fixed
-//!   cases) — so the §6 "2 passes" bound is itself under test.
+//! - (C) vs full `decode_until_stable`, our canonical is a fixed point bounded by
+//!   `PIPELINE_CAP` (=5) shared passes (Fase 10c, was 2). It diverges from the
+//!   unbounded oracle ONLY on inputs encoded >5 times. The test FALSIFIES this in
+//!   both directions: `<=2`-encoded must NOT diverge (property), and a known
+//!   6-level encoding MUST diverge as predicted — so the §6 cap is itself under test.
 //!
-//! Overlong UTF-8 is neutralized to the replacement char (lossy): a documented
-//! WAF-vs-backend residual, NOT a WAF-vs-oracle divergence (the oracle is lossy too).
+//! Overlong UTF-8 (Fase 10c): `%C0%AE`→`.`, `%C0%AF`→`/` are now DECODED before the
+//! lossy UTF-8 step (the overlong path-traversal evasion is closed). The oracle is
+//! overlong-aware too (independent reimplementation), so it stays WAF==oracle.
 
 use proptest::prelude::*;
 use unicode_normalization::UnicodeNormalization;
@@ -70,19 +72,68 @@ fn has_decodable(s: &str) -> bool {
     naive_decode(s, false) != *s
 }
 
-/// Full, UNBOUNDED canonicalization mirroring `canonicalize_value`'s pass semantics:
-/// first pass honours `plus`, subsequent passes use `plus=false` (re-decoding does
-/// not treat `+` as space), until a fixed point, then NFKC.
+/// Independent BYTE-LEVEL percent-decode (uses `.get()`, no shared bounds logic).
+/// Keeps bytes so overlong sequences survive for `oracle_collapse_overlong`.
+fn oracle_decode_bytes(input: &[u8], plus: bool) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let c = input[i];
+        if plus && c == b'+' {
+            out.push(b' ');
+            i += 1;
+        } else if c == b'%' {
+            match (input.get(i + 1).copied().and_then(hexval), input.get(i + 2).copied().and_then(hexval)) {
+                (Some(h), Some(l)) => {
+                    out.push((h << 4) | l);
+                    i += 3;
+                }
+                _ => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Independent overlong-UTF8 collapse (10c): 2-byte `0xC0/0xC1` overlong → ASCII byte.
+fn oracle_collapse_overlong(bytes: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if (b == 0xC0 || b == 0xC1) && bytes.get(i + 1).is_some_and(|&n| (0x80..=0xBF).contains(&n)) {
+            out.push(((b & 0x1F) << 6) | (bytes[i + 1] & 0x3F));
+            i += 2;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Full, UNBOUNDED canonicalization mirroring `canonicalize_value`'s NEW (10c)
+/// semantics — percent + overlong to a fixed point (first pass honours `plus`), then
+/// NFKC — but with NO cap, so the WAF (capped at `PIPELINE_CAP`) diverges from it
+/// exactly on >cap-encoded inputs. Independent code (byte-level) from production.
 fn oracle_full(input: &str, plus: bool) -> String {
-    let mut cur = naive_decode(input, plus);
+    let mut bytes = input.as_bytes().to_vec();
+    let mut first = true;
     loop {
-        let next = naive_decode(&cur, false);
-        if next == cur {
+        let next = oracle_collapse_overlong(&oracle_decode_bytes(&bytes, plus && first));
+        first = false;
+        if next == bytes {
             break;
         }
-        cur = next;
+        bytes = next;
     }
-    cur.nfkc().collect()
+    String::from_utf8_lossy(&bytes).nfkc().collect()
 }
 
 // ── (A) single-pass byte-exact equality ──────────────────────────────────────
@@ -140,31 +191,32 @@ proptest! {
 }
 
 #[test]
-fn prop_c_gt2_must_diverge() {
-    // `%252527` triple-encodes `'`. Our bounded 2-pass stops at `%27`; the full
-    // decode reaches `'`. The divergence MUST exist and look exactly like this.
-    let (canon, _) = canonicalize_value("%252527", true);
-    assert_eq!(canon, "%27", "2-pass bound: our canonical must stop at %27");
-    assert_eq!(oracle_full("%252527", true), "'", "full decode reaches the quote");
-    assert_ne!(canon, oracle_full("%252527", true), "the >2-encoding divergence must exist");
+fn prop_c_beyond_cap_must_diverge() {
+    // 10c moved the bound 2 → PIPELINE_CAP (=5). A 5-level encoding still CONVERGES
+    // (canonical == unbounded oracle); a 6-level encoding is where our bounded
+    // canonical stops and the oracle goes further. The cap is itself under test.
+    let l5 = "%2525252527"; // 5×-encoded `'`
+    let (canon5, _) = canonicalize_value(l5, true);
+    assert_eq!(canon5, "'", "5-level (<=cap) must fully converge, got {canon5:?}");
+    assert_eq!(canon5, oracle_full(l5, true));
 
-    // A second witness, with a different target char (`<`).
-    let (canon2, _) = canonicalize_value("%25253C", true);
-    assert_eq!(canon2, "%3C", "2-pass stops at %3C");
-    assert_eq!(oracle_full("%25253C", true), "<", "full decode reaches <");
-    // If a future refactor makes the decoder 3-pass, the asserts above go RED →
-    // the §6 "2 passes" bound is itself under test, not just the <=2 inputs.
+    let l6 = "%252525252527"; // 6×-encoded `'`
+    let (canon6, _) = canonicalize_value(l6, true);
+    assert_eq!(canon6, "%27", "6-level: bounded canonical stops at %27, got {canon6:?}");
+    assert_eq!(oracle_full(l6, true), "'", "unbounded oracle reaches the quote");
+    assert_ne!(canon6, oracle_full(l6, true), "the >cap divergence must exist");
 }
 
 #[test]
-fn overlong_utf8_is_neutralized_not_decoded() {
-    // `%C0%AE` is an overlong encoding of `.`. We decode to bytes C0 AE — invalid
-    // UTF-8 → from_utf8_lossy → replacement char, NOT `.`. A lax backend that
-    // accepts overlong would see `.`: a documented WAF-vs-backend residual (§6),
-    // NOT a WAF-vs-oracle divergence (the oracle is lossy too).
+fn overlong_utf8_is_decoded_10c() {
+    // 10c removes the §6 overlong limit: `%C0%AE` (overlong `.`) now DECODES to `.`
+    // before from_utf8_lossy, closing the overlong path-traversal evasion. The
+    // overlong-aware oracle agrees — no differential divergence.
     let (canon, _) = canonicalize_value("%C0%AE", true);
-    assert!(!canon.contains('.'), "overlong must NOT decode to '.', got {canon:?}");
-    assert!(canon.contains('\u{FFFD}'), "overlong bytes become the replacement char, got {canon:?}");
-    // And the WAF agrees with the (lossy) oracle here — no differential divergence.
+    assert_eq!(canon, ".", "overlong must now decode to '.', got {canon:?}");
+    assert!(!canon.contains('\u{FFFD}'), "no replacement char, got {canon:?}");
     assert_eq!(canon, oracle_full("%C0%AE", true));
+    // Double-encoded overlong resolves too: %25C0%25AE → %C0%AE → '.'
+    let (canon2, _) = canonicalize_value("%25C0%25AE", true);
+    assert_eq!(canon2, ".", "double-encoded overlong decodes too, got {canon2:?}");
 }

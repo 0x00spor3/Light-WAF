@@ -619,6 +619,13 @@ pub struct Normalized {
     pub body: ParsedBody,
     /// True when any field had a percent-encoded sequence that decoded to another percent-encoded sequence.
     pub double_encoding_detected: bool,
+    /// Phase 10c: additional inspection-only strings DERIVED from field values that
+    /// were base64-encoded (gotestwaf Base64Flat). Each entry is the base64-decoded +
+    /// canonicalized form of some query/cookie/body/header value that passed the
+    /// base64 candidacy gate. "decode-then-match-then-discard": modules and the
+    /// prefilter inspect these alongside the real fields, but they are NEVER persisted
+    /// as a real field value — a derived string that matches no rule has no effect.
+    pub derived_decoded: Vec<String>,
 }
 
 // ── Scoring audit ───────────────────────────────────────────────────────────

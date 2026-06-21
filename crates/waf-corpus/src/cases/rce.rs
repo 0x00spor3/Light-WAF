@@ -89,6 +89,17 @@ pub static CASES: &[Case] = &[
         rules: &["rce-logical-operator"],
         desc: "bare && logical operator (Notice/PL3); also exercises &-encoding in the testkit",
     },
+    // ── Base64Flat harvest (Fase 10c) — recall-lock under §6 base64-decode ───────
+    // Not a gotestwaf-tracked deferral; pins that the derived channel feeds RCE too.
+    Case {
+        id: "rce-chained-command-b64",
+        module: Module::Rce,
+        field: Field::Query { name: "q", value: "OyBjYXQgL2V0Yy9wYXNzd2Q=" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["rce-chained-command"],
+        desc: "base64(`; cat /etc/passwd`) — caught at 10c via base64-decode",
+    },
     // ── benign / traps ─────────────────────────────────────────────────────────
     Case {
         id: "rce-benign-cats-and-dogs",
