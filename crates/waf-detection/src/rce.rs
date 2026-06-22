@@ -108,6 +108,46 @@ pub static RCE_RULES: &[Rule] = &[
         severity: Severity::Critical,
         paranoia: 1,
     },
+    // ── VBScript / Classic-ASP RCE (Fase 10c §6-D3) ────────────────────────────────
+    // gotestwaf rce-urlparam ships a VBScript webshell obfuscated with string-concat
+    // (`"Ex"&"e"&"cute` → `Execute`) and whitespace-split (`Ev al`). On the wire the
+    // concat `&` is a literal query separator → the payload SHATTERS across params, but
+    // several VBScript/ASP intrinsics survive a fragment INTACT and are unambiguous on
+    // their own. (The `"&"`-concat de-obf channel additionally reconstructs `Execute(`
+    // for the well-formed `%26` variant — see waf-normalizer `strip_vbscript_concat`.)
+    Rule {
+        id: "rce-vbscript-on-error",
+        // `On Error Resume Next` — a VBScript-only statement; in a request parameter it
+        // is a webshell/script-injection tell, never benign app input.
+        pattern: r"(?i)\bon\s+error\s+resume\s+next\b",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "rce-asp-server-intrinsic",
+        // Classic-ASP `Server.` intrinsics used by webshells to spawn COM / read files /
+        // tune the runtime. ASP-only method names → high confidence.
+        pattern: r"(?i)\bserver\.(?:scripttimeout|createobject|mappath|execute|transfer)\b",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "rce-vbscript-createobject",
+        // `CreateObject("WScript.Shell" | "MSXML2…" | "ADODB…" | FileSystemObject | …)` —
+        // the canonical VBScript/COM webshell sink. Anchored to the dangerous progIDs so
+        // a bare `CreateObject(` (also a .NET API) does not match on its own.
+        pattern: r#"(?i)\bcreateobject\s*\(\s*["']?(?:wscript\.|msxml|adodb\.|scripting\.filesystemobject|shell\.application|microsoft\.xmlhttp)"#,
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "rce-asp-response-write",
+        // `Response.Write(` — ASP output sink; common in webshell scaffolding. More
+        // tutorial-prone than the above, so Warning (accumulates, sub-threshold alone).
+        pattern: r"(?i)\bresponse\.write\s*\(",
+        severity: Severity::Warning,
+        paranoia: 2,
+    },
 ];
 
 // ── module ────────────────────────────────────────────────────────────────────

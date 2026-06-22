@@ -367,6 +367,48 @@ pub fn strip_midtoken_controls(s: &str) -> Option<String> {
     changed.then_some(out)
 }
 
+/// VBScript string-concat de-obfuscation (§6-D3): collapse the `"…&…"` joints VBScript
+/// uses to split keywords across string literals — `"Ex"&"e"&"cute` → `"Execute`,
+/// `M"&"i"&"d` → `Mid`, `c"&"h"&"r` → `chr` (gotestwaf rce-urlparam webshell). Matches a
+/// close-quote, optional ws, `&`, optional ws, open-quote and drops all of it, joining the
+/// adjacent literals. `&` is VBScript's concat operator (JS uses `+`), so `"x"&"y"` in a
+/// request value is itself a strong VBScript tell → low FP, and decode-then-match-then-
+/// discard means it only counts if it reconstructs an RCE keyword. Returns `Some` only when
+/// a joint was removed. Linear single pass.
+pub fn strip_vbscript_concat(s: &str) -> Option<String> {
+    if !s.contains('&') {
+        return None;
+    }
+    let b = s.as_bytes();
+    let ws = |c: u8| c == b' ' || c == b'\t';
+    let mut out = String::with_capacity(s.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'"' {
+            let mut j = i + 1;
+            while j < b.len() && ws(b[j]) {
+                j += 1;
+            }
+            if j < b.len() && b[j] == b'&' {
+                let mut k = j + 1;
+                while k < b.len() && ws(b[k]) {
+                    k += 1;
+                }
+                if k < b.len() && b[k] == b'"' {
+                    i = k + 1; // drop the `"…&…"` joint, fusing the two string literals
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    changed.then_some(out)
+}
+
 /// All derived inspection variants of one inspected value (§6): base64-decoded (10c) +
 /// HTML-entity-decoded (evasion, §6-D1) + mid-token-tag-stripped (mutation, §6-D2) +
 /// mid-token-control-stripped (§6-D2b). All are decode-then-match-then-discard. Single
@@ -392,6 +434,9 @@ pub fn derive_variants(value: &str) -> Vec<String> {
         if let Some(stripped) = strip_midtoken_controls(d) {
             composed.push(stripped);
         }
+        if let Some(joined) = strip_vbscript_concat(d) {
+            composed.push(joined);
+        }
     }
     out.extend(composed);
     // Raw-surface transforms (URL/percent-decoded value, no base64 wrapper).
@@ -404,6 +449,9 @@ pub fn derive_variants(value: &str) -> Vec<String> {
     }
     if let Some(stripped) = strip_midtoken_controls(value) {
         out.push(stripped);
+    }
+    if let Some(joined) = strip_vbscript_concat(value) {
+        out.push(joined);
     }
     out
 }

