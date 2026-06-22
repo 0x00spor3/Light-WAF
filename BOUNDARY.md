@@ -165,6 +165,9 @@ Every new feature must be added to this file **before merge**, with an unambiguo
 - **Decision:** a **CLA** granting the project the right to license contributions under
   *both* the open license **and** the enterprise license; **DCO** (`Signed-off-by`) is the
   hard minimum. Must be wired into CI (bot check) **before** the first external PR is merged.
+- **Document:** the agreement lives in [`CLA.md`](CLA.md) (Individual CLA, modeled on the
+  Apache ICLA + the dual-licensing grant). A Corporate CLA is required when a company
+  contributes on behalf of its employees (§4 of `CLA.md`).
 
 ### 6.3 Trademark = the real moat of a permissive core
 - The permissive license opens the **code**, not the **name**. Register the project/product
