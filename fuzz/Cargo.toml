@@ -5,7 +5,6 @@
 # libFuzzer is unsupported on Windows, so this crate is CI/Linux-only; the
 # always-on differential invariants live in waf-normalizer/tests/differential.rs.
 [package]
-license = "Apache-2.0"
 name = "waf-fuzz"
 version = "0.0.0"
 publish = false
@@ -64,6 +63,13 @@ bench = false
 [[bin]]
 name = "form_body"
 path = "fuzz_targets/form_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graphql_lex"
+path = "fuzz_targets/graphql_lex.rs"
 test = false
 doc = false
 bench = false

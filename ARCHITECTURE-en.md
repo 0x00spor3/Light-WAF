@@ -402,6 +402,7 @@ equivalence is **tested** on the corpus (the oracle), not assumed.
 | Header injection  | headers     | P1 ✅ |
 | Request smuggling | connection  | P1 ✅ |
 | Rate limiting L7  | connection  | P1 ✅ |
+| GraphQL (structural)| body      | Phase 11 ✅ |
 | Geo / IP reputation| connection | P2 |
 | Bot detection     | headers     | P2 |
 
@@ -517,6 +518,34 @@ share the §7 scoring scheme (severities from `[waf.severity_scores]`, filtered 
 > point and the order relative to the defensive limits. NB: `parse_cookies_limited` still keeps
 > the raw text (for logging/limits); the decode happens **after**, at the same point where
 > query/body are decoded.
+
+> GraphQL notes (a **structural** module, not content-inspection — Phase 11):
+> - **What it is**: like `request_smuggling`, it does NOT inspect content (injection in
+>   arguments/variables is already caught by the JSON-leaf/derived channel, §6). It enforces
+>   **DoS/abuse caps on the SHAPE** of the GraphQL operation: selection-set depth, alias/field/
+>   directive counts, batch size, + an introspection policy. The counts come from a **lexical**
+>   pass (`graphql_lex`, the 8th custom parser, fuzzed §13): **paren-aware depth** (a `{` counts
+>   only outside an argument list `(...)`, so a nested input object does not inflate the depth),
+>   skipping strings/block-strings/comments.
+> - **Transports**: extracts the query from a JSON `query`/`<i>.query` leaf and GET `?query=`
+>   **only on the configured `paths`** (so a non-GraphQL JSON API with a `query` field is left
+>   alone), and from an `application/graphql` body (by Content-Type, any path). Default **OFF**
+>   (endpoint-specific, caps need tuning).
+> - **Decision**: a DoS cap over its limit → `Reject{400}`; introspection (if
+>   `block_introspection`) → `Block{403}`.
+> - **⚠️ STRUCTURAL module in `Phase::Body` → `WafModule::structural() = true`**: the fast-path
+>   (Pillar 3, §7) proves "no **content** rule can match" and skips content inspection; but it
+>   cannot prove a structural module inert, so structural modules run **even on the skip path**
+>   (`run_phases_filtered(structural_only)`). Without this flag a GraphQL DoS with no content
+>   signature would **bypass** the module. Rule: a new structural `Phase::Body` module MUST set
+>   `structural()`.
+> - **Related §6 fix (Step-0)**: an `application/graphql` body is `ParsedBody::Raw`, inspected raw
+>   by `body_str_values` → its percent-decoded form was not inspected (encoded-injection bypass).
+>   The body-derived collector now pushes the **Raw-body canonical** into `derived_decoded` (like
+>   `json_leaf_derived`).
+> - **Open/enterprise boundary** (`BOUNDARY.md` §3.1): the **structural caps** are core (OPEN);
+>   **schema-enforcement** (validating the query against the app's real schema → schema management
+>   = governance) stays **enterprise**.
 
 ---
 
@@ -1037,6 +1066,29 @@ the equivalence oracle for the fast-path (Pillar 3).
       threshold→3 = a real FP on `alert(message)`/`$or`); **D2b-2** whitespace-collapse (high FP on
       prose, 0 wire payloads). `severity_scores` frozen. **Final DoD = an env-gated gotestwaf
       re-capture** (expected 200→403 on all closed classes). **10c cycle CLOSED.**
+
+- **Phase 11 ✅** — **GraphQL** (structural protections). Not content coverage (injection in
+  arguments/variables is already caught by §6: JSON-leaf/derived); the real gap was the
+  **semantic GraphQL protections** (DoS/abuse) that regex cannot give. **Probe-first with 3 user
+  guardrails** (canonical-not-raw / two-columns-separate / paren-aware trap): Step-0 REFUTED the
+  GET suspicion (it canonicalizes) and DISCOVERED that `application/graphql` was **raw** (§6
+  raw-body fix, see §6/§8). Pieces:
+  - **Lexer `graphql_lex` (8th custom parser, fuzzed §13)**: a linear lexical pass, **paren-aware
+    depth** (an input object inside arguments does not inflate the depth), skipping
+    strings/block-strings/comments → `max_depth`/`aliases`/`fields`/`directives`/`has_introspection`.
+  - **STRUCTURAL `graphql` module** (`Phase::Body`, `structural()=true`): caps → `Reject{400}`,
+    introspection → `Block{403}`. Config `[modules.graphql]` default **OFF** (opt-in, tunable caps),
+    JSON/GET transports on `paths` + `application/graphql` by Content-Type.
+  - **ARCHITECTURAL BUG found by the re-gate (`fastpath_equivalence`)**: a structural `Phase::Body`
+    module ran inside the inspection **gated by the content fast-path** → a DoS with no content
+    signature was **skipped** (a production bypass, not just corpus). FIX: trait
+    `WafModule::structural()` + `Pipeline::run_phases_filtered(structural_only)` (structural modules
+    run on the skip path too) + corrected `fastpath_skipped` semantics (`!inspect && Allow`). A
+    durable lesson on record in §8.
+  - **Open/enterprise boundary**: structural caps = core; **schema-enforcement = enterprise**
+    (`BOUNDARY.md` §3.1). **gRPC = Phase 12** (will need HTTP/2, absent today).
+  - Re-gate: **validation 10/10, FP 0**, workspace green, clippy clean. GraphQL corpus: 5 DoS caps +
+    introspection + 3 transports + path-gating + the paren-aware trap. **Phase 11 CLOSED.**
 
 ---
 

@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 pub mod noop_logger;
 pub use noop_logger::NoopLogger;
 
@@ -157,7 +154,10 @@ impl Pipeline {
         if inspect {
             self.run_inspection(ctx)
         } else {
-            let verdict = PipelineVerdict::Allow;
+            // The content fast-path proved no CONTENT rule can match — but STRUCTURAL
+            // inspection modules (e.g. GraphQL) are not content rules and must still
+            // run, else a structural attack with no content signature would bypass.
+            let verdict = self.run_phases_filtered(ctx, INSPECTION_PHASES, true);
             self.log_decision(ctx, &verdict);
             verdict
         }
@@ -166,10 +166,25 @@ impl Pipeline {
     /// Core executor over an arbitrary set of phases. Accumulates score and
     /// returns the verdict; does not emit the final decision log (callers do).
     fn run_phases(&self, ctx: &mut RequestContext, phases: &[Phase]) -> PipelineVerdict {
+        self.run_phases_filtered(ctx, phases, false)
+    }
+
+    /// As [`run_phases`], but when `structural_only` is set, only STRUCTURAL modules
+    /// run (the content fast-path skip path — see [`run_inspection_gated`]).
+    fn run_phases_filtered(
+        &self,
+        ctx: &mut RequestContext,
+        phases: &[Phase],
+        structural_only: bool,
+    ) -> PipelineVerdict {
         let mut block_verdict: Option<PipelineVerdict> = None;
 
         'pipeline: for &phase in phases {
-            for module in self.modules.iter().filter(|m| m.phase() == phase) {
+            for module in self
+                .modules
+                .iter()
+                .filter(|m| m.phase() == phase && (!structural_only || m.structural()))
+            {
                 let module_id = module.id().to_string();
 
                 // Panic isolation (Fase 6 / Pillar 2): a bug in a module (panic,

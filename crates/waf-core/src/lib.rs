@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 use std::net::IpAddr;
 use std::time::SystemTime;
 
@@ -76,6 +73,14 @@ pub trait WafModule: Send + Sync {
     fn init(&mut self, cfg: &Config);
     /// Read-only access to context; pipeline owns mutation of `score`.
     fn inspect(&self, ctx: &RequestContext) -> Decision;
+    /// `true` for a STRUCTURAL inspection module (e.g. GraphQL) whose decision does
+    /// NOT come from a content-rule match. The content fast-path (Pillar 3) may prove
+    /// "no content rule can match" and skip CONTENT inspection — but it cannot prove
+    /// a structural module is inert, so structural modules run even on the skip path.
+    /// Default `false` (a content module, gated by the fast-path).
+    fn structural(&self) -> bool {
+        false
+    }
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -221,6 +226,7 @@ pub enum ConfigError {
     InvalidCidr(String),
     EmptyClientIpHeader,
     ResilienceTimeoutZero,
+    GraphqlCapZero(&'static str),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -248,6 +254,8 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "network.client_ip_header must not be empty"),
             Self::ResilienceTimeoutZero =>
                 write!(f, "resilience.upstream_timeout_ms must be >= 1"),
+            Self::GraphqlCapZero(name) =>
+                write!(f, "modules.graphql.{name} must be >= 1 when the graphql module is enabled"),
         }
     }
 }
@@ -339,6 +347,22 @@ impl Config {
         // Resilience.
         if self.resilience.upstream_timeout_ms == 0 {
             return Err(ConfigError::ResilienceTimeoutZero);
+        }
+
+        // GraphQL caps: a 0 cap would reject every query → only meaningful when enabled.
+        if self.modules.graphql.enabled {
+            let g = &self.modules.graphql;
+            for (name, v) in [
+                ("max_depth", g.max_depth),
+                ("max_aliases", g.max_aliases),
+                ("max_fields", g.max_fields),
+                ("max_directives", g.max_directives),
+                ("max_batch", g.max_batch),
+            ] {
+                if v == 0 {
+                    return Err(ConfigError::GraphqlCapZero(name));
+                }
+            }
         }
 
         Ok(())
@@ -447,6 +471,11 @@ pub struct ModulesConfig {
     /// default on (see ARCHITECTURE §8).
     #[serde(default)]
     pub request_smuggling: ModuleConfig,
+    /// GraphQL structural protections (depth / aliases / fields / directives / batch /
+    /// introspection). A structural control like request_smuggling — NOT content-regex.
+    /// Default OFF: it is endpoint-specific and the caps need per-app tuning (Phase 11).
+    #[serde(default)]
+    pub graphql: GraphqlConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -460,6 +489,62 @@ fn default_true() -> bool { true }
 impl Default for ModuleConfig {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// GraphQL module configuration (Phase 11). Structural DoS/abuse caps applied to the
+/// GraphQL operation(s) carried by a request (JSON `query` field, `application/graphql`
+/// raw body, or GET `?query=`). All counts come from the lexical [`graphql_lex`] pass.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GraphqlConfig {
+    /// Default OFF (opt-in per deployment).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Request paths treated as GraphQL endpoints (exact, case-insensitive). JSON and
+    /// GET transports are inspected ONLY on these paths (so a non-GraphQL JSON API with
+    /// a `query` field is not affected); `application/graphql` is recognized by its
+    /// Content-Type regardless of path.
+    #[serde(default = "default_graphql_paths")]
+    pub paths: Vec<String>,
+    /// Max selection-set nesting depth (paren-aware).
+    #[serde(default = "default_graphql_max_depth")]
+    pub max_depth: u32,
+    /// Max alias count (`alias: field`) — the "alias bomb" cap.
+    #[serde(default = "default_graphql_max_aliases")]
+    pub max_aliases: u32,
+    /// Max selection-name count (a cheap complexity proxy).
+    #[serde(default = "default_graphql_max_fields")]
+    pub max_fields: u32,
+    /// Max `@directive` count.
+    #[serde(default = "default_graphql_max_directives")]
+    pub max_directives: u32,
+    /// Max number of operations in one (batched) request.
+    #[serde(default = "default_graphql_max_batch")]
+    pub max_batch: u32,
+    /// Block schema introspection (`__schema`/`__type`) → 403. Default off (policy).
+    #[serde(default)]
+    pub block_introspection: bool,
+}
+
+fn default_graphql_paths() -> Vec<String> { vec!["/graphql".to_string()] }
+fn default_graphql_max_depth() -> u32 { 15 }
+fn default_graphql_max_aliases() -> u32 { 30 }
+fn default_graphql_max_fields() -> u32 { 1000 }
+fn default_graphql_max_directives() -> u32 { 50 }
+fn default_graphql_max_batch() -> u32 { 10 }
+
+impl Default for GraphqlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            paths: default_graphql_paths(),
+            max_depth: default_graphql_max_depth(),
+            max_aliases: default_graphql_max_aliases(),
+            max_fields: default_graphql_max_fields(),
+            max_directives: default_graphql_max_directives(),
+            max_batch: default_graphql_max_batch(),
+            block_introspection: false,
+        }
     }
 }
 

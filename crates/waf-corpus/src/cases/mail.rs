@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Mail (SMTP/IMAP) command injection corpus cases (Fase 10a). Field: query.
 //! Rule (paranoia): mail-command-injection 1 (Critical) — CR/LF + a mail verb.
 //! Source: gotestwaf `mail-injection`. URL payloads are 10a Triggers; Base64Flat

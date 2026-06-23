@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! The case runner: build a fresh raw context, run the real pipeline exactly as
 //! the proxy does, and report what fired.
 //!
@@ -19,11 +16,12 @@
 
 use waf_core::testkit::Request;
 use waf_core::{
-    Config, LimitsConfig, ModulesConfig, NetworkConfig, ProxyConfig, RateLimitConfig,
-    RequestContext, ResilienceConfig, ScoreContribution, SeverityScores, WafConfig, WafMode,
-    WafModule,
+    Config, GraphqlConfig, LimitsConfig, ModulesConfig, NetworkConfig, ProxyConfig,
+    RateLimitConfig, RequestContext, ResilienceConfig, ScoreContribution, SeverityScores,
+    WafConfig, WafMode, WafModule,
 };
 use waf_detection::ContentPrefilter;
+use waf_detection::graphql::GraphqlModule;
 use waf_detection::header_injection::HeaderInjectionModule;
 use waf_detection::ldap::LdapModule;
 use waf_detection::lfi_rfi::LfiRfiModule;
@@ -86,8 +84,10 @@ pub struct CaseOutcome {
     /// True when normalization itself failed (a defensive-limit / parser rejection,
     /// equivalent to a 400). Counts as a trigger.
     pub normalization_failed: bool,
-    /// True when the Pilastro 3 fast-path skipped content inspection (the prefilter
-    /// proved no content rule could match). Always false on the full path.
+    /// True when the Pilastro 3 fast-path bypassed CONTENT inspection AND the outcome
+    /// was a clean Allow (the prefilter proved no content rule could match). False on
+    /// the full path, and false when a STRUCTURAL module (e.g. graphql) still acted on
+    /// the skip path — that is a decision, not an avoided-work skip.
     pub fastpath_skipped: bool,
 }
 
@@ -153,7 +153,11 @@ fn run_inner(case: &Case, execution_pl: u8, severity: SeverityScores, fast: bool
     // single shared gating point, so the oracle tests the production code path.
     let inspect = !fast || ContentPrefilter::new(execution_pl).is_candidate(&ctx);
     let inspection = pipeline.run_inspection_gated(&mut ctx, inspect);
-    let fastpath_skipped = !inspect;
+    // A genuine fast-path skip = CONTENT inspection was bypassed AND the outcome was a
+    // clean Allow. When inspection is skipped a STRUCTURAL module (e.g. graphql) still
+    // runs and may Block/Reject — that is NOT a skip (no work was avoided, a decision
+    // was made), so the security fail-safe (a skip must never hide a block) still holds.
+    let fastpath_skipped = !inspect && matches!(inspection, PipelineVerdict::Allow);
 
     let mut matched: Vec<String> = ctx
         .score_contributions
@@ -205,6 +209,13 @@ fn build_ctx(field: &Field) -> RequestContext {
         Field::RawQuery(qs) => req.raw_query(qs).build(),
         Field::FormBody(raw) => req.method("POST").form_body(raw).build(),
         Field::JsonBody(raw) => req.method("POST").json_body(raw).build(),
+        Field::RawBody { content_type, body } => {
+            req.method("POST").body(body.as_bytes().to_vec(), content_type).build()
+        }
+        Field::Post { path, content_type, body } => {
+            req.method("POST").path(path).body(body.as_bytes().to_vec(), content_type).build()
+        }
+        Field::Get { path, query } => req.method("GET").path(path).raw_query(query).build(),
         Field::MultipartFile { field, filename, content } => {
             const BOUNDARY: &str = "----corpusFieldCoverage";
             let disposition = match filename {
@@ -251,6 +262,7 @@ fn build_pipeline(config: &Config) -> Pipeline {
         Box::new(SsiModule::new()),
         Box::new(XxeModule::new()),
         Box::new(HeaderInjectionModule::new()),
+        Box::new(GraphqlModule::new()),
     ];
     Pipeline::new(config, modules)
 }
@@ -295,9 +307,17 @@ fn corpus_config(paranoia: u8, severity: SeverityScores) -> Config {
             severity_scores: severity,
         },
         limits: LimitsConfig::default(),
-        modules: ModulesConfig::default(), // all enabled
+        // All modules enabled. The GraphQL module is OFF in production by default
+        // (opt-in), so the corpus harness turns it ON (with introspection-blocking) to
+        // exercise the Phase-11 cases; default caps apply.
+        modules: ModulesConfig {
+            graphql: GraphqlConfig { enabled: true, block_introspection: true, ..Default::default() },
+            ..Default::default()
+        },
         rate_limit: RateLimitConfig::default(), // enabled = false → neutralized
         network: NetworkConfig::default(),
         resilience: ResilienceConfig::default(),
     }
 }
+
+

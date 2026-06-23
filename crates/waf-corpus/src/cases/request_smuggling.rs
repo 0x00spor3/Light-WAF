@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Request-smuggling corpus cases. Structural module (framing, not content): runs
 //! in the Connection phase on raw CL/TE headers and rejects illegal framing with
 //! 400 (binary, single rule_id `request-smuggling`, no paranoia gating → min_pl 1).

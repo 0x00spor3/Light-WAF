@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! LFI/RFI corpus cases. Field coverage: query + cookies + body. This module
 //! detects inclusion *mechanisms* (wrappers/streams, remote scripts), not the
 //! filesystem paths (those are path_traversal). Note: rfi-remote-url (PL3) matches

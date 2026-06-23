@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 use tracing::info;
 use waf_core::{Config, Decision, Phase, RequestContext, WafModule};
 

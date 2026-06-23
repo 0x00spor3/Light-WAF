@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 #![no_main]
 //! Fuzz target for path canonicalization (DEC 2 #3): `normalize_path` (decode +
 //! NFKC + null-strip + lowercase + `..`/`//` resolution). libFuzzer + ASan/UBSan

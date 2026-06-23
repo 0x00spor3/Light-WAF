@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! External configuration loading: path resolution + load → parse → validate.
 //!
 //! Precedence for the config path (most explicit/ephemeral first):

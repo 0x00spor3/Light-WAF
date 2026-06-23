@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! The corpus itself: per-module case tables (Fase 7 / Pilastro 1).
 //!
 //! Each submodule exposes a `pub static CASES: &[Case]`. [`all`] concatenates them
@@ -9,6 +6,7 @@
 
 use crate::Case;
 
+pub mod graphql;
 pub mod header_injection;
 pub mod ldap;
 pub mod lfi_rfi;
@@ -42,6 +40,7 @@ pub static MODULE_TABLES: &[&[Case]] = &[
     xxe::CASES,
     header_injection::CASES,
     request_smuggling::CASES,
+    graphql::CASES,
 ];
 
 /// Every case in the corpus, flattened.

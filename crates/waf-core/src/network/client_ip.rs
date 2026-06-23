@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Secure resolution of the real client IP behind trusted proxies.
 //!
 //! A L7 WAF almost always sits behind an LB/CDN/TLS-terminator, so the peer

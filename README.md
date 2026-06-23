@@ -25,6 +25,7 @@ Goals: *light* (few dependencies), *fast* (< 1 ms p99 on the common path), *modu
 | Path traversal | request_line | path + query/cookie/body |
 | Header injection (CRLF) | path + headers/query/cookie/body | field-aware (per-rule scope); CRLF smuggled in the URL path |
 | Request smuggling (CL/TE) | connection | structural framing validation → 400 |
+| GraphQL (structural) | body (JSON / `application/graphql` / GET `?query=`) | DoS/abuse caps on the operation shape — depth / aliases / fields / directives / batch → 400, introspection → 403; opt-in per endpoint |
 | Rate limiting L7 | connection | token bucket per resolved IP |
 
 Plus: anti-evasion normalization (double-encoding-aware percent-decode + NFKC +

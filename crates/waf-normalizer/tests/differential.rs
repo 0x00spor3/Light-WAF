@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Differential canonicalization — Fase 8, smoke (target DEC 2 #1: the custom
 //! percent-decoder / `canonicalize_value`, the security-critical anti-evasion code).
 //!

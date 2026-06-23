@@ -73,3 +73,18 @@ ssi               = { enabled = true }
 xxe               = { enabled = true }   # keep on if any endpoint accepts XML
 header_injection  = { enabled = true }
 request_smuggling = { enabled = true }
+
+# GraphQL structural protections (Phase 11) — a STRUCTURAL control (like
+# request_smuggling), not content-inspection: it enforces DoS/abuse caps on the SHAPE
+# of the GraphQL operation(s) (depth / aliases / fields / directives / batch) + an
+# introspection policy. Only requests to `paths` (JSON / GET `?query=`) or an
+# `application/graphql` body are inspected. Tune the caps for YOUR schema.
+[modules.graphql]
+enabled             = true
+paths               = ["/graphql"]
+max_depth           = 15            # max selection-set nesting (paren-aware)
+max_aliases         = 30            # alias-bomb cap
+max_fields          = 1000          # complexity proxy (selection count)
+max_directives      = 50
+max_batch           = 10            # max operations in one batched request
+block_introspection = false         # set true to block __schema/__type (→ 403) in prod

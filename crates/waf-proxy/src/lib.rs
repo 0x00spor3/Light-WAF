@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 pub mod config;
 
 use std::convert::Infallible;
@@ -27,7 +24,8 @@ use waf_core::{
     WafModule,
 };
 use waf_detection::{
-    header_injection::HeaderInjectionModule, ldap::LdapModule, lfi_rfi::LfiRfiModule,
+    graphql::GraphqlModule, header_injection::HeaderInjectionModule, ldap::LdapModule,
+    lfi_rfi::LfiRfiModule,
     mail::MailModule, nosql::NosqlModule, path_traversal::PathTraversalModule,
     rate_limit::{RateLimitModule, RateLimitState},
     rce::RceModule, request_smuggling::RequestSmugglingModule, scanner::ScannerModule,
@@ -557,6 +555,9 @@ fn build_modules(config: &Config, rl_state: &RateLimitState) -> Vec<Box<dyn WafM
     }
     if config.modules.header_injection.enabled {
         modules.push(Box::new(HeaderInjectionModule::new()));
+    }
+    if config.modules.graphql.enabled {
+        modules.push(Box::new(GraphqlModule::new()));
     }
     modules
 }

@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Smoke test for the corpus boundaries (Fase 7 / Pilastro 1, step 3).
 //!
 //! Two cases only — one malicious that must trigger, one benign that must not —

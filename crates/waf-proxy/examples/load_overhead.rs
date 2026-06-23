@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Fase 9 / (c) — e2e load-overhead smoke: WAF-in-path vs passthrough delta.
 //! `cargo run --release -p waf-proxy --example load_overhead`.
 //!

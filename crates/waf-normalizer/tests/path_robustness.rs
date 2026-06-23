@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Path normalization robustness — Fase 8, target DEC 2 #3 (`normalize_path` /
 //! `resolve_path`: decode + NFKC + null-strip + lowercase + `..`/`//` resolution).
 //!

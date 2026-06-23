@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! SQLi corpus cases. Field coverage: query + cookies + body (form/json).
 //! Rules (paranoia): union-select 1, tautology-or 1, stacked-query 1,
 //! time-based 1, tautology-and 2, quote-comment 2, cast-convert 3, hex-literal 3.

@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Multipart robustness — Fase 8, target DEC 2 #2 (the custom binary parser:
 //! `parse_multipart` / `find_bytes` / `parse_part_headers`, byte-indexed with state).
 //!

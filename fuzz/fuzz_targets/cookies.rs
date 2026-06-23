@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 #![no_main]
 //! Fuzz target for cookie parsing (DEC 2 #6): `parse_cookies_limited` (split `;`,
 //! first `=`, OWS-trim, `max_cookies`). libFuzzer + ASan/UBSan hunt for

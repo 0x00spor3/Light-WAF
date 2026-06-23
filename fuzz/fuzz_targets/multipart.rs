@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 #![no_main]
 //! Fuzz target for the custom binary multipart parser (DEC 2 #2): `parse_multipart`
 //! / `find_bytes` / `parse_part_headers`. libFuzzer + ASan/UBSan + the `-timeout`

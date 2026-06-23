@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! XSS corpus cases. Field coverage: query + cookies + body.
 //! Rules (paranoia): script-tag 1, javascript-proto 1, event-handler 1,
 //! dangerous-tag 2, eval 2, document-cookie 2, vbscript-proto 3, data-html-uri 3,
@@ -153,6 +150,36 @@ pub static CASES: &[Case] = &[
         rules: &["xss-event-handler"],
         desc: "WIRE pcap L1220: JSON backslash-u svg/onload XSS — JSON leaf never canonicalized \
                (single percent-decode would catch it; serde unescape alone is not enough)",
+    },
+    // ── Phase-11 Step-0: raw body (application/graphql) canonicalization ──────────
+    // A raw body (any content-type the parser does not structure) is inspected RAW by
+    // body_str_values; it never went through canonicalize_value, so a percent-encoded
+    // payload bypassed (Step-0 probe: `application/graphql` `%3Cscript%3E` → score 0).
+    // The §6 raw-body fix now pushes the canonical form into the derived channel.
+    Case {
+        id: "xss-graphql-raw-body-encoded",
+        module: Module::Xss,
+        field: Field::RawBody {
+            content_type: "application/graphql",
+            body: "query{user(name:\"%3Cscript%3Ealert(1)%3C/script%3E\"){id}}",
+        },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["xss-script-tag"],
+        desc: "percent-encoded XSS in an application/graphql (raw) body — closed by the §6 \
+               raw-body canonicalization (Phase-11 Step-0)",
+    },
+    Case {
+        id: "xss-benign-graphql-raw-body",
+        module: Module::Xss,
+        field: Field::RawBody {
+            content_type: "application/graphql",
+            body: "query{user(id:42){id name email}}",
+        },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "an ordinary GraphQL query in a raw body must stay Clean (raw-body FP guard)",
     },
     // ── documented limits (need §6 HTML normalization — out of 10b rules-only) ───
     // ── §6-D1: HTML-entity (evasion) decoding — now CAUGHT via the derived channel ──

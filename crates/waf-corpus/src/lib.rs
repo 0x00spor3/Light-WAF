@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Validation corpus for the WAF (Fase 7 / Pilastro 1).
 //!
 //! A single, versioned, reproducible set of cases — malicious (must trigger) and
@@ -75,6 +72,7 @@ pub enum Module {
     Xxe,
     HeaderInjection,
     RequestSmuggling,
+    Graphql,
 }
 
 impl Module {
@@ -97,6 +95,7 @@ impl Module {
             Module::Xxe => "xxe",
             Module::HeaderInjection => "header_injection",
             Module::RequestSmuggling => "request_smuggling",
+            Module::Graphql => "graphql",
         }
     }
 }
@@ -115,6 +114,16 @@ pub enum Field {
     FormBody(&'static str),
     /// Raw JSON body text.
     JsonBody(&'static str),
+    /// Raw POST body with an explicit Content-Type the parser does NOT structure
+    /// (e.g. `application/graphql`) → `ParsedBody::Raw`. Exercises the raw-body
+    /// canonicalization channel (Phase-11 transport coverage).
+    RawBody { content_type: &'static str, body: &'static str },
+    /// POST to a specific `path` with an explicit Content-Type and body — for cases
+    /// that depend on the request path (e.g. GraphQL endpoint gating). (Phase 11.)
+    Post { path: &'static str, content_type: &'static str, body: &'static str },
+    /// GET to a specific `path` with a raw query string — for path-dependent GET cases
+    /// (e.g. GraphQL over GET `?query=`). (Phase 11.)
+    Get { path: &'static str, query: &'static str },
     /// A single `multipart/form-data` part. The runner assembles the raw multipart
     /// body (fixed boundary) from the form field `name`, an optional `filename`
     /// and the part `content`, so field-coverage cases can target the name /
@@ -150,6 +159,7 @@ pub enum Expect {
     ///   oracle FLIPS expectation: it must now trigger, or the build fails.
     /// - `None` — a permanent documented limit (e.g. an encoding §6 deliberately does
     ///   not handle). Never expected to close.
+    ///
     /// Either way, a gap that fires *ahead* of its phase is a good regression to promote.
     ExpectedMiss { until_phase: Option<&'static str> },
 }

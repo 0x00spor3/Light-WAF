@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Header-injection (CRLF / response-splitting) corpus cases. Field-aware: rules
 //! carry a scope (All / NonBody / HostHeaders / Body). The live surface is CRLF
 //! percent-encoded in query/body params (hyper rejects raw CR/LF in headers), in the

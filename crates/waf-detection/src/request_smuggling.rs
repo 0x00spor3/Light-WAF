@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! HTTP request-smuggling defence (Fase 6 / Pillar 4).
 //!
 //! This is NOT content-inspection: it validates HTTP **framing** — how the

@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! XML External Entity (XXE) injection corpus cases (Fase 10b). Field: query
 //! (the value round-trips the XML verbatim — `&`→`%26`→`&`, first-`=` split).
 //! Rules (paranoia): xxe-entity-declaration 1, xxe-doctype-external 1,

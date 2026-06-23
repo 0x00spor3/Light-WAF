@@ -108,3 +108,18 @@ enabled = true
 # Default true: bassissimo falso-positivo (scatta solo su framing illegale/ambiguo).
 [modules.request_smuggling]
 enabled = true
+
+# Protezioni STRUTTURALI GraphQL (Fase 11) — come request_smuggling, NON content-inspection:
+# cap DoS/abuse sulla FORMA dell'operazione GraphQL (depth/alias/field/directive/batch) +
+# policy introspection, via parse lessicale. DEFAULT OFF: endpoint-specifico, i cap vanno
+# tarati per app. Ispeziona JSON `query`/GET `?query=` solo sui `paths`, e ogni body
+# `application/graphql`.
+[modules.graphql]
+enabled             = false
+paths               = ["/graphql"]
+max_depth           = 15            # max nesting del selection-set (paren-aware)
+max_aliases         = 30            # cap alias-bomb
+max_fields          = 1000          # proxy di complessità (conteggio selezioni)
+max_directives      = 50
+max_batch           = 10            # max operazioni in una richiesta batch
+block_introspection = false         # blocca __schema/__type → 403

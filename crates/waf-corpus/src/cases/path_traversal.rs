@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Path-traversal corpus cases. Fields inspected: normalized.path, query,
 //! cookies, body. `../` survives on query/body (the normalizer resolves it away
 //! on the path); sensitive targets are detected on the resolved path.

@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 use unicode_normalization::UnicodeNormalization;
 
 use waf_core::LimitsConfig;
@@ -471,6 +468,7 @@ pub fn derive_variants(value: &str) -> Vec<String> {
 ///     from `raw` (when unchanged, `body_str_values` already inspects the raw leaf, so
 ///     pushing would be redundant — `all_matches` dedups by rule anyway);
 ///   - base64 expansion of the canonical.
+///
 /// Both stages share the ONE [`PIPELINE_CAP`] budget — no new cap (same invariant as
 /// the overlong/base64 channels). Recursion across nesting levels is automatic: the
 /// caller iterates EVERY flattened leaf (`flatten_json` descends objects + arrays).
@@ -568,6 +566,9 @@ fn resolve_path(path: &str) -> String {
     out
 }
 
+/// Parsed query result: `(params, double_encoding_detected, derived_decoded)`.
+pub type ParsedQuery = (Vec<(String, String)>, bool, Vec<String>);
+
 /// Parse a query string into decoded key-value pairs (`+` treated as space).
 ///
 /// Values are fully canonicalized (percent + overlong fixpoint + NFKC). Also returns
@@ -576,7 +577,7 @@ fn resolve_path(path: &str) -> String {
 pub fn parse_query(
     query: &str,
     limits: &LimitsConfig,
-) -> Result<(Vec<(String, String)>, bool, Vec<String>), NormalizationError> {
+) -> Result<ParsedQuery, NormalizationError> {
     let mut params = Vec::new();
     let mut double_enc = false;
     let mut derived = Vec::new();

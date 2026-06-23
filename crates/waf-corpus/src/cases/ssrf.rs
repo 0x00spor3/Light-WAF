@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! SSRF corpus cases. Field coverage: query + cookies + body. Detects the SSRF
 //! *target* (metadata IP/host, SSRF-specific schemes, loopback/private/obfuscated
 //! IPs), not bare http/https/ftp/file (those are RFI/LFI). Benign cases avoid

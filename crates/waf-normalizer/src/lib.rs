@@ -1,7 +1,5 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 pub mod body;
+pub mod graphql;
 pub mod url;
 
 use waf_core::{LimitsConfig, RequestContext};
@@ -160,6 +158,25 @@ impl Normalizer {
             waf_core::ParsedBody::JsonFlattened(pairs) => {
                 for (_, v) in pairs {
                     derived.extend(url::json_leaf_derived(v));
+                }
+            }
+            // A `Raw` body (e.g. `application/graphql`, or any content-type the parser does
+            // not structure) is inspected RAW by `body_str_values` — it never goes through
+            // `canonicalize_value`, unlike form/multipart (canonicalized at parse) and JSON
+            // leaves (`json_leaf_derived`). So a percent/overlong-encoded payload in a raw
+            // body bypasses (Phase-11 Step-0 probe: `application/graphql` `%3Cscript%3E`
+            // reached score 0). Push the canonical form into the derived channel — same
+            // decode-then-match-then-discard pattern as the JSON leaf — plus the full
+            // transform set. The canonical itself is pushed only when it DIFFERS from the raw
+            // (when equal, `body_str_values` already inspects it; the guard also skips the
+            // clone for un-encoded / binary bodies).
+            waf_core::ParsedBody::Raw(b) => {
+                if let Ok(raw) = std::str::from_utf8(b) {
+                    let canonical = url::canonicalize_value(raw, false).0;
+                    derived.extend(url::derive_variants(&canonical));
+                    if canonical != raw {
+                        derived.push(canonical);
+                    }
                 }
             }
             other => {

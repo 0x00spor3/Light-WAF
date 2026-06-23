@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Threshold-tuning sweep (Fase 7 / Pilastro 2). On-demand, exploratory.
 //! `cargo run -p waf-corpus --example tuning`.
 //!

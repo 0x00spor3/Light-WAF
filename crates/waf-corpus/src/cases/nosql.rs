@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! NoSQL injection corpus cases (Fase 10a). Field: query.
 //! Rules (paranoia): nosql-where-js 1, nosql-shell-method 1 (Critical),
 //! nosql-js-timing 2, nosql-operator 2 (Warning, accumulate). Source: gotestwaf

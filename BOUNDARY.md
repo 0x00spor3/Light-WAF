@@ -87,10 +87,17 @@ Scale, governance, compliance, and team operability.
 These are **datapath parsing/inspection surfaces**, like multipart or JSON: they are
 *detection* capabilities, not *scale*. Keeping them out of the core would yield a WAF
 unable to inspect modern traffic (a "gutted core") and would push into closed-source
-exactly the part that requires inspectable trust. They flow through `canonicalize_value`,
-the prefilter, and the scoring in §1.4 like any other inspected field.
-> *Associated enterprise value:* premium GraphQL signatures (curated depth/complexity
-> abuse), managed schema-enforcement, dashboard drill-down → §2.
+exactly the part that requires inspectable trust. Argument/variable injection flows
+through `canonicalize_value` + the derived channel + scoring (§1.4) like any other
+inspected field; the **structural** GraphQL protections run as a structural module
+(see below), outside the content prefilter.
+> **GraphQL — IMPLEMENTED (Phase 11), `OPEN`.** The core ships the **structural caps** — query
+> depth (paren-aware), alias/field/directive counts, batch size, and an introspection policy —
+> as a `structural()` `Phase::Body` module (`[modules.graphql]`, default off). gRPC is **not yet
+> implemented** (Phase 12; needs HTTP/2, absent today) but stays `OPEN` by the same reasoning.
+> *Associated enterprise value:* premium GraphQL signatures (curated depth/complexity abuse),
+> **managed schema-enforcement** (validating queries against the app's real schema = schema
+> management/governance), dashboard drill-down → §2.
 
 ### 3.2 HTTPS / TLS → `SPLIT`
 - **Basic TLS termination** (accepting `https://`, cert from file) → `OPEN`, for

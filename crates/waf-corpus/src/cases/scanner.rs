@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: Apache-2.0
-
 //! Automated-scanner / security-tool User-Agent corpus cases (Fase 10a). Field:
 //! the `User-Agent` request header. Rules (paranoia): scanner-tool-ua 1 (Critical),
 //! scanner-oob-interaction 1 (Critical). Source: gotestwaf `community-user-agent`
