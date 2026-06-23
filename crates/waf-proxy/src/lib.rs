@@ -1,4 +1,5 @@
 pub mod config;
+pub mod tls;
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -10,13 +11,14 @@ use std::time::SystemTime;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
-use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use tokio::net::TcpListener;
+use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
 use waf_core::{
@@ -162,6 +164,10 @@ struct StaticState {
     rl_state: RateLimitState,
     current: RwLock<Arc<Reloadable>>,
     mode: HandlerMode,
+    /// Inbound TLS terminator (Phase 12). `Some` ⇒ the listener serves ONLY TLS (h1/h2
+    /// by ALPN); `None` ⇒ cleartext (h1 + h2c). Built once at bind; a required-but-broken
+    /// cert fails the bind, so there is no runtime path that downgrades to cleartext.
+    tls_acceptor: Option<TlsAcceptor>,
 }
 
 /// Which request handler the accept loop dispatches to. `Inspect` is the ONLY mode a
@@ -643,6 +649,14 @@ impl Proxy {
         let client: Client<HttpConnector, HyperBoxBody> =
             Client::builder(TokioExecutor::new()).build(HttpConnector::new());
 
+        // Build the TLS terminator BEFORE serving: a required cert that cannot be loaded
+        // is a fatal boot error (fail-closed), never a silent downgrade to cleartext.
+        let tls_acceptor = tls::acceptor_from_config(&config.tls)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        if tls_acceptor.is_some() {
+            info!(listen = %listen_addr, alpn = ?config.tls.alpn, "TLS termination enabled");
+        }
+
         // The rate-limiter bucket store lives here (process lifetime), shared into
         // every (re)built pipeline so reloads never reset the throttle.
         let rl_state = RateLimitState::new();
@@ -656,6 +670,7 @@ impl Proxy {
                 rl_state,
                 current: RwLock::new(Arc::new(reloadable)),
                 mode,
+                tls_acceptor,
             }),
         })
     }
@@ -677,16 +692,44 @@ impl Proxy {
             let state = Arc::clone(&self.state);
 
             tokio::spawn(async move {
-                let io = TokioIo::new(stream);
-                let svc = service_fn(move |req| {
-                    let state = Arc::clone(&state);
-                    handle(req, state, client_addr)
-                });
-                if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
-                    warn!(error = %e, client_ip = %client_addr.ip(), "connection error");
+                // When TLS is enabled, complete the handshake first; a handshake error is
+                // logged and the connection dropped (non-fatal — the listener stays up).
+                // Then serve h1/h2 (TLS by ALPN, cleartext by preface) via the auto Builder.
+                // The acceptor is Arc-backed → cheap clone, frees `state` to move into serve.
+                match state.tls_acceptor.clone() {
+                    Some(acceptor) => match acceptor.accept(stream).await {
+                        Ok(tls_stream) => {
+                            serve_connection(TokioIo::new(tls_stream), state, client_addr).await;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, client_ip = %client_addr.ip(), "TLS handshake error");
+                        }
+                    },
+                    None => {
+                        serve_connection(TokioIo::new(stream), state, client_addr).await;
+                    }
                 }
             });
         }
+    }
+}
+
+/// Serve one connection with the auto (h1/h2) builder. Generic over the transport so the
+/// SAME service runs over a plain `TcpStream` or a `TlsStream` — the protocol negotiation
+/// (h1 vs h2/h2c) is entirely inside `auto::Builder`, and `handle()` stays protocol-neutral.
+async fn serve_connection<I>(io: I, state: Arc<StaticState>, client_addr: SocketAddr)
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+{
+    let svc = service_fn(move |req| {
+        let state = Arc::clone(&state);
+        handle(req, state, client_addr)
+    });
+    if let Err(e) = auto::Builder::new(TokioExecutor::new())
+        .serve_connection(io, svc)
+        .await
+    {
+        warn!(error = %e, client_ip = %client_addr.ip(), "connection error");
     }
 }
 

@@ -31,6 +31,7 @@ fn config_with_paranoia(paranoia_level: u8) -> Config {
         rate_limit: Default::default(),
         network: Default::default(),
         resilience: Default::default(),
+        tls: Default::default(),
     }
 }
 

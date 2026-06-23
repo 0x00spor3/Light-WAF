@@ -70,6 +70,7 @@ fn cfg_full(mode: WafMode, threshold: u32, severity_scores: SeverityScores) -> C
         rate_limit: Default::default(),
         network: Default::default(),
         resilience: Default::default(),
+        tls: Default::default(),
     }
 }
 

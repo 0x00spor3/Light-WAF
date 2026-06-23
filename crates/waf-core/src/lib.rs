@@ -102,6 +102,52 @@ pub struct Config {
     /// Per-scenario behaviour when the WAF itself is in trouble.
     #[serde(default)]
     pub resilience: ResilienceConfig,
+    /// Inbound TLS termination (Phase 12). Default off → the listener stays cleartext,
+    /// exactly as before. Basic, cert-from-file termination is core (`BOUNDARY.md` §3.2);
+    /// cert management at scale (ACME/rotation/mTLS-PKI) is enterprise.
+    #[serde(default)]
+    pub tls: TlsConfig,
+}
+
+// ── TLS termination (Phase 12) ─────────────────────────────────────────────────
+
+/// Inbound TLS termination configuration. **Basic termination, cert from file** is the
+/// OPEN core surface (`BOUNDARY.md` §3.2): single-node self-sufficiency. ACME/rotation/
+/// multi-node certs / mTLS-with-managed-PKI are ENTERPRISE and plug in behind the
+/// `TlsCertSource` seam (see `waf-proxy::tls`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    /// Default OFF: the listener serves cleartext (h1 + h2c). When on, the listener
+    /// serves ONLY TLS — there is **no cleartext fallback** on the same port (a required
+    /// TLS that fails to build is a fatal boot error, never a silent downgrade).
+    #[serde(default)]
+    pub enabled: bool,
+    /// PEM file with the server certificate chain (leaf first).
+    #[serde(default)]
+    pub cert_path: String,
+    /// PEM file with the private key (PKCS#8 / PKCS#1 / SEC1).
+    #[serde(default)]
+    pub key_path: String,
+    /// ALPN protocols advertised, in preference order. Default `["h2","http/1.1"]` so an
+    /// h2-capable client (e.g. gRPC-over-TLS, Phase 13) negotiates HTTP/2 while an
+    /// h1-only client falls back cleanly.
+    #[serde(default = "default_tls_alpn")]
+    pub alpn: Vec<String>,
+}
+
+fn default_tls_alpn() -> Vec<String> {
+    vec!["h2".to_string(), "http/1.1".to_string()]
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: String::new(),
+            key_path: String::new(),
+            alpn: default_tls_alpn(),
+        }
+    }
 }
 
 // ── Resilience (fail-open / fail-closed, per scenario) ─────────────────────────
@@ -227,6 +273,8 @@ pub enum ConfigError {
     EmptyClientIpHeader,
     ResilienceTimeoutZero,
     GraphqlCapZero(&'static str),
+    TlsPathEmpty(&'static str),
+    TlsAlpnInvalid,
 }
 
 impl std::fmt::Display for ConfigError {
@@ -256,6 +304,10 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "resilience.upstream_timeout_ms must be >= 1"),
             Self::GraphqlCapZero(name) =>
                 write!(f, "modules.graphql.{name} must be >= 1 when the graphql module is enabled"),
+            Self::TlsPathEmpty(name) =>
+                write!(f, "tls.{name} must be set (a PEM file path) when tls is enabled"),
+            Self::TlsAlpnInvalid =>
+                write!(f, "tls.alpn must be a non-empty list of non-empty protocol ids (e.g. \"h2\", \"http/1.1\")"),
         }
     }
 }
@@ -347,6 +399,21 @@ impl Config {
         // Resilience.
         if self.resilience.upstream_timeout_ms == 0 {
             return Err(ConfigError::ResilienceTimeoutZero);
+        }
+
+        // TLS: paths/ALPN are only meaningful when enabled. File existence + cert/key
+        // parsing happen at bind time (I/O, fs-free validate stays reload-safe); a
+        // required-but-unreadable cert is a fatal boot error (see waf-proxy::tls).
+        if self.tls.enabled {
+            if self.tls.cert_path.trim().is_empty() {
+                return Err(ConfigError::TlsPathEmpty("cert_path"));
+            }
+            if self.tls.key_path.trim().is_empty() {
+                return Err(ConfigError::TlsPathEmpty("key_path"));
+            }
+            if self.tls.alpn.is_empty() || self.tls.alpn.iter().any(|p| p.trim().is_empty()) {
+                return Err(ConfigError::TlsAlpnInvalid);
+            }
         }
 
         // GraphQL caps: a 0 cap would reject every query → only meaningful when enabled.
@@ -783,6 +850,7 @@ mod config_validation_tests {
             rate_limit: RateLimitConfig::default(),
             network: NetworkConfig::default(),
             resilience: ResilienceConfig::default(),
+            tls: TlsConfig::default(),
         }
     }
 
@@ -812,6 +880,35 @@ mod config_validation_tests {
         let mut c = valid();
         c.waf.block_threshold = 0;
         assert_eq!(c.validate(), Err(ConfigError::BlockThresholdZero));
+    }
+
+    #[test]
+    fn tls_disabled_ignores_empty_paths() {
+        // Default TLS is off → empty paths must not trip validation (cleartext deploy).
+        assert!(valid().validate().is_ok());
+    }
+
+    #[test]
+    fn tls_enabled_requires_cert_and_key_paths() {
+        let mut c = valid();
+        c.tls.enabled = true;
+        assert_eq!(c.validate(), Err(ConfigError::TlsPathEmpty("cert_path")));
+        c.tls.cert_path = "cert.pem".to_string();
+        assert_eq!(c.validate(), Err(ConfigError::TlsPathEmpty("key_path")));
+        c.tls.key_path = "key.pem".to_string();
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn tls_enabled_rejects_empty_alpn() {
+        let mut c = valid();
+        c.tls.enabled = true;
+        c.tls.cert_path = "cert.pem".to_string();
+        c.tls.key_path = "key.pem".to_string();
+        c.tls.alpn = vec![];
+        assert_eq!(c.validate(), Err(ConfigError::TlsAlpnInvalid));
+        c.tls.alpn = vec!["h2".to_string(), "  ".to_string()];
+        assert_eq!(c.validate(), Err(ConfigError::TlsAlpnInvalid));
     }
 
     #[test]

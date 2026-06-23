@@ -109,6 +109,7 @@ fn make_config(backend_addr: std::net::SocketAddr) -> Config {
         rate_limit: Default::default(),
         network: Default::default(),
         resilience: Default::default(),
+        tls: Default::default(),
     }
 }
 

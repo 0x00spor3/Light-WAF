@@ -17,12 +17,18 @@ waf-normalizer = { path = "../waf-normalizer" }
 waf-pipeline = { path = "../waf-pipeline" }
 waf-detection = { path = "../waf-detection" }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "signal"] }
-hyper = { version = "1", features = ["http1", "server", "client"] }
-hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
+hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1", "http2", "server-auto"] }
 http-body-util = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 toml = "0.8"
+# TLS termination (Fase 12). ring provider (no aws-lc-rs/cmake); detection stays serde-free,
+# this is the ONE legitimate exception to "hand-roll the parser" — TLS is never hand-rolled.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pemfile = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "io-util"] }
+# Self-signed certs for the TLS test matrix (Fase 12, Step 5).
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }

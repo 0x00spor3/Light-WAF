@@ -37,6 +37,7 @@ fn config(requests: u32, window: u64, burst: u32, action: RateLimitAction, mode:
         },
         network: Default::default(),
         resilience: Default::default(),
+        tls: Default::default(),
     }
 }
 

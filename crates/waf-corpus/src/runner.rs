@@ -317,6 +317,7 @@ fn corpus_config(paranoia: u8, severity: SeverityScores) -> Config {
         rate_limit: RateLimitConfig::default(), // enabled = false → neutralized
         network: NetworkConfig::default(),
         resilience: ResilienceConfig::default(),
+        tls: Default::default(),
     }
 }
 

@@ -33,8 +33,10 @@ pipeline-wide overlong-collapse + **multi-transform derived channel**
 `decode-then-match-then-discard`: base64, evasion HTML-entity decode, mid-token
 tag-strip/control-strip, VBScript-concat de-obf — also composed over the base64 variants),
 configurable cumulative anomaly scoring, paranoia levels (PL1–4), external config with hot
-reload (SIGHUP, Unix), trusted-proxy client-IP resolution, and a **fast-path** that skips
-inspection on provably benign traffic (equivalence tested).
+reload (SIGHUP, Unix), trusted-proxy client-IP resolution, **TLS termination** (rustls,
+cert-from-file; one port serves HTTP/1.1 **and** HTTP/2 via ALPN/`auto`; opt-in `[tls]`,
+fail-closed — no cleartext downgrade), and a **fast-path** that skips inspection on provably
+benign traffic (equivalence tested).
 
 ---
 

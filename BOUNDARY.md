@@ -101,11 +101,13 @@ inspected field; the **structural** GraphQL protections run as a structural modu
 
 ### 3.2 HTTPS / TLS → `SPLIT`
 - **Basic TLS termination** (accepting `https://`, cert from file) → `OPEN`, for
-  single-node self-sufficiency. *(Note: `ARCHITECTURE.md` currently classifies this as
-  a non-goal, delegated to the front proxy; if/when implemented, it is core.)*
+  single-node self-sufficiency. **IMPLEMENTED (Phase 12)**: rustls cert-from-file on the
+  listener, ALPN-negotiated h1/h2 via the `auto` builder, behind the `TlsCertSource` seam
+  (`waf-proxy::tls`); config `[tls]`, default off. See `ARCHITECTURE.md` §9.
 - **Certificate management at scale** (automatic ACME/Let's Encrypt, rotation,
   centralized multi-node certs, **mTLS with managed PKI**) → `ENTERPRISE`
-  (governance/scale).
+  (governance/scale). These plug in as enterprise implementations of the **same**
+  `TlsCertSource` trait — the §4 pattern (the core ships only `FileCertSource`).
 
 ### 3.3 Gray zone (cut-line summary)
 

@@ -2,6 +2,18 @@
 listen = "0.0.0.0:8080"
 backend = "http://127.0.0.1:8000"
 
+# Terminazione TLS sul listener (Fase 12). DEFAULT OFF → il listener serve in chiaro
+# (h1 + h2c), esattamente come prima. Quando enabled=true il listener serve SOLO TLS
+# (h1/h2 negoziati via ALPN); NIENTE fallback a chiaro sulla stessa porta. Un cert
+# illeggibile con enabled=true = errore FATALE al boot (fail-closed, niente downgrade).
+# Termination base, cert-da-file = core/OPEN (BOUNDARY §3.2). ACME/rotation/mTLS-PKI =
+# enterprise (stesso seam TlsCertSource). Vedi ARCHITECTURE §9.
+[tls]
+enabled   = false
+cert_path = "/etc/waf/tls/cert.pem"   # catena PEM (leaf per primo)
+key_path  = "/etc/waf/tls/key.pem"    # chiave PEM (PKCS#8 / PKCS#1 / SEC1)
+alpn      = ["h2", "http/1.1"]         # h2-ready (gRPC-over-TLS futuro); h1-only ripiega a http/1.1
+
 [waf]
 mode = "blocking"
 block_threshold = 5

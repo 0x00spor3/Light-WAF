@@ -22,7 +22,23 @@ cargo run -p waf-proxy -- --config examples/balanced.toml
 | File | Use case |
 |---|---|
 | [`behind-cdn.toml`](behind-cdn.toml) | The WAF sits **behind a CDN / LB / reverse proxy** (Cloudflare, ALB, nginx). Enables safe client-IP resolution from `X-Forwarded-For` (fail-safe: trusted only when the peer is in `trusted_proxies`). Replace the placeholder CIDRs with your proxy's real ranges. |
-| [`api-json.toml`](api-json.toml) | A **JSON / REST API backend**. Tunes the defensive limits for API-shaped traffic (bigger bodies, deeper nesting, more fields). A JSON-transport GraphQL query is inspected the same way; gRPC is not supported (needs HTTP/2). |
+| [`api-json.toml`](api-json.toml) | A **JSON / REST API backend**. Tunes the defensive limits for API-shaped traffic (bigger bodies, deeper nesting, more fields). A JSON-transport GraphQL query is inspected the same way. HTTP/2 is served (Phase 12); gRPC *content* inspection (protobuf de-framing) is a later phase. |
+
+## TLS termination (`[tls]`)
+
+Off by default — terminate TLS upstream (CDN/LB) and run cleartext, or terminate at the WAF:
+
+```toml
+[tls]
+enabled   = true
+cert_path = "/etc/waf/tls/cert.pem"   # PEM chain, leaf first
+key_path  = "/etc/waf/tls/key.pem"    # PEM key (PKCS#8 / PKCS#1 / SEC1)
+alpn      = ["h2", "http/1.1"]         # one port serves HTTP/2 and HTTP/1.1 by ALPN
+```
+
+When enabled the listener serves **only** TLS — there is no cleartext fallback, and an
+unreadable cert is a fatal boot error (fail-closed). Cert management at scale (ACME, rotation,
+mTLS) is an enterprise concern; the OPEN core reads a cert from file.
 
 ## How the knobs map to aggressiveness
 

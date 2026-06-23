@@ -25,6 +25,7 @@ fn config(mode: WafMode) -> Config {
         rate_limit: Default::default(),
         network: Default::default(),
         resilience: Default::default(),
+        tls: Default::default(),
     }
 }
 

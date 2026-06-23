@@ -17,7 +17,9 @@ the following non-functional requirements:
 - **Secure by design**: explicit fail-open / fail-closed handling.
 
 ### Non-goals (for now)
-- Advanced TLS termination / certificate management (delegated to the front proxy).
+- **Certificate management at scale** (ACME/Let's Encrypt, rotation, multi-node certs, mTLS with
+  managed PKI) → enterprise (`BOUNDARY.md` §3.2). NB: **basic, cert-from-file TLS termination** IS
+  implemented and is **core** (Phase 12, §11) — see §9 "TLS termination".
 - L3/L4 protections (volumetric DDoS → handed to network infrastructure).
 - Distributed multi-node WAF with shared state (future phase).
 
@@ -543,6 +545,21 @@ share the §7 scoring scheme (severities from `[waf.severity_scores]`, filtered 
 >   by `body_str_values` → its percent-decoded form was not inspected (encoded-injection bypass).
 >   The body-derived collector now pushes the **Raw-body canonical** into `derived_decoded` (like
 >   `json_leaf_derived`).
+> - **11-bis (gotestwaf re-capture, wire-driven)** — two introspection bypasses, **two distinct
+>   causes/layers**:
+>   - **(a) CT-less §6 body-parsing hole** (generic, not GraphQL-specific): a body with **no
+>     `Content-Type`** fell through to `ParsedBody::Raw` (JSON is parsed only for `application/json`)
+>     → the **per-leaf** §6 channel (`json_leaf_derived`) was skipped, leaving only the whole-string
+>     canonicalize. Result: an **encoded-in-leaf** injection (base64 / JSON `\u`) bypassed by simply
+>     dropping the CT (plaintext did not — the raw string is still inspected). Fix = **`parse_body`
+>     JSON sniff**: when the body looks like JSON (`{`/`[`) and parses, treat it as `application/json`
+>     (`body.rs::sniff_json`); else `Raw`; a depth error propagates (fail-closed). Benefits **all**
+>     modules.
+>   - **(b) GraphQL GET transport**: gotestwaf places the **whole JSON envelope** `{"query":"<doc>"}`
+>     in `?query=`, not a bare document → `graphql_lex` skips string contents and never sees
+>     `__schema` (depth ≈ 1). Fix = `unwrap_query_envelope` (in `waf-normalizer`, serde already a dep
+>     → detection stays serde-free): every *carrier* goes through **"envelope-or-raw"**
+>     (`operations()`→`expand()`).
 > - **Open/enterprise boundary** (`BOUNDARY.md` §3.1): the **structural caps** are core (OPEN);
 >   **schema-enforcement** (validating the query against the app's real schema → schema management
 >   = governance) stays **enterprise**.
@@ -716,6 +733,34 @@ Logic (the order **is** the security boundary):
 > Note: the `X-Forwarded-For` header the proxy **adds** toward the backend stays the **peer
 > addr** (a record of the actually-observed hop), distinct from the resolved IP used internally
 > for the key/log.
+
+### TLS termination (Phase 12)
+
+**Basic, cert-from-file** TLS termination on the listener — **core/OPEN** (`BOUNDARY.md` §3.2;
+single-node self-sufficiency). Config `[tls]` (default **off**): `enabled`, `cert_path`, `key_path`,
+`alpn` (default `["h2","http/1.1"]`).
+
+- **Library**: `rustls` (+ `tokio-rustls`, **ring** provider), no OpenSSL — the **only** legitimate
+  exception to the "hand-rolled parser" rule (TLS is never hand-rolled).
+- **Unified h1+h2 serving**: `run()` uses `hyper-util` `auto::Builder` → one port serves h1 and h2
+  (ALPN over TLS, preface over cleartext h2c). **`handle()` is UNCHANGED**: the `Request` is
+  protocol-neutral and `body.collect()` delivers the **same** buffered `Bytes` over h1 and h2
+  (invariant proven by the Step-0 probe). Inspection is therefore **protocol-agnostic** — bite test:
+  a SQLi over h2-over-TLS is blocked 403 just like over h1.
+- **ALPN h2-ready**: `["h2","http/1.1"]` negotiates h2 with a capable client and falls back to h1 with
+  an h1-only client (it does not force h2). Prerequisite for gRPC-over-TLS (next phase).
+- **§4 seam (`waf-proxy::tls`)**: `trait TlsCertSource` with the OPEN impl `FileCertSource` (PEM).
+  ACME/rotation/multi-node certs / **mTLS with managed PKI** are ENTERPRISE impls of the same trait
+  (mTLS is explicitly outside the core, `BOUNDARY.md` §3.2).
+- **No silent downgrade (fail-closed)**: with TLS enabled the listener serves **only** TLS. The
+  acceptor is built at `bind` and is **immutable** (not hot-reloadable, like `listen_addr` =
+  restart-required): there is no runtime path that downgrades to cleartext. `enabled=true` + an
+  unreadable cert is a **fatal boot error**. A per-connection **handshake** error is logged and the
+  connection dropped, **non-fatal** to the listener.
+- **HTTP/2 DoS posture (on record)**: h2 opens surfaces h1 lacks (max-concurrent-streams, control-frame
+  flood SETTINGS/PING/**RST = Rapid Reset, CVE-2023-44487**, HPACK). Phase 12 relies on **hyper/h2
+  defaults**; no knob exposed yet — a **conscious, declared** choice, possible future tuning (extends
+  the `[limits]` §6).
 
 ---
 
@@ -1089,6 +1134,38 @@ the equivalence oracle for the fast-path (Pillar 3).
     (`BOUNDARY.md` §3.1). **gRPC = Phase 12** (will need HTTP/2, absent today).
   - Re-gate: **validation 10/10, FP 0**, workspace green, clippy clean. GraphQL corpus: 5 DoS caps +
     introspection + 3 transports + path-gating + the paren-aware trap. **Phase 11 CLOSED.**
+  - **11-bis (gotestwaf re-capture, wire-driven)** — 4 introspection bypasses (2 payloads × 2
+    transports) analysed probe-first on the real path: REFUTED double-encoding (the fixpoint resolves
+    it) and module-off (it was ON). **Two distinct causes, separate accounting** (see §8 notes):
+    - **(a) CT-less §6 body-parsing hole**: a body with no `Content-Type` → `ParsedBody::Raw` → the
+      per-leaf §6 channel was skipped. Falsification matrix: **plaintext does not bypass**,
+      **encoded-in-leaf (base64 / JSON `\u`) does**. Fix = `body.rs::sniff_json` (sniff `{`/`[` →
+      `JsonFlattened`), benefiting **all** modules; it also closes the CT-less POST introspection.
+    - **(b) GraphQL transport gap**: a JSON envelope `{"query":…}` in the GET `?query=` →
+      `unwrap_query_envelope` + `operations()`→`expand()` (envelope-or-raw). serde stays confined to
+      `waf-normalizer`.
+    Re-gate validation 10/10 FP 0; locks: 9 `ctless_json` unit + 3 envelope unit + 6 integration
+    `waf-detection/tests/graphql.rs` + 4 corpus cases (2 with **verbatim pcap strings**). **Wire
+    confirmed 200→403.** Lesson: the final oracle is the **wire**; a body with no `Content-Type` is
+    not an edge case but an **evasion surface** (the CT is attacker-controlled).
+
+- **Phase 12 ✅** — **TLS termination** (basic, cert-from-file → **core/OPEN**, `BOUNDARY.md` §3.2). See
+  §9 "TLS termination" for detail. **Probe-first (Step 0)**: before touching the datapath, a throwaway
+  proved the **foundation invariant** `body h2 == body h1` at `handle()` (`body.collect()` is
+  protocol-agnostic) + ALPN h2 negotiates + the TLS toolchain builds on Windows (ring, no
+  aws-lc-rs/cmake) → "if the invariant holds, the rest is mechanical". Pieces:
+  - **rustls + tokio-rustls (ring) + rustls-pemfile**, no OpenSSL (the one legitimate exception to
+    no-hand-roll).
+  - **`auto::Builder` serving** (h1+h2/h2c on one port); `run()` → generic `serve_connection<I>`
+    (TcpStream | TlsStream); **`handle()` unchanged**.
+  - **config `[tls]`** (default off) + validate (`TlsPathEmpty`/`TlsAlpnInvalid`); **`TlsCertSource`
+    seam** + `FileCertSource` (§4: ACME/rotation/mTLS = enterprise).
+  - **fail-closed**: unreadable cert = fatal boot error; **no cleartext downgrade** (acceptor immutable
+    post-bind); per-conn handshake error non-fatal. **HTTP/2 DoS posture** on record (hyper/h2 defaults,
+    Rapid Reset CVE-2023-44487; no knob in P12).
+  - Re-gate: **validation 10/10**, workspace green, clippy `-D warnings` clean. Tests: matrix
+    `waf-proxy/tests/tls.rs` (4 protocols + 2 fail-safes + **bite SQLi-over-h2-TLS→403** + seam units) +
+    3 `[tls]` validation tests in waf-core. **gRPC = next phase** (de-framing + protobuf + h2 backend).
 
 ---
 
