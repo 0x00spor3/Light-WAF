@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Inbound TLS termination (Phase 12).
 //!
 //! **Basic, cert-from-file termination is OPEN core** (`BOUNDARY.md` §3.2): it makes a

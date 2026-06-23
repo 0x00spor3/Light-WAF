@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Test-only builders for [`RequestContext`], gated behind the `testkit` feature.
 //!
 //! These builders populate **raw** request fields (pre-normalization) plus stable

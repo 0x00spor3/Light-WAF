@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Fase 9 / DEC 4 — relative-regression GATE for the pinned inspection baseline.
 //!
 //! This is the always-green CI guard for inspection latency. It does NOT assert an

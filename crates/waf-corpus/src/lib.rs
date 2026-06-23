@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Validation corpus for the WAF (Fase 7 / Pilastro 1).
 //!
 //! A single, versioned, reproducible set of cases — malicious (must trigger) and

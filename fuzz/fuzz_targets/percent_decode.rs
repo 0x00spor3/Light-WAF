@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 #![no_main]
 //! Fuzz target for the highest-risk custom parser (DEC 2 #1): the percent-decoder
 //! and `canonicalize_value`. libFuzzer + ASan/UBSan hunt for panic, OOB, integer

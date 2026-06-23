@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! gRPC structural module — caps on the framed protobuf body. Builds binary gRPC bodies
 //! by hand and drives `GrpcModule::inspect` directly (the normalizer is exercised
 //! separately). The protobuf field CONTENT path (leaf → §6 → content modules) is NOT this

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Coverage report for the harvest (Fase 7 / Pilastro 1).
 //!
 //! Runs every case at the baseline paranoia level and prints, per module:

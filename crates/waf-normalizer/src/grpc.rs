@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Minimal gRPC framing + protobuf wire-format extractor (the 9th custom parser in this
 //! crate, fuzzed — see ARCHITECTURE §13). Two layers, one linear pass, never panics:
 //!

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! gRPC structural protections (gRPC phase).
 //!
 //! Like `graphql`/`request_smuggling`, this is a STRUCTURAL control, NOT content

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Full metrics report for the validation corpus (Fase 7 / Pilastro 1).
 //!
 //! Per-module recall / FP-rate (attributed to `case.module`) + aggregate, the real

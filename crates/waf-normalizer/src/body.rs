@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 use waf_core::{Bytes, LimitsConfig, MultipartField, ParsedBody};
 
 use crate::url::canonicalize_value;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! gRPC corpus cases. Two concerns, kept apart on purpose (the accounting paletto):
 //!   - **CONTENT** (§6): a SQLi smuggled inside a protobuf string field is extracted to the
 //!     derived channel and caught by the `sqli` module — credited to §6, NOT to gRPC.

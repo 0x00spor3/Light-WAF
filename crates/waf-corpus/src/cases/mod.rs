@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! The corpus itself: per-module case tables (Fase 7 / Pilastro 1).
 //!
 //! Each submodule exposes a `pub static CASES: &[Case]`. [`all`] concatenates them

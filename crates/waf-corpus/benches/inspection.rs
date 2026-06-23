@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Fase 9 / DEC 1 — microbench of the **isolated inspection path** (`enqueue→verdetto`).
 //!
 //! This is the number that depends ONLY on our code: the cost of running the content

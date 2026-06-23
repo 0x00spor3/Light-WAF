@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 use regex::RegexSet;
 use tracing::warn;
 use waf_core::{Config, Decision, Phase, RequestContext, ScoreItem, Severity, WafModule};

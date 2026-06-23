@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cookie parsing robustness — Fase 8, target DEC 2 #6 (`parse_cookies_limited`:
 //! split on `;` (RFC 6265), first `=`, OWS-trimmed, `max_cookies` enforced).
 //!

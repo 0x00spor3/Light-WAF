@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 #![no_main]
 //! Fuzz target for the GraphQL lexer (Phase 11): `graphql_lex` — the 8th custom
 //! parser. libFuzzer + ASan/UBSan hunt for panic/OOB/hang on hostile query text

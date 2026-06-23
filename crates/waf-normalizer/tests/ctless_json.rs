@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Regression for the §6 CT-less body-parsing hole (Fase 11-bis, fix "a"):
 //! a body whose Content-Type does NOT declare JSON but which IS a JSON envelope must
 //! be parsed like `application/json`, so the per-leaf canonicalization channel (§6)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! The case runner: build a fresh raw context, run the real pipeline exactly as
 //! the proxy does, and report what fired.
 //!

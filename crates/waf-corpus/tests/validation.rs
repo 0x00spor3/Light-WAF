@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Anti-regression validation suite (Fase 7 / Pilastro 1).
 //!
 //! Hard structural guards that must always hold (detection is frozen):

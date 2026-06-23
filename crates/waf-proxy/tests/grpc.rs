@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Phase-gRPC end-to-end through the REAL proxy: a unary h2c round-trip is forwarded with
 //! its trailers relayed BOTH ways (request trailer reaches the backend; the backend's
 //! `grpc-status` reaches the client), and a SQLi smuggled inside a protobuf field is

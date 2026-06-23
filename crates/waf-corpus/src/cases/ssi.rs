@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Server-Side Includes injection corpus cases (Fase 10b). Field: query.
 //! Rule (paranoia): ssi-directive 1 (Critical) — `<!--#<verb>`. Source: gotestwaf
 //! ss-include. Before this module the payloads only tripped sqli-quote-comment

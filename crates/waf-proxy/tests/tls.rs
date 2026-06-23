@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Phase 12 TLS termination — end-to-end matrix through the REAL proxy.
 //!
 //! Covers the protocol matrix (h1-cleartext is already covered by `integration.rs`):

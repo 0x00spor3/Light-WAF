@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! RCE / command-injection corpus cases. Field coverage: query + cookies + body.
 //! Rules (paranoia): cmd-substitution 1, chained-command 1, shell-path 1,
 //! reverse-shell 1, backtick 2, ifs-evasion 2, download-exec 2, windows-shell 2,

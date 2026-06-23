@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Fast-path micro-benchmark (Fase 7 / Pilastro 3). On-demand, no extra deps.
 //! `cargo run --release -p waf-corpus --example fastpath_bench`.
 //!

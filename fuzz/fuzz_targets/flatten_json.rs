@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 #![no_main]
 //! Fuzz target for the JSON flatten recursion (DEC 2 #5). The input bytes are parsed
 //! as a JSON document via `parse_body` (the production path: serde_json parse, whose

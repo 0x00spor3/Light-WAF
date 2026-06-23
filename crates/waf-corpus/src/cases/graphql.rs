@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! GraphQL structural-protection cases (Phase 11). The module is OFF by default in
 //! production; the corpus harness enables it (with `block_introspection = true`) at
 //! the default caps (depth 15, aliases 30, fields 1000, directives 50, batch 10).

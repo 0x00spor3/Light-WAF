@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 #![no_main]
 //! Fuzz target for form-urlencoded body parsing (DEC 2 #7): `parse_form_urlencoded`
 //! via `parse_body`. The input is a RAW body, so the fuzzer feeds arbitrary bytes

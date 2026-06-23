@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Query parsing robustness — Fase 8, target DEC 2 #4 (`parse_query`: split `&`/`=`
 //! on RAW bytes, then per-value `canonicalize_value`, with `max_params` enforced).
 //!

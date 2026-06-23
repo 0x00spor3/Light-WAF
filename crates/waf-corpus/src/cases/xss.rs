@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! XSS corpus cases. Field coverage: query + cookies + body.
 //! Rules (paranoia): script-tag 1, javascript-proto 1, event-handler 1,
 //! dangerous-tag 2, eval 2, document-cookie 2, vbscript-proto 3, data-html-uri 3,

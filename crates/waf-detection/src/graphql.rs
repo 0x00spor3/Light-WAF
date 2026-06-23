@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! GraphQL structural protections (Phase 11).
 //!
 //! This is NOT content-inspection (injection inside arguments/variables is already

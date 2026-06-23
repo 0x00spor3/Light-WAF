@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Minimal GraphQL lexer (Phase 11) — the 8th custom parser in this crate (fuzzed,
 //! see ARCHITECTURE §13). It does NOT build an AST: it makes a single linear,
 //! UTF-8-safe, allocation-free pass over the query text and computes the structural

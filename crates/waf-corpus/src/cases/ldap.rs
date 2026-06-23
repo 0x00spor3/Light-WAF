@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! LDAP injection corpus cases (Fase 10a). Field: query.
 //! Rules (paranoia): ldap-logical-filter 1, ldap-extensible-match 1 (both Critical).
 //! Source: gotestwaf `ldap-injection`. The URL/Plain payloads are 10a Triggers; the

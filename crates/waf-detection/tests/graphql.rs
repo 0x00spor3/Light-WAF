@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! GraphQL module transport coverage — isolates `operations()`/`expand()` from the
 //! normalizer. Focus: the Fase 11-bis fix "b" — a JSON envelope `{"query":"<doc>"}` in
 //! the GET `?query=` value must be unwrapped so the lexer sees the real document (before

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Fase 9 / DEC 2 — latency DISTRIBUTION over the worst-case corpus payloads.
 //! `cargo run --release -p waf-corpus --example latency_distribution`.
 //!

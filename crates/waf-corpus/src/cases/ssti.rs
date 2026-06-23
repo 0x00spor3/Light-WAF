@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Server-Side Template Injection corpus cases (Fase 10a). Field: query.
 //! Rules (paranoia): ssti-template-arithmetic 1 (Critical), ssti-freemarker-directive
 //! 1 (Critical). Source: gotestwaf `sst-injection`. URL payloads are 10a Triggers;

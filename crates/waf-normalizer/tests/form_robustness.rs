@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! Form-urlencoded body robustness — Fase 8, target DEC 2 #7 (`parse_form_urlencoded`).
 //!
 //! The split/canonicalize/bound mechanics are SHARED with `parse_query` (#4) and not

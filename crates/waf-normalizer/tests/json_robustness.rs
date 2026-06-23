@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 0x00spor3
+// SPDX-License-Identifier: Apache-2.0
+
 //! JSON flatten robustness — Fase 8, target DEC 2 #5 (`flatten_value`/`flatten_json`:
 //! depth-limited RECURSION over an already-parsed `serde_json::Value`).
 //!
