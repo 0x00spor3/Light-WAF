@@ -15,7 +15,7 @@
 //! path. Violations of the DoS caps → `Reject{400}`; blocked introspection → 403.
 
 use waf_core::{Config, Decision, GraphqlConfig, ParsedBody, Phase, RequestContext, WafModule};
-use waf_normalizer::graphql::graphql_lex;
+use waf_normalizer::graphql::{graphql_lex, unwrap_query_envelope};
 
 #[derive(Default)]
 pub struct GraphqlModule {
@@ -30,17 +30,18 @@ impl GraphqlModule {
     /// The GraphQL operation text(s) the request carries (empty = not a recognised
     /// GraphQL request → the module stays out of the way).
     fn operations(&self, ctx: &RequestContext) -> Vec<String> {
-        let mut out = Vec::new();
+        // Raw carrier strings before envelope-unwrapping (see `expand`).
+        let mut carriers = Vec::new();
 
         // `application/graphql` raw body — identified by Content-Type, any path. A
         // single operation (this media type does not batch).
         if content_type(ctx).trim_start().starts_with("application/graphql") {
             if let ParsedBody::Raw(b) = &ctx.normalized.body {
                 if let Ok(s) = std::str::from_utf8(b) {
-                    out.push(s.to_string());
+                    carriers.push(s.to_string());
                 }
             }
-            return out;
+            return expand(carriers);
         }
 
         // JSON / GET transports: only on a configured GraphQL endpoint path.
@@ -50,25 +51,41 @@ impl GraphqlModule {
             .iter()
             .any(|p| ctx.normalized.path.eq_ignore_ascii_case(p));
         if !path_match {
-            return out;
+            return Vec::new();
         }
 
         if let ParsedBody::JsonFlattened(pairs) = &ctx.normalized.body {
             for (k, v) in pairs {
                 if is_graphql_query_key(k) {
-                    out.push(v.clone());
+                    carriers.push(v.clone());
                 }
             }
         }
         if ctx.method.eq_ignore_ascii_case("GET") {
             for (k, v) in &ctx.normalized.query_params {
                 if k == "query" {
-                    out.push(v.clone());
+                    carriers.push(v.clone());
                 }
             }
         }
-        out
+        expand(carriers)
     }
+}
+
+/// Expand each carrier into the operation(s) the lexer must see: a carrier that is a JSON
+/// envelope `{"query":"<doc>"}` (gotestwaf's GET shape — the lexer would otherwise treat
+/// the document as opaque string content) is unwrapped to the inner document(s); any other
+/// carrier (a bare GraphQL document, `application/graphql` body, or already-extracted JSON
+/// leaf) is lexed as-is.
+fn expand(carriers: Vec<String>) -> Vec<String> {
+    let mut out = Vec::with_capacity(carriers.len());
+    for c in carriers {
+        match unwrap_query_envelope(&c) {
+            Some(docs) => out.extend(docs),
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 fn content_type(ctx: &RequestContext) -> &str {

@@ -86,7 +86,40 @@ pub static CASES: &[Case] = &[
         rules: &["graphql-introspection"],
         desc: "schema introspection (`__schema`) — blocked by policy → 403",
     },
+    Case {
+        // gotestwaf GET shape (Fase 11-bis, fix "b"): the whole JSON envelope
+        // `{"query":"<introspection>"}` is placed in `?query=`, double-URL-encoded — the
+        // VERBATIM wire string from the re-capture pcap. Before the fix `graphql_lex` saw
+        // the document as opaque JSON string content (depth ≈ 1, `__schema` unseen) → 200.
+        // `unwrap_query_envelope` now hands the inner document to the lexer → 403.
+        id: "graphql-introspection-get-json-envelope",
+        module: Module::Graphql,
+        field: Field::Get {
+            path: "/graphql",
+            query: "query=%257B%2522query%2522%3A%2520%2522IntrospectionQuery%257B__schema%2520%257BqueryType%2520%257B%2520name%2520%257D%257D%2522%257D",
+        },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["graphql-introspection"],
+        desc: "introspection hidden in a JSON envelope inside GET `?query=` (gotestwaf, \
+               double-encoded) — envelope-unwrap exposes `__schema` → 403",
+    },
     // ── benign guards ────────────────────────────────────────────────────────────
+    Case {
+        // The benign counterpart of the envelope case: a normal query wrapped in a JSON
+        // envelope over GET must stay Clean (unwrap → ordinary document within all caps).
+        id: "graphql-benign-get-json-envelope",
+        module: Module::Graphql,
+        field: Field::Get {
+            path: "/graphql",
+            query: "query=%7B%22query%22%3A%22query%7Buser%7Bid%20name%7D%7D%22%7D",
+        },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "an ordinary query wrapped in a JSON envelope over GET — unwrap keeps it \
+               within all caps → Clean (no false Reject)",
+    },
     Case {
         id: "graphql-benign-normal",
         module: Module::Graphql,

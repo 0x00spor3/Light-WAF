@@ -28,7 +28,22 @@ pub fn parse_body(
     } else if body.is_empty() {
         Ok(ParsedBody::None)
     } else {
-        Ok(ParsedBody::Raw(body.clone()))
+        // The Content-Type does NOT declare a structured format (absent, text/plain,
+        // application/graphql, …). An attacker controls the Content-Type, so dropping
+        // or forging it would keep a JSON envelope out of the per-leaf canonicalization
+        // channel (§6 / Fase 10c): with a `Raw` body the derived channel only sees the
+        // WHOLE-string canonicalize (no per-leaf base64 / JSON-`\u` decode) and
+        // `body_str_values` inspects the raw string, so an injection encoded inside a
+        // JSON leaf (`{"q":"<base64>"}`) bypasses every content module by simply omitting
+        // `Content-Type: application/json`. So when the body actually LOOKS like JSON,
+        // parse it like a declared JSON body. On a genuine parse failure (it only looked
+        // like JSON — e.g. an `application/graphql` selection set `{__typename}`) fall
+        // back to `Raw`; a structural/limit error (depth) is propagated, same fail-closed
+        // policy as a declared JSON body.
+        match sniff_json(body, limits)? {
+            Some(parsed) => Ok(parsed),
+            None => Ok(ParsedBody::Raw(body.clone())),
+        }
     }
 }
 
@@ -207,6 +222,26 @@ pub fn flatten_value(
     let mut out = Vec::new();
     flatten_json(value, "", &mut out, 1, limits.max_json_depth)?;
     Ok(out)
+}
+
+/// Best-effort JSON parse for a body whose Content-Type does NOT declare JSON. Returns
+/// `Ok(Some(JsonFlattened))` when the body is a JSON object/array envelope, `Ok(None)`
+/// when it is not JSON (caller inspects it `Raw`), and propagates a depth/limit error
+/// (fail-closed, like a declared JSON body). Only object/array shapes (`{`/`[`) are
+/// treated as JSON — a bare scalar (`123`, `"x"`, `true`) stays `Raw` — so this never
+/// reinterprets a non-envelope body. See the `parse_body` final-else rationale (§6).
+fn sniff_json(body: &Bytes, limits: &LimitsConfig) -> Result<Option<ParsedBody>, NormalizationError> {
+    let Ok(text) = std::str::from_utf8(body.as_ref()) else { return Ok(None) };
+    let trimmed = text.trim_start();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return Ok(None);
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return Ok(None); // looked like JSON but isn't → inspect raw
+    };
+    let mut pairs = Vec::new();
+    flatten_json(&value, "", &mut pairs, 1, limits.max_json_depth)?;
+    Ok(Some(ParsedBody::JsonFlattened(pairs)))
 }
 
 fn parse_json(body: &Bytes, limits: &LimitsConfig) -> Result<ParsedBody, NormalizationError> {

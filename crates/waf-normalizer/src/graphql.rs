@@ -128,9 +128,74 @@ pub fn graphql_lex(s: &str) -> GraphqlStats {
     st
 }
 
+/// If `s` is a JSON envelope carrying GraphQL operation text(s) — a `{"query":"<doc>"}`
+/// object or a `[{"query":…}, …]` batch array — return those operation strings; `None`
+/// when `s` is a bare GraphQL document or not such an envelope (the caller then lexes `s`
+/// directly).
+///
+/// Why this exists: the GraphQL GET transport is `?query=<document>`, but gotestwaf (and
+/// some clients) send `?query={"query":"<document>"}` — the entire JSON *envelope* in the
+/// param value. [`graphql_lex`] skips string contents, so an introspection / DoS document
+/// hidden inside a JSON string literal is invisible to it (depth ≈ 1, `__schema` unseen).
+/// Unwrapping the envelope hands the real document to the lexer. Only the operation-
+/// carrying `query` key is extracted (top level + batch elements), mirroring the JSON-body
+/// transport (`is_graphql_query_key`); a nested `variables.query` is NOT treated as an
+/// operation. Returns `None` (not `Some(vec![])`) when no `query` leaf is found, so a
+/// benign JSON value with no operation falls back to raw lexing.
+pub fn unwrap_query_envelope(s: &str) -> Option<Vec<String>> {
+    let trimmed = s.trim_start();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let mut out = Vec::new();
+    match &value {
+        // Single operation envelope.
+        serde_json::Value::Object(_) => push_query_leaf(&value, &mut out),
+        // Batched operations: an array of `{"query": …}` objects.
+        serde_json::Value::Array(arr) => arr.iter().for_each(|el| push_query_leaf(el, &mut out)),
+        _ => {}
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Push `v["query"]` into `out` when `v` is an object with a string `query` field.
+fn push_query_leaf(v: &serde_json::Value, out: &mut Vec<String>) {
+    if let serde_json::Value::Object(map) = v {
+        if let Some(serde_json::Value::String(q)) = map.get("query") {
+            out.push(q.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unwrap_envelope_single_operation() {
+        // The gotestwaf GET shape: the whole JSON envelope sits in `?query=`.
+        let ops = unwrap_query_envelope(r#"{"query":"query{__schema{name}}"}"#).unwrap();
+        assert_eq!(ops, vec!["query{__schema{name}}".to_string()]);
+        // And the introspection is now visible to the lexer (it was hidden in a string).
+        assert!(graphql_lex(&ops[0]).has_introspection);
+    }
+
+    #[test]
+    fn unwrap_envelope_batch_array() {
+        let ops = unwrap_query_envelope(r#"[{"query":"{a}"},{"query":"{b}"}]"#).unwrap();
+        assert_eq!(ops, vec!["{a}".to_string(), "{b}".to_string()]);
+    }
+
+    #[test]
+    fn unwrap_envelope_rejects_bare_document_and_non_envelope() {
+        // A bare GraphQL document is NOT JSON → caller lexes it raw.
+        assert!(unwrap_query_envelope("query{__schema{name}}").is_none());
+        assert!(unwrap_query_envelope("{__typename}").is_none()); // not valid JSON
+        // Valid JSON but no `query` operation leaf → fall back to raw.
+        assert!(unwrap_query_envelope(r#"{"a":1}"#).is_none());
+        assert!(unwrap_query_envelope(r#"{"variables":{"query":"x"}}"#).is_none());
+    }
 
     #[test]
     fn simple_query_depth_and_fields() {

@@ -126,6 +126,23 @@ pub static CASES: &[Case] = &[
         rules: &["sqli-union-select", "sqli-information-schema"],
         desc: "base64(`1 UNION SELECT user FROM information_schema.tables`) — caught at 10c via base64-decode",
     },
+    // ── CT-less JSON body (Fase 11-bis, §6 fix "a") ──────────────────────────────
+    // A JSON envelope POSTed WITHOUT `Content-Type: application/json` (empty CT models
+    // the dropped header) must still be flattened, so the per-leaf §6 channel decodes a
+    // base64-in-leaf injection. Before the fix the body was `Raw` (whole-string only) and
+    // the base64 leaf bypassed every module — the gotestwaf graphql-post CT-less shape.
+    Case {
+        id: "sqli-ctless-json-body-b64-leaf",
+        module: Module::Sqli,
+        field: Field::RawBody {
+            content_type: "",
+            body: "{\"q\":\"MSBVTklPTiBTRUxFQ1QgdXNlcm5hbWUscGFzc3dvcmQgRlJPTSB1c2Vycy0t\"}",
+        },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["sqli-union-select"],
+        desc: "base64(`1 UNION SELECT username,password FROM users--`) inside a JSON leaf, body sent WITHOUT Content-Type — §6 CT-less sniff",
+    },
     // ── URLPath coverage (10c REOPEN, pcap): gotestwaf places payloads in the path ──
     Case {
         id: "sqli-urlpath-timebased",
