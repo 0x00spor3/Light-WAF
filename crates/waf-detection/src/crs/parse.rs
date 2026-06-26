@@ -397,9 +397,19 @@ fn parse_actions(s: &str) -> ActionParse {
             "block" | "deny" | "drop" | "pass" | "allow" | "status" | "tag" | "rev" | "ver"
             | "accuracy" | "maturity" | "capture" | "log" | "nolog" | "auditlog"
             | "noauditlog" | "logdata" | "multimatch" => {}
+            // Anomaly-score setvars (`tx.*_score` / `tx.anomaly_score*`) only express the
+            // rule's contribution to the cumulative score (paletto #4) — they do not gate
+            // whether the rule matches, so they are NON-blocking and the rule still loads.
+            // Every CRS 4.x detection rule ships these; treating them as stateful skipped the
+            // whole ruleset. Any other setvar writes state later logic may read → still skip.
+            "setvar" => {
+                if !is_scoring_setvar(value.as_deref()) && out.blocking_unsupported.is_none() {
+                    out.blocking_unsupported = Some(name.to_string());
+                }
+            }
             // Stateful / control actions we do not model: their presence changes behaviour,
             // so the rule is skipped rather than silently mis-evaluated.
-            "setvar" | "ctl" | "skip" | "skipafter" | "expirevar" | "initcol" | "setsid"
+            "ctl" | "skip" | "skipafter" | "expirevar" | "initcol" | "setsid"
             | "setuid" | "exec" | "deprecatevar" | "sanitisearg" | "sanitisematched"
             | "sanitisematchedbytes" => {
                 if out.blocking_unsupported.is_none() {
@@ -414,6 +424,18 @@ fn parse_actions(s: &str) -> ActionParse {
         }
     }
     out
+}
+
+/// True for a `setvar` that only accumulates the CRS anomaly score
+/// (`setvar:tx.<...>_score=...` or any `tx.*anomaly_score*`). These express the rule's
+/// contribution to the cumulative score (paletto #4), not state other rules branch on, so
+/// they must not block the rule from loading. Anything else (`tx.foo_flag=1`, …) returns
+/// false and keeps the conservative skip.
+fn is_scoring_setvar(value: Option<&str>) -> bool {
+    let Some(v) = value else { return false };
+    // `setvar:'tx.sql_injection_score=+%{tx.critical_anomaly_score}'` → target before `=`.
+    let target = v.split('=').next().unwrap_or("").trim().trim_start_matches('!').to_ascii_lowercase();
+    target.starts_with("tx.") && (target.ends_with("_score") || target.contains("anomaly_score"))
 }
 
 fn parse_phase(v: &str) -> Option<u8> {
@@ -534,10 +556,31 @@ SecRule ARGS "@rx foo" "id:3,t:none,t:urlDecode"
     }
 
     #[test]
-    fn setvar_action_skips_rule() {
-        let r = parse(r#"SecRule ARGS "@rx x" "id:6,phase:2,pass,setvar:tx.score=5""#);
+    fn non_score_setvar_skips_rule() {
+        // A setvar writing a non-score flag later logic may read → still skipped.
+        let r = parse(r#"SecRule ARGS "@rx x" "id:6,phase:2,pass,setvar:tx.foo_flag=1""#);
         assert_eq!(r.rules.len(), 0);
         assert!(r.skipped[0].reason.contains("setvar"));
+    }
+
+    #[test]
+    fn anomaly_score_setvar_loads_rule() {
+        // Every CRS 4.x detection rule carries these score setvars; they must NOT block it.
+        let src = r#"SecRule ARGS "@rx (?i)union\s+select" "id:942190,phase:2,block,capture,t:none,t:urlDecodeUni,severity:CRITICAL,setvar:'tx.sql_injection_score=+%{tx.critical_anomaly_score}',setvar:'tx.anomaly_score_pl1=+%{tx.critical_anomaly_score}'""#;
+        let r = parse(src);
+        assert_eq!(r.rules.len(), 1, "skipped: {:?}", r.skipped);
+        assert_eq!(r.rules[0].id, 942190);
+        assert_eq!(r.rules[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn is_scoring_setvar_predicate() {
+        assert!(is_scoring_setvar(Some("tx.sql_injection_score=+%{tx.critical_anomaly_score}")));
+        assert!(is_scoring_setvar(Some("tx.outbound_anomaly_score_pl1=+1")));
+        assert!(is_scoring_setvar(Some("TX.XSS_SCORE=+5")));
+        assert!(!is_scoring_setvar(Some("tx.foo_flag=1")));
+        assert!(!is_scoring_setvar(Some("ip.reputation_block=1")));
+        assert!(!is_scoring_setvar(None));
     }
 
     #[test]
