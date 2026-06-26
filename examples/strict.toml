@@ -80,3 +80,19 @@ ssi               = { enabled = true }
 xxe               = { enabled = true }
 header_injection  = { enabled = true }
 request_smuggling = { enabled = true }
+
+# ── Imported OWASP CRS / ModSecurity rules (B2) ──────────────────────────────
+# The core ships the PARSER/engine; you supply the rule CONTENT (your own SecRule
+# files, or a curated premium set — BOUNDARY §2.4). Default OFF. The supported v1
+# subset (@rx/@pm, ARGS/headers/cookies/URI targets, common t: transforms, chains)
+# is documented in ARCHITECTURE §9; rules outside it are SKIPPED and reported at
+# boot (loaded/skipped counts in the logs), never silently dropped.
+#
+#     Scoring: imported rules contribute to the SAME cumulative anomaly score as the
+#     native modules. CRS and the built-ins overlap by design, so with CRS on you
+#     OWN the threshold tuning (a payload caught by both counts twice). Validate on
+#     your traffic, exactly like the native rules.
+#
+[modules.crs]
+enabled = true
+files   = ["/etc/waf/crs/REQUEST-942-APPLICATION-ATTACK-SQLI.conf"]

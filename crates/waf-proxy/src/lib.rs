@@ -28,13 +28,14 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::metrics::{Metrics, Outcome};
 use tls::TlsCertSource;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use waf_core::{
     ClientIpResolver, Config, FailMode, IpSource, Normalized, RateLimitState, RequestContext,
     ResilienceConfig, StateStore, WafModule,
 };
 use waf_detection::{
+    crs::CrsModule,
     graphql::GraphqlModule, grpc::GrpcModule, header_injection::HeaderInjectionModule, ldap::LdapModule,
     lfi_rfi::LfiRfiModule,
     mail::MailModule, nosql::NosqlModule, path_traversal::PathTraversalModule,
@@ -694,7 +695,41 @@ fn build_modules(config: &Config, rl_state: &RateLimitState) -> Vec<Box<dyn WafM
     if config.modules.grpc.enabled {
         modules.push(Box::new(GrpcModule::new()));
     }
+    if config.modules.crs.enabled {
+        modules.push(Box::new(load_crs_module(&config.modules.crs.files)));
+    }
     modules
+}
+
+/// Read the configured CRS `seclang` files (in order), concatenate them and build the
+/// [`CrsModule`]. An unreadable file is logged loudly and skipped — CRS is an additive
+/// detection layer (default off), so a missing import file fails open (consistent with
+/// `resilience.on_config_error` = fail-open) rather than taking down the proxy; the boot
+/// log makes the gap explicit. The loaded/skipped report and the skipped-rule reasons are
+/// logged so the operator sees exactly what coverage they got (policy D3=A).
+fn load_crs_module(files: &[String]) -> CrsModule {
+    let mut combined = String::new();
+    for path in files {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                combined.push_str(&text);
+                combined.push('\n');
+            }
+            Err(e) => error!(file = %path, error = %e, "CRS import: cannot read file (skipped)"),
+        }
+    }
+    let module = CrsModule::from_source(&combined);
+    info!(files = files.len(), "{}", module.report());
+    if !module.skipped().is_empty() {
+        warn!(
+            skipped = module.skipped().len(),
+            "CRS import: some rules fall outside the supported subset (see debug logs for reasons)"
+        );
+        for s in module.skipped() {
+            debug!(id = ?s.id, line = s.line_no, reason = %s.reason, "CRS import: rule skipped");
+        }
+    }
+    module
 }
 
 /// Build the full config-derived state as a unit (rules recompiled, CIDR

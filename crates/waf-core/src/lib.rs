@@ -349,6 +349,7 @@ pub enum ConfigError {
     GrpcCapZero(&'static str),
     TlsPathEmpty(&'static str),
     TlsAlpnInvalid,
+    CrsNoFiles,
 }
 
 impl std::fmt::Display for ConfigError {
@@ -384,6 +385,8 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "tls.{name} must be set (a PEM file path) when tls is enabled"),
             Self::TlsAlpnInvalid =>
                 write!(f, "tls.alpn must be a non-empty list of non-empty protocol ids (e.g. \"h2\", \"http/1.1\")"),
+            Self::CrsNoFiles =>
+                write!(f, "modules.crs.files must list at least one file when the crs module is enabled"),
         }
     }
 }
@@ -522,6 +525,12 @@ impl Config {
             }
         }
 
+        // CRS import: a path list is required when enabled (file I/O is deferred to boot,
+        // keeping `validate` fs-free and reload-safe — like TLS).
+        if self.modules.crs.enabled && self.modules.crs.files.is_empty() {
+            return Err(ConfigError::CrsNoFiles);
+        }
+
         Ok(())
     }
 }
@@ -639,6 +648,25 @@ pub struct ModulesConfig {
     /// channel. Default OFF: gRPC needs HTTP/2 and the caps are per-app (gRPC phase).
     #[serde(default)]
     pub grpc: GrpcConfig,
+    /// Imported OWASP CRS / ModSecurity rules (B2). The core ships the *parser/engine*;
+    /// the curated rule CONTENT is the operator's (or enterprise §2.4). Default OFF.
+    #[serde(default)]
+    pub crs: CrsConfig,
+}
+
+/// CRS/ModSecurity rule import (B2). Loads `SecRule …` files at boot and runs the
+/// supported subset as a `WafModule`. The parser is the OPEN baseline (`BOUNDARY.md`
+/// §1.7); rules a file uses that fall outside the v1 subset are skipped and reported at
+/// boot, never silently dropped.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CrsConfig {
+    /// Default OFF (opt-in per deployment).
+    #[serde(default)]
+    pub enabled: bool,
+    /// `seclang` files to import, in include order. Read at boot; an unreadable file is
+    /// logged and skipped (the module still loads the readable ones).
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1103,6 +1131,21 @@ mod config_validation_tests {
         assert_eq!(c.validate(), Err(ConfigError::TlsAlpnInvalid));
         c.tls.alpn = vec!["h2".to_string(), "  ".to_string()];
         assert_eq!(c.validate(), Err(ConfigError::TlsAlpnInvalid));
+    }
+
+    #[test]
+    fn crs_enabled_requires_files() {
+        let mut c = valid();
+        c.modules.crs.enabled = true;
+        assert_eq!(c.validate(), Err(ConfigError::CrsNoFiles));
+        c.modules.crs.files = vec!["rules.conf".to_string()];
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn crs_disabled_ignores_empty_files() {
+        // Default CRS off → empty file list must not trip validation.
+        assert!(valid().validate().is_ok());
     }
 
     #[test]

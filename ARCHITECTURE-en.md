@@ -850,6 +850,51 @@ single-node self-sufficiency). Config `[tls]` (default **off**): `enabled`, `cer
     path; recorded at a **single point** (`handle`, via a returned `Outcome`). Verdicts are unchanged —
     proven by the unchanged validation.
 
+### Importing OWASP CRS / ModSecurity rules (B2)
+
+The core ships the **parser/engine** to import `SecRule` rules (`BOUNDARY.md` §1.7); the **curated
+content** stays enterprise (§2.4). `[modules.crs]` (`enabled`, `files`), default **off**. `seclang` files
+are read at boot, concatenated in include order, parsed and compiled into a `WafModule` (`crs`); an
+unreadable file is logged and skipped (CRS is additive, default-off → fail-open on `on_config_error`, never
+a crash). The 10th hand-rolled parser in the workspace (`seclang` lexer → AST → evaluator).
+
+- **Two channels, never crossed (foundation, paletto #1)**: CRS rules declare `t:` transforms that
+  ModSecurity applies to the **raw** value. Native modules read the §6 surface (`ctx.normalized.*`), which is
+  **already** recursively percent-decoded + NFKC. Feeding that into a `t:urlDecode` would **double-decode**
+  (`%2575`→`%75`→`u`) where ModSec decodes once → a silent semantic change. So the CRS channel sources from
+  the **raw** `RequestContext` (`ctx.query`/`headers`/`cookies`/`body`) and the rule's `t:` pipeline does
+  every decode. ModSec implicitly single-url-decodes when populating `ARGS` (replicated with a single-pass
+  `percent_decode`); the rule's `t:` stack on top. *Cardinal bite-test: the double-decode control, both ways.*
+- **v1 subset** (explicit; everything else is **SKIP + boot report**, never a silent drop — policy D3):
+  directives `SecRule`/`SecDefaultAction`/`SecRuleRemoveById` (`SecAction`/`SecMarker`/`SecRuleUpdate*`/unknown
+  = ignored); operators `@rx @pm @contains @beginsWith @endsWith @within @streq` (+ `!` negation), with
+  `@detectSQLi`/`@detectXSS` (libinjection = a C dependency, against the ethos) and IP/geo/numeric operators
+  out; transforms `lowercase urlDecode(Uni) htmlEntityDecode compressWhitespace removeWhitespace removeNulls
+  normalizePath base64Decode none` (`t:none` **resets** the `SecDefaultAction`-inherited pipeline); targets
+  `ARGS*`/`REQUEST_HEADERS[:n]`/`REQUEST_COOKIES`/`REQUEST_URI(_RAW)`/`REQUEST_FILENAME`/`QUERY_STRING`/
+  `REQUEST_METHOD`/`REQUEST_PROTOCOL`/`REQUEST_LINE`/`REQUEST_BODY` + `:Name` selectors and `!VAR:n` exclusions;
+  `chain` supported (all links must match); stateful (`setvar`/`ctl`/`skip`/…) or unknown actions → rule
+  skipped. Phases 1/2 = request; 3/4/5 (response/logging) skipped.
+- **`structural()=true` + performance (paletto #2)**: CRS rules carry external patterns the `ContentPrefilter`
+  does not know → the fast-path cannot prove them inert → the module runs on **every** request (the price of
+  faithful import). Mitigation: single-link positive `@rx` rules are **bucketed** by `(variables, t:-pipeline)`
+  → one `RegexSet` per bucket (one pass instead of N regexes in a loop); chains/negations/non-`@rx` fall to a
+  per-rule slow path. Cost scales with the number of **buckets**, not rules. *Measured*
+  (`examples/crs_bench`, release, benign 4-arg request): one shared bucket 50→500 rules = 3.1→4.8 µs
+  (sub-linear); 500 rules in 1 bucket (4.8 µs) are cheaper than 50 rules in 5 buckets (11.8 µs) → confirming
+  the driver is the bucket count. In line with the native ~4-5 µs inspection → a real CRS file (mostly a few
+  `ARGS` buckets) keeps the p99 budget (<1 ms).
+- **Scoring + double counting (paletto #4, on record)**: every matched CRS rule emits a `ScoreItem`
+  `{rule_id:"crs-<id>", severity}` (CRS `CRITICAL/ERROR/WARNING/NOTICE` → `Severity`; missing severity →
+  `Warning`) into the **same** cumulative anomaly score as the native modules (no new decision logic; per-rule
+  `block/deny/pass` is **folded** into the cumulative, CRS anomaly model). CRS and natives **overlap by
+  construction** → a payload caught by both counts twice → **with CRS on the operator owns threshold tuning**.
+  "validation 10/10 unchanged" holds **only because CRS is default-off**; the native corpus does not cover
+  scoring with CRS on (we ship no CRS content, §2.4).
+- **Declared v1 limits**: `@pmFromFile` (per-file path resolution) unsupported (use inline `@pm`); multipart/
+  JSON bodies not mapped to `ARGS` (use `REQUEST_BODY`); `SecDefaultAction` does not apply to chain children;
+  operator negation approximated as "no value matches".
+
 ---
 
 ## 10. Testing strategy

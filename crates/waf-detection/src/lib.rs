@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
+pub mod crs;
 pub mod graphql;
 pub mod grpc;
 pub mod header_injection;
