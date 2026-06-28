@@ -51,7 +51,11 @@ The complete datapath and everything needed to protect a single node.
 
 ### 1.7 Quality and validation
 - `waf-corpus` (versioned malicious/benign corpus) and test suites.
-- Extensibility: **WASM plugin runtime (Proxy-Wasm)**.
+- Extensibility: **WASM plugin runtime (Proxy-Wasm)**. **IMPLEMENTED (B3)**: a `wasmi`-based
+  runtime (`waf-wasm` crate) loads a `.wasm` Proxy-Wasm filter as a `WafModule` (`[modules.wasm]`,
+  default off; implemented host-function subset + dynamic stubs for the rest, fuel/memory DoS
+  caps, instance pool, fail-closed — see `ARCHITECTURE.md` §9). The *runtime* is OPEN;
+  *marketplace/signing* stays enterprise (§2.4).
 - **Parser** for importing OWASP CRS / ModSecurity rules. **IMPLEMENTED (B2)**: a `seclang`
   parser + subset evaluator runs imported `SecRule` files as a `WafModule` (`[modules.crs]`,
   default off; supported subset + boot skip-report — see `ARCHITECTURE.md` §9). The *parser/engine*
@@ -123,7 +127,7 @@ inspected field; the **structural** GraphQL protections run as a structural modu
 
 | Feature | OPEN | ENTERPRISE |
 |---|---|---|
-| WASM plugins (Proxy-Wasm) | runtime | marketplace / signing |
+| WASM plugins (Proxy-Wasm) | runtime ✅ (B3) | marketplace / signing |
 | OpenTelemetry / Prometheus | baseline export | pre-built dashboards + retention |
 | OWASP CRS / ModSecurity rules | parser ✅ (B2) | curated premium rules |
 | TLS | basic termination | ACME / mTLS PKI / multi-node |

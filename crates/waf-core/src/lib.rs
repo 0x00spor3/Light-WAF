@@ -350,6 +350,8 @@ pub enum ConfigError {
     TlsPathEmpty(&'static str),
     TlsAlpnInvalid,
     CrsNoFiles,
+    WasmNoPlugins,
+    WasmPluginPathEmpty,
 }
 
 impl std::fmt::Display for ConfigError {
@@ -387,6 +389,10 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "tls.alpn must be a non-empty list of non-empty protocol ids (e.g. \"h2\", \"http/1.1\")"),
             Self::CrsNoFiles =>
                 write!(f, "modules.crs.files must list at least one file when the crs module is enabled"),
+            Self::WasmNoPlugins =>
+                write!(f, "modules.wasm.plugins must list at least one plugin when the wasm module is enabled"),
+            Self::WasmPluginPathEmpty =>
+                write!(f, "modules.wasm.plugins[].path must be a non-empty .wasm file path"),
         }
     }
 }
@@ -531,6 +537,17 @@ impl Config {
             return Err(ConfigError::CrsNoFiles);
         }
 
+        // WASM runtime: at least one plugin when enabled, each with a non-empty path
+        // (file I/O deferred to boot, keeping `validate` fs-free and reload-safe).
+        if self.modules.wasm.enabled {
+            if self.modules.wasm.plugins.is_empty() {
+                return Err(ConfigError::WasmNoPlugins);
+            }
+            if self.modules.wasm.plugins.iter().any(|p| p.path.trim().is_empty()) {
+                return Err(ConfigError::WasmPluginPathEmpty);
+            }
+        }
+
         Ok(())
     }
 }
@@ -652,6 +669,10 @@ pub struct ModulesConfig {
     /// the curated rule CONTENT is the operator's (or enterprise §2.4). Default OFF.
     #[serde(default)]
     pub crs: CrsConfig,
+    /// Proxy-Wasm plugin runtime (B3). The core ships the *runtime*; marketplace/signing is
+    /// enterprise (§2.4). Each plugin is a `.wasm` filter run as a `WafModule`. Default OFF.
+    #[serde(default)]
+    pub wasm: WasmConfig,
 }
 
 /// CRS/ModSecurity rule import (B2). Loads `SecRule …` files at boot and runs the
@@ -667,6 +688,61 @@ pub struct CrsConfig {
     /// logged and skipped (the module still loads the readable ones).
     #[serde(default)]
     pub files: Vec<String>,
+}
+
+/// Proxy-Wasm plugin runtime (B3). Loads one or more `.wasm` filters at boot and runs each
+/// as a `WafModule` on every request (`structural`). The runtime is the OPEN baseline
+/// (`BOUNDARY.md` §1.7); a plugin whose `.wasm` cannot be compiled/instantiated is logged
+/// and skipped (fail-open at load, like CRS) while the per-request posture is fail-closed.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WasmConfig {
+    /// Default OFF (opt-in per deployment).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Pre-instantiated guest instances per plugin (the request concurrency a plugin can
+    /// serve before callers queue on checkout).
+    #[serde(default = "default_wasm_pool_size")]
+    pub pool_size: usize,
+    /// Per-request fuel budget — the plugin's CPU/latency ceiling (it runs on every
+    /// request). Exhaustion traps and fails closed.
+    #[serde(default = "default_wasm_fuel")]
+    pub fuel_per_request: u64,
+    /// Per-instance linear-memory cap (bytes). Growth beyond it is denied → fail closed.
+    #[serde(default = "default_wasm_max_memory")]
+    pub max_memory_bytes: usize,
+    /// How long a request waits for a free instance before failing closed (pool exhaustion).
+    #[serde(default = "default_wasm_checkout_timeout_ms")]
+    pub checkout_timeout_ms: u64,
+    /// The plugins to load, in order.
+    #[serde(default)]
+    pub plugins: Vec<WasmPluginConfig>,
+}
+
+fn default_wasm_pool_size() -> usize { 4 }
+fn default_wasm_fuel() -> u64 { 10_000_000 }
+fn default_wasm_max_memory() -> usize { 16 * 1024 * 1024 }
+fn default_wasm_checkout_timeout_ms() -> u64 { 100 }
+
+impl Default for WasmConfig {
+    fn default() -> Self {
+        WasmConfig {
+            enabled: false,
+            pool_size: default_wasm_pool_size(),
+            fuel_per_request: default_wasm_fuel(),
+            max_memory_bytes: default_wasm_max_memory(),
+            checkout_timeout_ms: default_wasm_checkout_timeout_ms(),
+            plugins: Vec::new(),
+        }
+    }
+}
+
+/// One Proxy-Wasm plugin: a `.wasm` path plus an opaque configuration string passed to the
+/// guest's `proxy_on_configure`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WasmPluginConfig {
+    pub path: String,
+    #[serde(default)]
+    pub config: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1145,6 +1221,23 @@ mod config_validation_tests {
     #[test]
     fn crs_disabled_ignores_empty_files() {
         // Default CRS off → empty file list must not trip validation.
+        assert!(valid().validate().is_ok());
+    }
+
+    #[test]
+    fn wasm_enabled_requires_plugins_with_paths() {
+        let mut c = valid();
+        c.modules.wasm.enabled = true;
+        assert_eq!(c.validate(), Err(ConfigError::WasmNoPlugins));
+        c.modules.wasm.plugins = vec![WasmPluginConfig { path: "  ".into(), config: None }];
+        assert_eq!(c.validate(), Err(ConfigError::WasmPluginPathEmpty));
+        c.modules.wasm.plugins = vec![WasmPluginConfig { path: "f.wasm".into(), config: None }];
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn wasm_disabled_ignores_empty_plugins() {
+        // Default WASM off → empty plugin list must not trip validation.
         assert!(valid().validate().is_ok());
     }
 

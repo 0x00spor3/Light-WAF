@@ -46,6 +46,7 @@ use waf_detection::{
 };
 use waf_normalizer::Normalizer;
 use waf_pipeline::{NoopLogger, Pipeline, PipelineVerdict};
+use waf_wasm::{WasmModule, WasmOptions};
 
 pub type HyperBoxBody = BoxBody<Bytes, hyper::Error>;
 
@@ -698,7 +699,61 @@ fn build_modules(config: &Config, rl_state: &RateLimitState) -> Vec<Box<dyn WafM
     if config.modules.crs.enabled {
         modules.push(Box::new(load_crs_module(&config.modules.crs.files)));
     }
+    if config.modules.wasm.enabled {
+        for plugin in &config.modules.wasm.plugins {
+            if let Some(m) = load_wasm_plugin(plugin, &config.modules.wasm) {
+                modules.push(Box::new(m));
+            }
+        }
+    }
     modules
+}
+
+/// Load one Proxy-Wasm plugin. A plugin whose file is unreadable or whose `.wasm` cannot be
+/// compiled/instantiated is logged loudly and skipped (fail-open at LOAD, like CRS — the
+/// runtime posture is fail-closed per request). The import report is logged so the operator
+/// sees the coverage, and a plugin relying on stubbed (semantic) host calls is flagged
+/// **DEGRADED** but still loaded — the operator decides (policy D3=A, paletto #4).
+fn load_wasm_plugin(
+    plugin: &waf_core::WasmPluginConfig,
+    cfg: &waf_core::WasmConfig,
+) -> Option<WasmModule> {
+    let bytes = match std::fs::read(&plugin.path) {
+        Ok(b) => b,
+        Err(e) => {
+            error!(file = %plugin.path, error = %e, "WASM: cannot read plugin (skipped)");
+            return None;
+        }
+    };
+    let name = plugin_name(&plugin.path);
+    let opts = WasmOptions {
+        pool_size: cfg.pool_size,
+        fuel_per_request: cfg.fuel_per_request,
+        max_memory_bytes: cfg.max_memory_bytes,
+        checkout_timeout: std::time::Duration::from_millis(cfg.checkout_timeout_ms),
+    };
+    let config_bytes = plugin.config.as_deref().unwrap_or("").as_bytes();
+    match WasmModule::from_bytes(&name, &bytes, config_bytes, &opts) {
+        Ok((module, report)) => {
+            // Informational at boot; the loud "degraded" signal is emitted at runtime the
+            // first time the plugin actually invokes a stubbed semantic host call.
+            info!(plugin = %name, "{}", report.summary());
+            Some(module)
+        }
+        Err(e) => {
+            error!(file = %plugin.path, error = %e, "WASM: plugin failed to load (skipped)");
+            None
+        }
+    }
+}
+
+/// Derive a short plugin name from its path (file stem), for log correlation and `rule_id`.
+fn plugin_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("plugin")
+        .to_string()
 }
 
 /// Read the configured CRS `seclang` files (in order), concatenate them and build the

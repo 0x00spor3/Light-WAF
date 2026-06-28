@@ -1,0 +1,21 @@
+# Detached from the workspace ([workspace] table) — built for wasm32, not part of the
+# normal `cargo build --workspace`. This is the REAL Proxy-Wasm SDK fixture used by the
+# env-gated ABI-fidelity smoke (see ../README.md). The in-CI oracle is the inline WAT in
+# `tests/runtime.rs`; this proves the host runs an SDK-produced filter unchanged.
+[workspace]
+
+[package]
+name = "block_filter"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+proxy-wasm = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true

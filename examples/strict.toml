@@ -96,3 +96,26 @@ request_smuggling = { enabled = true }
 [modules.crs]
 enabled = true
 files   = ["/etc/waf/crs/REQUEST-942-APPLICATION-ATTACK-SQLI.conf"]
+
+#   WASM PLUGIN RUNTIME (B3) — default OFF.
+#
+#     Loads Proxy-Wasm `.wasm` filters and runs each as a module on EVERY request
+#     (structural). The runtime is the OPEN baseline; marketplace/signing is enterprise.
+#
+#     DoS posture (it runs on every request): `fuel_per_request` is the per-request CPU/
+#     latency ceiling (exhaustion fails closed), `max_memory_bytes` caps linear memory,
+#     and there is no network/filesystem host call. Any trap → 500 (fail-closed). A plugin
+#     whose `.wasm` cannot load is logged and skipped. `pool_size` instances are pre-built
+#     per plugin; a request waits up to `checkout_timeout_ms` for a free one, else fails
+#     closed. `config` is an opaque string passed to the guest's `proxy_on_configure`.
+#
+[modules.wasm]
+enabled              = true
+pool_size            = 4
+fuel_per_request     = 10_000_000
+max_memory_bytes     = 16_777_216    # 16 MiB
+checkout_timeout_ms  = 100
+
+[[modules.wasm.plugins]]
+path   = "/etc/waf/plugins/myfilter.wasm"
+config = ""

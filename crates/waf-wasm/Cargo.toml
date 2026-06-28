@@ -1,0 +1,18 @@
+[package]
+license = "Apache-2.0"
+name = "waf-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Pinned exactly to the version validated by the B3-0 probe (reentrant malloc + fuel +
+# StoreLimits memory cap). Bumping wasmi must re-run those load-bearing cases.
+wasmi = "=1.1.0"
+waf-core = { path = "../waf-core" }
+tracing = "0.1"
+bytes = "1"
+
+[dev-dependencies]
+wat = "1"
+# Test builds pull the testkit RequestContext builder.
+waf-core = { path = "../waf-core", features = ["testkit"] }

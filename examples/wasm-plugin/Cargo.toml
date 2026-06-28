@@ -1,0 +1,21 @@
+# Example Proxy-Wasm plugin for the WAF's WASM runtime (B3). Detached from the workspace
+# ([workspace] table) and built for wasm32 — NOT part of `cargo build --workspace`.
+# See README.md for the build command and how to wire it into a WAF config.
+[workspace]
+
+[package]
+name = "waf-wasm-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+proxy-wasm = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

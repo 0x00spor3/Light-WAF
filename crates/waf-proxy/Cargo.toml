@@ -17,6 +17,7 @@ waf-core = { path = "../waf-core" }
 waf-normalizer = { path = "../waf-normalizer" }
 waf-pipeline = { path = "../waf-pipeline" }
 waf-detection = { path = "../waf-detection" }
+waf-wasm = { path = "../waf-wasm" }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "signal"] }
 hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1", "http2", "server-auto"] }

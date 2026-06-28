@@ -148,3 +148,7 @@ max_message_bytes = 4194304          # 4 MiB — cap dimensione totale payload i
 max_fields        = 4096             # cap field-bomb
 max_depth         = 16               # cap depth-bomb (nesting sub-message)
 on_compressed     = "reject"         # payload compresso = opaco: "reject" (fail-closed) | "passthrough"
+
+[modules.crs]
+enabled = true
+files   = ["test.conf"]

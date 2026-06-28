@@ -895,6 +895,51 @@ a crash). The 10th hand-rolled parser in the workspace (`seclang` lexer → AST 
   JSON bodies not mapped to `ARGS` (use `REQUEST_BODY`); `SecDefaultAction` does not apply to chain children;
   operator negation approximated as "no value matches".
 
+### WASM / Proxy-Wasm plugin runtime (B3)
+
+The core ships the Proxy-Wasm **runtime** (`BOUNDARY.md` §1.7); marketplace/signing stays enterprise (§2.4).
+`[modules.wasm]` (`enabled`, `plugins[]`, `pool_size`, `fuel_per_request`, `max_memory_bytes`,
+`checkout_timeout_ms`), default **off**. Isolated crate `waf-wasm` (depends only on `waf-core` + `wasmi`, so the
+interpreter dependency does not fall on the whole workspace); each `.wasm` loads as a `WafModule` (`wasm:<name>`).
+Engine = **`wasmi` 1.1.0** (pure-Rust interpreter, no JIT/C, built-in fuel metering — pin validated by the B3-0
+probe). A `.wasm` that is unreadable or fails to compile is logged and **skipped** (fail-open at LOAD, like CRS).
+
+- **Model (buffer-then-inspect → request path)**: headers and body are already buffered when the module runs, so
+  per request the host runs the Proxy-Wasm sequence in one shot (`end_of_stream=1`): `on_context_create` →
+  `on_request_headers` → (if `Continue`) `on_request_body` → `on_done`/`on_delete`. A guest's
+  `proxy_send_local_response` is **captured** (never written to the wire) and mapped to a `Decision` (403 →
+  `Block`, else `Reject{status}`); no capture → `Allow`. `phase()=Body`, **`structural()=true`** (like CRS: the
+  host cannot prove a plugin inert → it runs on every request). **SDK init**: Rust-SDK guests register their
+  factory in `_initialize`/`_start` (WASI reactor), which `wasmi` does not call on its own → the host invokes it
+  once post-instantiate (found via the real SDK filter; without it the guest panics in `on_context_create`).
+- **Host-function subset (paletto #4) + report**: implemented `proxy_log`, `proxy_get_buffer_bytes`,
+  `proxy_get_header_map_pairs`/`_value`, `proxy_get_property`, `proxy_send_local_response`,
+  `proxy_get_current_time_nanoseconds`, `proxy_set_tick_period_milliseconds`. Every **other** import the guest
+  declares is **dynamically stubbed** (matching its `FuncType`) → `Status::Unimplemented` (so a real filter always
+  instantiates, never fails on a missing import). **Lesson from the real SDK filter**: the SDK *declares* every
+  import regardless of use → "degraded" is **not** derivable from declared imports (the boot report is
+  **informational**). The accurate signal is at **runtime**: on the **first actual invocation** of a *semantic*
+  stub (`proxy_http_call`/`shared_data`/`set_header*`/grpc/queue/foreign-call) the host emits a `warn!` and marks
+  the instance (`semantic_stub_hit`). *Cosmetic* stubs (metrics/tick) do not change detection.
+- **DoS (on record)**: **fuel** reset per request (`set_fuel`) is a **latency ceiling**, not just a kill-switch
+  (it runs on every request); a **memory cap** (`StoreLimits`); no I/O host call beyond the subset (no filesystem,
+  no `proxy_http_call` → anti-SSRF). Any **trap** (fuel/memory/runtime error) **fails closed** → `Reject{500}`
+  (reuses the `on_internal_error` binary). The B3-0 probe proved that a trap **inside the reentrant malloc**
+  (host→guest), from fuel **or** the memory cap, unwinds cleanly to `Reject{500}` with no host panic. *Measured*
+  (`examples/wasm_bench`, release, a guest that reads+scans the header map, benign 5-header request): p50 ~7 µs,
+  **p99 ~9 µs**, p99.9 ~12 µs → ~100× under the p99 budget (<1 ms).
+- **Concurrency + isolation (paletto #1)**: `Module` compiled once (shared); a **pool** of `(Store, Instance)`
+  behind `Mutex`+`Condvar`. `inspect(&self)` does a **checkout** (a `Store` is **never** shared across threads),
+  populates `HostState` (host-reset: `req`/`captured`), `set_fuel`, runs, reads the disposition, **checkin**. The
+  guest's own state is isolated per request via the Proxy-Wasm lifecycle (`on_context_create`/`on_delete`): a
+  plugin that does not clean up is a **plugin bug** (declared trust boundary). **Pool exhaustion** (paletto #3):
+  checkout **blocks-with-timeout** (`checkout_timeout_ms`); on expiry → fail-closed (`on_internal_error`).
+  *Bite-tests*: two consecutive requests **on the same instance** (2nd benign → `Allow` even if the 1st blocked) +
+  a concurrent variant (32 threads, no leakage/panic).
+- **Declared v1 limits**: request-path only (response callbacks deferred); headers **read-only** (`set_header_*` =
+  semantic stub); ABI fidelity proven against a **real** Proxy-Wasm Rust-SDK filter (env-gated smoke
+  `WAF_WASM_FIXTURE`; the in-CI oracle is inline-compiled WAT guests — readable source, no opaque binary).
+
 ---
 
 ## 10. Testing strategy
