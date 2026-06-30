@@ -1263,7 +1263,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "waf-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "serde",
@@ -1271,7 +1271,7 @@ dependencies = [
 
 [[package]]
 name = "waf-corpus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "serde_json",
@@ -1283,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "waf-detection"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "regex",
@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "waf-normalizer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "proptest",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "waf-pipeline"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "tracing",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "waf-proxy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "http-body-util",
  "hyper",
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "waf-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "tracing",

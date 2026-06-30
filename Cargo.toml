@@ -16,7 +16,7 @@ resolver = "2"
 # Shared package metadata, inherited per-crate via `<field>.workspace = true`.
 # `description`, `keywords`, `categories` stay per-crate (they differ).
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["0x00spor3"]
@@ -26,8 +26,8 @@ homepage = "https://github.com/0x00spor3/Light-WAF"
 # Internal crates declared once with their published version, so the `path` deps
 # carry a version requirement (mandatory for `cargo publish`).
 [workspace.dependencies]
-waf-core = { path = "crates/waf-core", version = "0.1.0" }
-waf-normalizer = { path = "crates/waf-normalizer", version = "0.1.0" }
-waf-pipeline = { path = "crates/waf-pipeline", version = "0.1.0" }
-waf-detection = { path = "crates/waf-detection", version = "0.1.0" }
-waf-wasm = { path = "crates/waf-wasm", version = "0.1.0" }
+waf-core = { path = "crates/waf-core", version = "0.2.0" }
+waf-normalizer = { path = "crates/waf-normalizer", version = "0.2.0" }
+waf-pipeline = { path = "crates/waf-pipeline", version = "0.2.0" }
+waf-detection = { path = "crates/waf-detection", version = "0.2.0" }
+waf-wasm = { path = "crates/waf-wasm", version = "0.2.0" }

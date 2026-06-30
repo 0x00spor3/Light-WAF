@@ -122,6 +122,12 @@ inspected field; the **structural** GraphQL protections run as a structural modu
   centralized multi-node certs, **mTLS with managed PKI**) → `ENTERPRISE`
   (governance/scale). These plug in as enterprise implementations of the **same**
   `TlsCertSource` trait — the §4 pattern (the core ships only `FileCertSource`).
+  **IMPLEMENTED (enterprise `waf-tls-managed`, core 0.2):** the trait gained two
+  *additive defaulted* hooks — `resolver()` (a dynamic `ResolvesServerCert` for
+  **hitless** ACME rotation; default `None` → the OPEN single-cert path) and
+  `client_verifier()` (mTLS / managed-PKI client auth; default `None` → no client
+  auth). The enterprise crate provides ACME (TLS-ALPN-01, hitless) + an mTLS verifier;
+  the OPEN `FileCertSource` is unchanged (both hooks default `None`). See §5.
 
 ### 3.3 Gray zone (cut-line summary)
 
@@ -178,6 +184,12 @@ let proxy = Proxy::builder(&config)
 
 The `WafModule`, `StateStore` and `TlsCertSource` traits are **public ABI**: SemVer,
 frozen before the first public release.
+
+**Additive trait evolution (allowed).** A new method with a default body is non-breaking
+for existing impls (like `WafModule::structural()`). `TlsCertSource` used this in **core
+0.2**: it gained `resolver()` and `client_verifier()` (both defaulting to `None`), enabling
+enterprise ACME/mTLS (§3.2) without touching `FileCertSource` or any external impl. This is
+the only sanctioned way to extend a frozen ABI trait — additive, defaulted, minor-version.
 
 **Config evolution (A4, 2026-06-24).** `Config` is `#[non_exhaustive]`: adding a future
 top-level section (as `tls` was added) is **non-breaking** — external code cannot use a

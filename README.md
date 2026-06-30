@@ -1,5 +1,6 @@
 # Light WAF (Layer 7)
 
+[![CI](https://github.com/0x00spor3/Light-WAF/actions/workflows/ci.yml/badge.svg)](https://github.com/0x00spor3/Light-WAF/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/waf-proxy.svg)](https://crates.io/crates/waf-proxy)
 [![docs.rs](https://img.shields.io/docsrs/waf-core)](https://docs.rs/waf-core)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)

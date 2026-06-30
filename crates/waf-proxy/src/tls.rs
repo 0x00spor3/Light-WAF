@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio_rustls::rustls::server::danger::ClientCertVerifier;
+use tokio_rustls::rustls::server::ResolvesServerCert;
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
 
@@ -36,8 +38,32 @@ pub struct TlsMaterial {
 /// Source of the server's TLS certificate material — the §4 boundary seam. [`FileCertSource`]
 /// is the OPEN implementation; ACME/rotation/managed-PKI are enterprise implementations of
 /// this same trait (the core depends only on the trait, never on the at-scale impl).
+///
+/// `load()` is the single-cert path (the OPEN baseline). The two *defaulted* hooks below are
+/// additive extension points (compatible with the BOUNDARY §5 freeze, like
+/// `WafModule::structural()`): an enterprise source overrides them to take over server-cert
+/// resolution (hitless ACME rotation) or to require client certificates (mTLS / managed PKI),
+/// while every existing impl keeps `load()` + no client auth unchanged.
 pub trait TlsCertSource: Send + Sync {
+    /// Load a single server certificate chain + key. Used unless [`Self::resolver`]
+    /// returns `Some` (in which case the core never calls this).
     fn load(&self) -> Result<TlsMaterial, TlsError>;
+
+    /// Optional dynamic server-cert resolver. When `Some`, the core builds the
+    /// `ServerConfig` with this resolver INSTEAD of `load()` (so the cert can rotate
+    /// at runtime without rebuilding the acceptor — enterprise hitless ACME), and
+    /// advertises the `acme-tls/1` ALPN so an on-listener TLS-ALPN-01 challenge can
+    /// negotiate on the same port. Default `None` → the OPEN single-cert path.
+    fn resolver(&self) -> Option<Arc<dyn ResolvesServerCert>> {
+        None
+    }
+
+    /// Optional client-certificate verifier. When `Some`, the listener requires and
+    /// verifies client certificates (mTLS / managed PKI). Default `None` → no client
+    /// auth, exactly as before.
+    fn client_verifier(&self) -> Option<Arc<dyn ClientCertVerifier>> {
+        None
+    }
 }
 
 /// Why building the TLS terminator failed. All variants are fatal at boot (a required TLS
@@ -111,15 +137,38 @@ fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
 /// provider explicitly (no process-global `install_default`, so multiple configs — e.g. in
 /// tests — never race over the default).
 pub fn build_server_config(source: &dyn TlsCertSource, alpn: &[String]) -> Result<ServerConfig, TlsError> {
-    let material = source.load()?;
     let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
-    let mut cfg = ServerConfig::builder_with_provider(provider)
+    let builder = ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
-        .map_err(TlsError::Rustls)?
-        .with_no_client_auth()
-        .with_single_cert(material.cert_chain, material.private_key)
         .map_err(TlsError::Rustls)?;
+
+    // Client auth: an injected verifier (enterprise mTLS / managed PKI) or none (OPEN).
+    let builder = match source.client_verifier() {
+        Some(verifier) => builder.with_client_cert_verifier(verifier),
+        None => builder.with_no_client_auth(),
+    };
+
+    // Server cert: a dynamic resolver (enterprise hitless rotation / ACME) takes over and
+    // bypasses load(); otherwise the single cert from load() (the OPEN FileCertSource path,
+    // byte-identical to before).
+    let mut cfg = match source.resolver() {
+        Some(resolver) => builder.with_cert_resolver(resolver),
+        None => {
+            let material = source.load()?;
+            builder
+                .with_single_cert(material.cert_chain, material.private_key)
+                .map_err(TlsError::Rustls)?
+        }
+    };
+
     cfg.alpn_protocols = alpn.iter().map(|p| p.as_bytes().to_vec()).collect();
+    // TLS-ALPN-01: when a resolver drives ACME on this same listener, the challenge is
+    // negotiated via the `acme-tls/1` ALPN — advertise it so the validation handshake can
+    // select it (the resolver serves the challenge cert for it). Only when a resolver is set,
+    // so the normal (None) path keeps exactly the configured ALPN list.
+    if source.resolver().is_some() {
+        cfg.alpn_protocols.push(b"acme-tls/1".to_vec());
+    }
     Ok(cfg)
 }
 
