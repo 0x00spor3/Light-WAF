@@ -1,0 +1,24 @@
+[package]
+name = "waf-tls-managed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Managed TLS (ACME hitless rotation + mTLS) TlsCertSource for Light WAF — enterprise tier (BSL 1.1)"
+
+[dependencies]
+waf-proxy.workspace = true
+tokio.workspace = true
+# `ring` so we can build verifiers/providers with the SAME crypto provider the core
+# uses (it never installs a process-default), and the rustls types unify across the seam.
+tokio-rustls = { workspace = true, features = ["ring"] }
+tracing.workspace = true
+rustls-pemfile = "2"
+# ACME (TLS-ALPN-01, hitless). `ring` to match the core's provider; `tokio` for the
+# async driver + on-disk cache.
+rustls-acme = { version = "0.13", default-features = false, features = ["ring", "tokio"] }
+futures = "0.3"
+
+[dev-dependencies]
+rcgen = "0.13"
+tokio = { workspace = true, features = ["io-util", "rt", "macros", "time"] }

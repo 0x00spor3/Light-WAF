@@ -1,0 +1,14 @@
+[package]
+name = "waf-state-redis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Distributed (Redis) rate-limit StateStore for Light WAF — enterprise tier (BSL 1.1)"
+
+[dependencies]
+waf-core.workspace = true
+redis.workspace = true
+r2d2.workspace = true
+tokio.workspace = true
+tracing.workspace = true

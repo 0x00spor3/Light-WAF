@@ -1,0 +1,43 @@
+# Light WAF — ENTERPRISE tier (source-available, BSL 1.1).
+#
+# This is a DETACHED workspace (its own [workspace] root, like `examples/` and
+# `fuzz/`): it is NOT a member of the root OPEN workspace, so `cargo build/test
+# --workspace` at the repo root never touches it and the OPEN validation stays
+# isolated. The whole subtree is meant to be lifted into a SEPARATE repo
+# (`mv enterprise/ ../light-waf-enterprise`) — the dependency on the core is by
+# crates.io VERSION (no path, no patch), exactly as the separate repo will build.
+#
+# Boundary: BOUNDARY.md §4 — the core (OPEN) defines the trait seams; this tier
+# provides the at-scale implementations, injected via `Proxy::builder` WITHOUT
+# forking the core.
+[workspace]
+resolver = "2"
+members = [
+    "crates/waf-state-redis",
+    "crates/waf-tls-managed",
+    "crates/waf-enterprise",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "BUSL-1.1"
+authors = ["0x00spor3"]
+
+[workspace.dependencies]
+# Core dependency = crates.io VERSION (no path, no patch). The additive TLS seams
+# (`TlsCertSource::resolver`/`client_verifier`) ship in core 0.2, now published — so the
+# enterprise tier builds against the real published crate, exactly as the separate repo will.
+waf-core = "0.2"
+waf-proxy = "0.2"
+
+redis = { version = "0.27", features = ["r2d2"] }
+r2d2 = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+# Same rustls line as the core (rustls 0.23 / tokio-rustls 0.26) so trait objects
+# (`Arc<dyn ResolvesServerCert>` / `ClientCertVerifier`) unify across the seam.
+tokio-rustls = "0.26"
