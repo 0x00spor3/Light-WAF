@@ -32,6 +32,10 @@ cache_dir     = "acme-cache"             # persistenza account/cert tra i restar
 staging       = true                      # true = CA di staging (evita i rate-limit di LE prod)
 # directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"  # o un Pebble di test
 # provider      = "cloudflare"            # solo per strategy = "dns-01": "cloudflare" | "route53"
+# cluster       = false                    # MULTI-NODO (solo dns-01): true = i nodi si coordinano via
+#                                          # Redis (SharedCertStore) → UN nodo emette per il cluster,
+#                                          # gli altri convergono. Richiede [enterprise].redis_url +
+#                                          # env `WAF_CERT_STORE_KEY` (cifra la chiave privata a riposo).
 
 # DNS-01 (solo con strategy = "dns-01"). Pubblica il TXT `_acme-challenge.<dominio>` via API
 # del provider, poi attende la propagazione sugli NS AUTORITATIVI prima di far validare la CA.

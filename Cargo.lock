@@ -3061,8 +3061,12 @@ dependencies = [
 name = "waf-state-redis"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "r2d2",
  "redis",
+ "ring",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "waf-core",
@@ -3090,6 +3094,7 @@ dependencies = [
  "instant-acme",
  "rcgen 0.13.2",
  "reqwest",
+ "ring",
  "rustls-acme",
  "rustls-pemfile",
  "serde",
@@ -3098,7 +3103,9 @@ dependencies = [
  "tokio-rustls 0.26.4",
  "tracing",
  "waf-proxy",
+ "waf-state-redis",
  "webpki-roots 1.0.8",
+ "x509-parser 0.16.0",
 ]
 
 [[package]]

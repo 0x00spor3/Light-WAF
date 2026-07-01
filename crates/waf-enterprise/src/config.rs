@@ -55,6 +55,11 @@ pub struct AcmeSection {
     pub directory_url: Option<String>,
     /// DNS provider name (only meaningful for `strategy = "dns-01"`). E.g. `"cloudflare"`.
     pub provider: Option<String>,
+    /// Cluster cert-sharing (multi-node): when `true`, nodes coordinate via the Redis
+    /// `SharedCertStore` so ONE node issues for the cluster and the rest converge on that cert.
+    /// Requires `[enterprise].redis_url` (or `WAF_REDIS_URL`) AND `WAF_CERT_STORE_KEY`, and is
+    /// only meaningful for `strategy = "dns-01"`. Default `false` (per-node issuance).
+    pub cluster: bool,
     /// `[tls.acme.dns]` — DNS-01 tunables (zone + propagation/renewal timing).
     pub dns: DnsSection,
 }
@@ -70,6 +75,7 @@ impl Default for AcmeSection {
             staging: true,
             directory_url: None,
             provider: None,
+            cluster: false,
             dns: DnsSection::default(),
         }
     }
@@ -112,7 +118,8 @@ impl DnsSection {
             poll_interval: Duration::from_secs(self.poll_interval_secs),
             grace: Duration::from_secs(self.grace_secs),
             renewal_interval: Duration::from_secs(self.renewal_days * 24 * 60 * 60),
-            retry_backoff: Duration::from_secs(300),
+            // retry_backoff / lock_ttl / convergence_poll: driver defaults (not TOML-exposed yet).
+            ..Dns01Config::default()
         }
     }
 }
@@ -374,6 +381,29 @@ renewal_days = 45
         assert_eq!(cfg.poll_interval, Duration::from_secs(3));
         assert_eq!(cfg.grace, Duration::from_secs(7));
         assert_eq!(cfg.renewal_interval, Duration::from_secs(45 * 24 * 60 * 60));
+    }
+
+    #[test]
+    fn cluster_flag_defaults_off_and_parses() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        assert!(!f.tls.acme.cluster, "cert-sharing must default OFF (per-node issuance)");
+
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[tls.acme]
+enabled = true
+strategy = "dns-01"
+cluster = true
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert!(f.tls.acme.cluster);
     }
 
     #[test]

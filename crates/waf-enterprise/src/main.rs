@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 use waf_proxy::tls::FileCertSource;
 use waf_proxy::Proxy;
-use waf_state_redis::{RedisStore, RedisStoreOptions};
+use waf_state_redis::{CertCipher, RedisStore, RedisStoreOptions, SharedCertStore};
 use waf_tls_managed::acme::ChallengeStrategy;
 use waf_tls_managed::dns::{CloudflareDns, DnsProvider, Route53Dns};
 use waf_tls_managed::{acme, acme_dns01, mtls, ManagedTlsCertSource};
@@ -120,6 +120,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     let ent = &ent_file.enterprise;
 
+    // Cluster cert-sharing (SharedCertStore): opt-in via `[tls.acme].cluster`, only for DNS-01
+    // with TLS on. It needs Redis (the shared cert store) AND `WAF_CERT_STORE_KEY` (the private
+    // key is encrypted at rest) — both boot-fatal if missing. The cipher is built here so it can
+    // be attached to the SINGLE `RedisStore` constructed for Seam 1 (one pool, three capabilities).
+    let acme_is_dns01 =
+        matches!(ent_file.tls.acme.challenge_strategy(), Ok(ChallengeStrategy::Dns01 { .. }));
+    let cluster_certs = config.tls.enabled
+        && ent_file.tls.acme.enabled
+        && ent_file.tls.acme.cluster
+        && acme_is_dns01;
+    if ent_file.tls.acme.cluster && !cluster_certs {
+        warn!("[tls.acme].cluster = true ignored (needs [tls].enabled + [tls.acme].enabled + strategy = dns-01)");
+    }
+    let mut cert_cipher: Option<CertCipher> = None;
+    if cluster_certs {
+        match std::env::var("WAF_CERT_STORE_KEY") {
+            Ok(k) if !k.is_empty() => cert_cipher = Some(CertCipher::from_secret(&k)),
+            _ => {
+                eprintln!("waf-enterprise: [tls.acme].cluster = true requires the WAF_CERT_STORE_KEY environment variable");
+                std::process::exit(2);
+            }
+        }
+    }
+    // Set from the Seam-1 Redis store when cluster mode is active; handed to the DNS-01 driver.
+    let mut shared_cert_store: Option<Arc<dyn SharedCertStore>> = None;
+
     let mut builder = Proxy::builder(&config);
 
     // ── Seam 1: distributed state on Redis — rate-limit StateStore AND/OR cluster-wide
@@ -133,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None => (ent.redis_url.clone(), "[enterprise].redis_url"),
     };
     let reputation_on = ent.reputation.enabled;
-    let needs_store = config.rate_limit.enabled || reputation_on;
+    let needs_store = config.rate_limit.enabled || reputation_on || cluster_certs;
     match redis_url {
         Some(url) if needs_store => {
             let mut opts = RedisStoreOptions::default();
@@ -145,7 +171,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // degrading would be "looks-protected-but-isn't". (Runtime: rate-limit follows
             // `fail_open`; reputation always fails to `Unknown`.)
             let store = match RedisStore::connect_with_options(&url, opts) {
-                Ok(s) => Arc::new(s),
+                // Attach the cert cipher in cluster mode → the same pool ALSO backs the
+                // `SharedCertStore` (cert coordination), alongside rate-limit + reputation.
+                Ok(s) => match cert_cipher.take() {
+                    Some(c) => Arc::new(s.with_cert_cipher(c)),
+                    None => Arc::new(s),
+                },
                 Err(e) => {
                     error!(error = %e, "configured Redis unreachable; refusing to start");
                     return Err(e.into());
@@ -172,6 +203,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     ReputationConfig { enabled: true, malicious, suspicious },
                 )));
             }
+            if cluster_certs {
+                // The SAME store also backs cluster cert coordination (Step 3): the DNS-01 driver
+                // (Seam 2) uses it as the SharedCertStore. RedisStore impls the trait.
+                info!(redis = %url, source = url_src, "wiring cluster-wide SharedCertStore (multi-node cert coordination)");
+                shared_cert_store = Some(store.clone());
+            }
         }
         // Redis configured but nothing consumes it.
         Some(_) => warn!(
@@ -183,6 +220,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None if reputation_on => {
             error!("[enterprise.reputation].enabled = true but no redis_url — reputation needs Redis; refusing to start");
             return Err("[enterprise.reputation] enabled without redis_url".into());
+        }
+        // Cluster cert-sharing likewise has no in-memory fallback (there is no shared store).
+        None if cluster_certs => {
+            error!("[tls.acme].cluster = true but no redis_url — cluster cert-sharing needs Redis; refusing to start");
+            return Err("[tls.acme].cluster enabled without redis_url".into());
         }
         None => info!("no redis_url ([enterprise] or WAF_REDIS_URL) — using the OPEN in-memory rate-limit store (single-node)"),
     }
@@ -230,8 +272,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             error!(error = %e, "DNS-01 provider could not be built; refusing to start");
                             e
                         })?;
-                        info!(domains = ?params.domains, staging = params.staging, provider = ?acme_cfg.provider, "wiring managed ACME (DNS-01, hitless)");
-                        acme_dns01::start_dns01_resolver(&params, provider, acme_cfg.dns.to_config())
+                        info!(domains = ?params.domains, staging = params.staging, provider = ?acme_cfg.provider, cluster = shared_cert_store.is_some(), "wiring managed ACME (DNS-01, hitless)");
+                        // Cluster mode passes the Redis SharedCertStore (Seam 1); None ⇒ single-node.
+                        acme_dns01::start_dns01_resolver(&params, provider, acme_cfg.dns.to_config(), shared_cert_store.clone())
                             .map_err(|e| {
                                 error!(error = %e, "DNS-01 resolver could not start; refusing to start");
                                 e

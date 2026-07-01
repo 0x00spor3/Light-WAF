@@ -1,0 +1,61 @@
+# Live MULTI-NODE ACME DNS-01 — cluster cert-sharing via Redis (SharedCertStore).
+# This is NODE A's config. Node B is an identical copy with only the two listen ports changed
+# (see scripts/cluster-tls/RUNBOOK.md — the runbook generates node-b.toml for you).
+#
+# What this proves: with `[tls.acme].cluster = true` the two nodes coordinate through Redis —
+# ONE node acquires the issuance lock, does the DNS-01 order ONCE, and publishes the cert; the
+# other converges on that SAME cert instead of issuing its own. So both nodes serve an identical
+# certificate (same fingerprint) and Let's Encrypt sees a single order (no N× rate-limit, no
+# Route53 TXT clobber).
+#
+# Before running (BOTH nodes need the SAME values here):
+#   1. A reachable Redis, shared by both nodes:
+#        docker run -d --name waf-redis -p 6379:6379 redis:7
+#   2. The AWS creds for Route53 (key with route53:ChangeResourceRecordSets on the zone):
+#        export AWS_ACCESS_KEY_ID=...   export AWS_SECRET_ACCESS_KEY=...
+#   3. The cert-store encryption secret — IDENTICAL on every node (it decrypts the shared key):
+#        export WAF_CERT_STORE_KEY='a-long-random-passphrase-shared-by-all-nodes'
+#   4. Set [tls.acme.dns].zone_id below to the lightwaf.org hosted-zone id.
+#   5. Run node A:  WAF_CONFIG=acme-dns01-cluster.toml cargo run -p waf-enterprise
+#      Run node B:  WAF_CONFIG=node-b.toml            cargo run -p waf-enterprise
+
+[proxy]
+listen  = "0.0.0.0:8443"               # NODE-A-PORT (node B uses 8444)
+backend = "http://127.0.0.1:8000"      # optional; only used if you send real traffic
+
+[enterprise]
+redis_url = "redis://127.0.0.1:6379"   # SAME Redis on both nodes — this is the coordination point
+
+[tls]
+enabled   = true
+cert_path = "unused-with-acme.pem"     # ignored when an ACME resolver is injected
+key_path  = "unused-with-acme.pem"
+alpn      = ["h2", "http/1.1"]
+
+[tls.acme]
+enabled   = true
+strategy  = "dns-01"                    # cluster cert-sharing is DNS-01 only (no inbound needed)
+provider  = "route53"
+domains   = ["lightwaf.org", "*.lightwaf.org"]
+email     = "admin@lightwaf.org"
+staging   = true                        # LE STAGING (cert not browser-trusted — expected)
+cluster   = true                        # ← THE FLAG: coordinate via Redis SharedCertStore
+cache_dir = "acme-cache-a"              # LOCAL per-node cache (node B uses acme-cache-b); the
+                                        # SHARED source of truth is Redis, this is just a warm cache
+
+[tls.acme.dns]
+zone_id                  = "FILL_ME"    # the Z... hosted-zone id for lightwaf.org
+propagation_timeout_secs = 180
+poll_interval_secs       = 5
+grace_secs               = 10
+renewal_days             = 60
+
+[metrics]
+listen = "127.0.0.1:9090"               # NODE-A-METRICS (node B uses 9091) — MUST differ per node,
+                                        # else the second process fails to bind (AddrInUse)
+
+[waf]
+mode = "blocking"
+
+[rate_limit]
+enabled = false                         # not needed for this test (though the same Redis could back it)

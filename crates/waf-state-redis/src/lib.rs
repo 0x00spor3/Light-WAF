@@ -30,6 +30,9 @@ use redis::{Client, Script};
 use tracing::warn;
 use waf_core::{Acquired, BucketParams, StateStore};
 
+mod certstore;
+pub use certstore::{CertCipher, DecryptError, SharedCert, SharedCertStore};
+
 /// Token-bucket step, executed atomically server-side.
 ///
 /// `KEYS[1]` = bucket key. `ARGV` = capacity, refill/s, cost, ttl(s), now_override
@@ -103,11 +106,15 @@ impl Default for RedisStoreOptions {
     }
 }
 
-/// A distributed token-bucket [`StateStore`] over Redis.
+/// A distributed token-bucket [`StateStore`] over Redis. The same pool also backs
+/// [`ReputationStore`] and (when a [`CertCipher`] is attached) [`SharedCertStore`].
 pub struct RedisStore {
     pool: Pool<Client>,
     script: Script,
     fail_open: bool,
+    /// Present only when the cluster-wide cert store is in use — encrypts the private key at
+    /// rest. `None` ⇒ the `SharedCertStore` methods no-op loudly (rate-limit/reputation unaffected).
+    cert_cipher: Option<CertCipher>,
 }
 
 impl RedisStore {
@@ -143,7 +150,19 @@ impl RedisStore {
             .max_size(options.pool_size.max(1))
             .connection_timeout(CONNECT_TIMEOUT)
             .build_unchecked(client);
-        Ok(Self { pool, script: Script::new(BUCKET_LUA), fail_open: options.fail_open })
+        Ok(Self {
+            pool,
+            script: Script::new(BUCKET_LUA),
+            fail_open: options.fail_open,
+            cert_cipher: None,
+        })
+    }
+
+    /// Attach the cert-store cipher, enabling the [`SharedCertStore`] capability on this pool.
+    /// Wired only in cluster mode (`[tls.acme].cluster = true`), from `WAF_CERT_STORE_KEY`.
+    pub fn with_cert_cipher(mut self, cipher: CertCipher) -> Self {
+        self.cert_cipher = Some(cipher);
+        self
     }
 
     fn ping(&self) -> redis::RedisResult<()> {

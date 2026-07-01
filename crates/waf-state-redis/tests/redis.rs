@@ -20,8 +20,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::time::Duration;
+
 use waf_core::{BucketParams, InMemoryStateStore, ManualClock, StateStore};
-use waf_state_redis::{RedisStore, Reputation, ReputationStore};
+use waf_state_redis::{
+    CertCipher, RedisStore, Reputation, ReputationStore, SharedCert, SharedCertStore,
+};
 
 fn redis_url() -> Option<String> {
     std::env::var("WAF_REDIS_URL").ok().filter(|s| !s.is_empty())
@@ -148,6 +152,95 @@ fn reputation_reads_seeded_values() {
         .arg(format!("rep:{sus}"))
         .query::<()>(&mut conn)
         .unwrap();
+}
+
+// ── SharedCertStore (cert TLS multi-nodo): lock CAS semantics + encrypted round-trip ──
+
+fn cert_store(url: &str) -> RedisStore {
+    RedisStore::connect(url)
+        .expect("connect")
+        .with_cert_cipher(CertCipher::from_secret("integration-test-secret"))
+}
+
+#[test]
+fn issuance_lock_is_single_writer_and_owner_scoped() {
+    let url = require_redis!();
+    let store = cert_store(&url);
+    let key = unique_key("lock");
+    let ttl = Duration::from_secs(30);
+
+    // First holder wins; a different holder cannot take it while held (single writer).
+    assert!(store.try_lock(&key, "node-A", ttl), "A acquires the free lock");
+    assert!(!store.try_lock(&key, "node-B", ttl), "B must NOT take A's held lock");
+
+    // extend only works for the owner (compare-and-pexpire).
+    assert!(store.extend_lock(&key, "node-A", ttl), "owner A extends its lock");
+    assert!(!store.extend_lock(&key, "node-B", ttl), "non-owner B cannot extend");
+
+    // unlock by a non-owner is a no-op; the owner can still release.
+    store.unlock(&key, "node-B");
+    assert!(!store.try_lock(&key, "node-B", ttl), "B still cannot take A's lock after a bogus unlock");
+    store.unlock(&key, "node-A");
+    assert!(store.try_lock(&key, "node-B", ttl), "B acquires after A releases");
+    store.unlock(&key, "node-B");
+}
+
+#[test]
+fn dead_leader_lock_expires_on_the_wire() {
+    // R5, wire-level: a leader that acquires the lock and dies (no unlock, no heartbeat) must not
+    // deadlock the cluster — Redis PX expiry frees the lock so another node takes over.
+    let url = require_redis!();
+    let store = cert_store(&url);
+    let key = unique_key("ttl");
+
+    assert!(store.try_lock(&key, "node-A", Duration::from_millis(800)), "A acquires");
+    assert!(!store.try_lock(&key, "node-B", Duration::from_secs(30)), "B blocked while A's lock lives");
+
+    // A "dies": no unlock, no extend. Wait past the short TTL.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    assert!(store.try_lock(&key, "node-B", Duration::from_secs(30)), "B takes over the expired lock");
+    store.unlock(&key, "node-B");
+}
+
+#[test]
+fn store_cert_requires_the_lock_and_round_trips_encrypted() {
+    let url = require_redis!();
+    let store = cert_store(&url);
+    let key = unique_key("cert");
+    let ttl = Duration::from_secs(30);
+
+    let cert = SharedCert {
+        chain_pem: "-----BEGIN CERTIFICATE-----\nMIIfake\n-----END CERTIFICATE-----\n".into(),
+        key_pem: "-----BEGIN PRIVATE KEY-----\nMIIsecret\n-----END PRIVATE KEY-----\n".into(),
+        not_after_unix: 1_900_000_000,
+    };
+
+    // No lock held ⇒ store is refused (defense in depth: only the writer may publish).
+    assert!(!store.store_cert(&key, "node-A", &cert), "store without the lock must fail");
+    assert!(store.load_cert(&key).is_none(), "nothing was written");
+
+    // Hold the lock, then a non-holder still cannot store, but the holder can.
+    assert!(store.try_lock(&key, "node-A", ttl));
+    assert!(!store.store_cert(&key, "node-B", &cert), "a non-holder cannot store even while A holds");
+    assert!(store.store_cert(&key, "node-A", &cert), "the lock holder stores the cert");
+
+    // The blob round-trips, including private-key decryption (proves encryption-at-rest works).
+    let got = store.load_cert(&key).expect("cert is present");
+    assert_eq!(got, cert, "loaded cert matches (chain + decrypted key + expiry)");
+
+    store.unlock(&key, "node-A");
+
+    // A store WITHOUT a cipher attached must not write (and would not be able to encrypt).
+    let plain = RedisStore::connect(&url).expect("connect");
+    assert!(store.try_lock(&key, "node-C", ttl));
+    assert!(!plain.store_cert(&key, "node-C", &cert), "no cipher ⇒ store no-ops");
+    store.unlock(&key, "node-C");
+
+    // Cleanup.
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut conn = client.get_connection().unwrap();
+    redis::cmd("DEL").arg(format!("cert:{key}")).query::<()>(&mut conn).unwrap();
 }
 
 #[test]

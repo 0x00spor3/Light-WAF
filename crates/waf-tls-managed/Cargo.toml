@@ -44,6 +44,16 @@ webpki-roots = "1"
 # only (no DoT/DoH/DNSSEC features).
 hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
 aws-sdk-route53 = { version = "1.115.0", features = ["behavior-version-latest"] }
+# Cluster-wide cert coordination (multi-node): the shared cert store + single-writer issuance
+# lock live on the SAME Redis pool as rate-limit/reputation. Optional at runtime (single-node
+# passes `None`); the dep is compile-time only for the `SharedCertStore` trait + `SharedCert`.
+waf-state-redis = { path = "../waf-state-redis", version = "0.1.0" }
+# Parse the issued leaf's `notAfter` so renewal triggers on real expiry (not a fixed interval),
+# and so a restart with a still-valid cached cert does not needlessly re-issue.
+x509-parser = "0.16"
+# Cert fingerprint (SHA-256) for the skew-proof "is the shared cert newer than mine" compare,
+# and the domain-set hash used as the Redis key. `ring` is already in the tree.
+ring = "0.17"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "rt", "macros", "time"] }

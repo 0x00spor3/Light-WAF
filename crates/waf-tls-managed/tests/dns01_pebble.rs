@@ -66,7 +66,7 @@ async fn dns01_issues_and_installs_against_pebble() {
     // Wildcard issuance: a single authorization → one TXT value, which challtestsrv can hold.
     // (The apex+wildcard two-value case is the in-memory unit test, not this live probe.)
     let domains = vec![format!("*.{domain}")];
-    issue_once(&account, &domains, &provider, &resolver, &Dns01Config::default(), None)
+    issue_once(&account, &domains, &provider, &resolver, &Dns01Config::default(), None, None)
         .await
         .expect("DNS-01 issuance + install");
 

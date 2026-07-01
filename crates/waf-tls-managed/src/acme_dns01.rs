@@ -21,9 +21,13 @@
 
 use std::net::IpAddr;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+// The `ring` crate (digest/HKDF-free use here: SHA-256 for fingerprints + the domain-set key).
+// Referenced as `::ring` because `tokio_rustls::rustls::crypto::ring` also binds `ring` below.
+use ::ring::digest as rdigest;
 use arc_swap::ArcSwapOption;
 use hickory_resolver::config::{NameServerConfig, ResolverConfig};
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
@@ -39,6 +43,7 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::server::{ClientHello, ResolvesServerCert};
 use tokio_rustls::rustls::sign::CertifiedKey;
 use tracing::{error, info, warn};
+use waf_state_redis::{SharedCert, SharedCertStore};
 
 use crate::acme::{AcmeError, AcmeParams};
 use crate::dns::{DnsProvider, TxtHandle};
@@ -57,10 +62,17 @@ pub struct Dns01Config {
     pub poll_interval: Duration,
     /// Courtesy delay AFTER the TXT is first seen (CAs validate from multiple vantage points).
     pub grace: Duration,
-    /// How long to wait between successful issuance and the next renewal attempt.
+    /// Renewal WINDOW: renew once the served cert's remaining lifetime drops below this (compared
+    /// against the leaf's real `notAfter`, not a fixed post-issuance sleep).
     pub renewal_interval: Duration,
     /// Backoff after a failed issuance (the current cert keeps being served meanwhile).
     pub retry_backoff: Duration,
+    /// Cluster only: TTL of the single-writer issuance lock. Kept alive by a heartbeat while
+    /// issuing; if the leader dies, the lock expires after this so another node can take over.
+    pub lock_ttl: Duration,
+    /// How often a healthy node re-checks (renewal due? shared cert changed?). This is the loop's
+    /// idle cadence — NOT the DNS `poll_interval`.
+    pub convergence_poll: Duration,
 }
 
 impl Default for Dns01Config {
@@ -69,8 +81,10 @@ impl Default for Dns01Config {
             propagation_timeout: Duration::from_secs(120),
             poll_interval: Duration::from_secs(5),
             grace: Duration::from_secs(10),
-            renewal_interval: Duration::from_secs(60 * 24 * 60 * 60), // ~60 days
+            renewal_interval: Duration::from_secs(30 * 24 * 60 * 60), // renew when <30 days remain
             retry_backoff: Duration::from_secs(300),
+            lock_ttl: Duration::from_secs(60),
+            convergence_poll: Duration::from_secs(60),
         }
     }
 }
@@ -126,6 +140,70 @@ pub fn certified_key_from_pem(chain_pem: &str, key_pem: &str) -> Result<Certifie
         rustls_pemfile::private_key(&mut key_pem.as_bytes())?.ok_or("no private key in PEM")?;
     let signing_key = ring::default_provider().key_provider.load_private_key(key)?;
     Ok(CertifiedKey::new(certs, signing_key))
+}
+
+/// A freshly issued certificate: the chain, OUR private key, and the leaf's real expiry. Returned
+/// by [`issue_once`] so the caller can publish it to the cluster store and drive renewal off the
+/// true `notAfter`.
+#[derive(Debug, Clone)]
+pub struct IssuedCert {
+    pub chain_pem: String,
+    pub key_pem: String,
+    pub not_after_unix: i64,
+}
+
+/// Seconds since the Unix epoch (0 on the impossible pre-1970 clock).
+fn now_unix() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// SHA-256 of a byte slice as lowercase hex — used for both the cert fingerprint (change
+/// detection) and the domain-set key (Redis namespace).
+fn sha256_hex(bytes: &[u8]) -> String {
+    let d = rdigest::digest(&rdigest::SHA256, bytes);
+    d.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Fingerprint of an issued chain — the **primary** discriminant for "is the shared cert newer
+/// than mine" (clock-skew-proof, unlike comparing `notAfter` timestamps across nodes).
+fn cert_fingerprint(chain_pem: &str) -> String {
+    sha256_hex(chain_pem.as_bytes())
+}
+
+/// Stable, order-independent key for a set of domains (apex + wildcard hash to the same key), so
+/// every node coordinates on `cert:<key>` / `issuance_lock:<key>` for the same certificate.
+fn domainset_key(domains: &[String]) -> String {
+    let mut ds: Vec<&str> = domains.iter().map(String::as_str).collect();
+    ds.sort_unstable();
+    ds.dedup();
+    sha256_hex(ds.join("\n").as_bytes())
+}
+
+/// A per-process lock-holder id (host process + a startup nonce), unique enough that two nodes
+/// never collide on the compare-and-set lock value.
+fn make_node_id() -> String {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("node-{}-{}", std::process::id(), nanos)
+}
+
+/// The leaf's `notAfter` as a Unix timestamp. On a parse failure (extremely unlikely for a real
+/// issued cert) fall back to "valid for ~80 days" so a bad parse can never spin the renewal loop.
+fn leaf_not_after_unix(chain_pem: &str) -> i64 {
+    use x509_parser::prelude::*;
+    match Pem::iter_from_buffer(chain_pem.as_bytes()).next() {
+        Some(Ok(pem)) => match pem.parse_x509() {
+            Ok(cert) => return cert.validity().not_after.timestamp(),
+            Err(e) => warn!(error = %e, "DNS-01: could not parse leaf notAfter; assuming ~80d"),
+        },
+        _ => warn!("DNS-01: issued chain had no leaf PEM; assuming ~80d validity"),
+    }
+    now_unix() + 80 * 24 * 60 * 60
+}
+
+/// Whether a cooperative-abort flag is set (used to bail out of a long issuance when the cluster
+/// issuance lock is lost — see [`start_dns01_resolver`]).
+fn aborted(flag: Option<&AtomicBool>) -> bool {
+    flag.is_some_and(|f| f.load(Ordering::SeqCst))
 }
 
 // ── On-disk cache (warm restarts) ───────────────────────────────────────────────
@@ -225,7 +303,12 @@ async fn txt_present(resolver: &TokioResolver, name: &str, expected: &str) -> bo
 /// Wait until the DNS-01 TXT `expected` at `name` is visible on the zone's AUTHORITATIVE
 /// nameservers, then add a grace delay. If there is no discoverable authoritative zone (local
 /// test domains), fall back to a short fixed delay so the flow still works.
-async fn wait_for_propagation(name: &str, expected: &str, cfg: &Dns01Config) -> Result<(), Dns01Error> {
+async fn wait_for_propagation(
+    name: &str,
+    expected: &str,
+    cfg: &Dns01Config,
+    abort: Option<&AtomicBool>,
+) -> Result<(), Dns01Error> {
     let boot_cfg = ResolverConfig::from_parts(
         None,
         vec![],
@@ -261,6 +344,11 @@ async fn wait_for_propagation(name: &str, expected: &str, cfg: &Dns01Config) -> 
 
     let deadline = Instant::now() + cfg.propagation_timeout;
     loop {
+        // Bail out promptly if the cluster issuance lock was lost mid-flight (this is the longest
+        // wait in the whole flow, so checking here gives a responsive abort with TXT cleanup).
+        if aborted(abort) {
+            return Err("DNS-01 issuance aborted: issuance lock lost".into());
+        }
         if txt_present(&auth, name, expected).await {
             info!(record = name, "DNS-01: TXT visible on authoritative NS");
             sleep(cfg.grace).await;
@@ -291,7 +379,8 @@ pub async fn issue_once(
     resolver: &Dns01Resolver,
     cfg: &Dns01Config,
     cache_dir: Option<&Path>,
-) -> Result<(), Dns01Error> {
+    abort: Option<&AtomicBool>,
+) -> Result<IssuedCert, Dns01Error> {
     // Records every TXT we publish so cleanup runs on ALL exit paths below. Populated inside the
     // issuance block; drained by the unconditional cleanup loop after it, whatever the outcome.
     let mut handles: Vec<TxtHandle> = Vec::new();
@@ -299,7 +388,7 @@ pub async fn issue_once(
     // The whole issuance. Its `?` short-circuits into `result` (NOT out of `issue_once`), so the
     // cleanup loop after always runs. `handles` is borrowed mutably here and read after — the
     // future is dropped at the end of this statement, releasing the borrow before cleanup.
-    let result: Result<(), Dns01Error> = async {
+    let result: Result<IssuedCert, Dns01Error> = async {
         let identifiers: Vec<Identifier> = domains.iter().cloned().map(Identifier::Dns).collect();
         let mut order = account.new_order(&NewOrder::new(&identifiers)).await?;
 
@@ -322,9 +411,14 @@ pub async fn issue_once(
                 // published and must still be cleaned up.
                 let handle = provider.add_txt(&name, &value).await.map_err(Box::new)?;
                 handles.push(handle);
-                wait_for_propagation(&name, &value, cfg).await?;
+                wait_for_propagation(&name, &value, cfg, abort).await?;
                 challenge.set_ready().await?;
             }
+        }
+
+        // Lock lost while validating? Abort before spending an order finalize (double issuance).
+        if aborted(abort) {
+            return Err("DNS-01 issuance aborted: issuance lock lost".into());
         }
 
         // Wait for the CA to validate every authorization, then finalize with a key WE own.
@@ -346,8 +440,9 @@ pub async fn issue_once(
         if let Some(dir) = cache_dir {
             store_cached_cert(dir, &chain_pem, &key_pem);
         }
-        info!(domains = ?domains, "DNS-01: certificate issued and installed");
-        Ok(())
+        let not_after_unix = leaf_not_after_unix(&chain_pem);
+        info!(domains = ?domains, not_after = not_after_unix, "DNS-01: certificate issued and installed");
+        Ok(IssuedCert { chain_pem, key_pem, not_after_unix })
     }
     .await;
 
@@ -410,14 +505,62 @@ async fn build_account(
     Ok(account)
 }
 
+/// Run one issuance while holding the cluster issuance lock. A background heartbeat extends the
+/// lock every `lock_ttl/3`; if an extend fails (the lock was lost to a Redis blip), it signals a
+/// cooperative ABORT so we stop ordering under a lock another node may now hold (R2) and retry
+/// later. `store_cert`'s compare-and-set (R3) is the second line of defence. Returns the issued
+/// cert on success.
+#[allow(clippy::too_many_arguments)]
+async fn issue_as_leader(
+    store: &Arc<dyn SharedCertStore>,
+    cert_key: &str,
+    node_id: &str,
+    account: &Account,
+    domains: &[String],
+    provider: &dyn DnsProvider,
+    resolver: &Dns01Resolver,
+    cfg: &Dns01Config,
+    cache_dir: &Path,
+) -> Result<IssuedCert, Dns01Error> {
+    let abort = Arc::new(AtomicBool::new(false));
+    let heartbeat = {
+        let store = Arc::clone(store);
+        let cert_key = cert_key.to_string();
+        let node_id = node_id.to_string();
+        let abort = Arc::clone(&abort);
+        let ttl = cfg.lock_ttl;
+        let beat = (ttl / 3).max(Duration::from_secs(1));
+        tokio::spawn(async move {
+            loop {
+                sleep(beat).await;
+                if !store.extend_lock(&cert_key, &node_id, ttl) {
+                    warn!(key = %cert_key, "DNS-01 cluster: lost the issuance lock mid-flight; signalling abort");
+                    abort.store(true, Ordering::SeqCst);
+                    return;
+                }
+            }
+        })
+    };
+
+    let result =
+        issue_once(account, domains, provider, resolver, cfg, Some(cache_dir), Some(abort.as_ref())).await;
+    heartbeat.abort();
+    result
+}
+
 /// Start the DNS-01 managed-cert background driver and return the hot-swappable resolver to
 /// hand to the core via `TlsCertSource::resolver`. Boot-fatal only on a config error (no
 /// domains); the ACME ordering/renewal is async (the resolver serves nothing until the first
 /// issuance completes, exactly like the TLS-ALPN-01 path). MUST be called inside a tokio runtime.
+///
+/// `shared` = the cluster cert store (`[tls.acme].cluster`). When `Some`, nodes coordinate: the
+/// lock holder issues ONCE for the cluster and publishes the cert; the others converge on it
+/// without issuing. When `None`, this is the single-node path (issue + local disk cache only).
 pub fn start_dns01_resolver(
     params: &AcmeParams,
     provider: Arc<dyn DnsProvider>,
     cfg: Dns01Config,
+    shared: Option<Arc<dyn SharedCertStore>>,
 ) -> Result<Arc<dyn ResolvesServerCert>, AcmeError> {
     if params.domains.is_empty() {
         return Err(AcmeError::NoDomains);
@@ -432,17 +575,26 @@ pub fn start_dns01_resolver(
     let domains = params.domains.clone();
     let email = params.email.clone();
     let cache_dir = params.cache_dir.clone();
+    let cert_key = domainset_key(&domains);
+    let node_id = make_node_id();
 
     let resolver: Arc<Dns01Resolver> = Arc::new(Dns01Resolver::new());
 
-    // Warm start: serve a cached cert immediately (the background loop will renew it).
+    // Warm start: serve a cached cert immediately, and seed its fingerprint + expiry so a restart
+    // with a still-valid cert does not needlessly re-issue (which would burn LE rate limit).
+    let mut warm_fp: Option<String> = None;
+    let mut warm_not_after: Option<i64> = None;
     if let Some(ck) = load_cached_cert(&cache_dir) {
         resolver.install(Arc::new(ck));
+        if let Ok(chain) = std::fs::read_to_string(cache_dir.join("cert.pem")) {
+            warm_fp = Some(cert_fingerprint(&chain));
+            warm_not_after = Some(leaf_not_after_unix(&chain));
+        }
         info!(cache = %cache_dir.display(), "DNS-01: serving cached certificate while renewal runs");
     }
 
     let resolver_for_task = Arc::clone(&resolver);
-    info!(domains = ?domains, "DNS-01 resolver starting; account/order/renewal run in background");
+    info!(domains = ?domains, cluster = shared.is_some(), "DNS-01 resolver starting; account/order/renewal run in background");
     tokio::spawn(async move {
         let account = match build_account(&server_url, email.as_deref(), &cache_dir).await {
             Ok(a) => a,
@@ -451,21 +603,100 @@ pub fn start_dns01_resolver(
                 return;
             }
         };
+
+        let mut installed_fp = warm_fp;
+        let mut installed_not_after = warm_not_after;
+
         loop {
-            match issue_once(
-                &account,
-                &domains,
-                provider.as_ref(),
-                &resolver_for_task,
-                &cfg,
-                Some(&cache_dir),
-            )
-            .await
-            {
-                Ok(()) => sleep(cfg.renewal_interval).await,
-                Err(e) => {
-                    warn!(error = %e, "DNS-01: issuance failed; keeping current certificate, will retry");
-                    sleep(cfg.retry_backoff).await;
+            // 1. Converge on the cluster cert (source of truth in cluster mode). Install only when
+            //    the fingerprint differs (skew-proof), i.e. someone issued/renewed elsewhere.
+            if let Some(store) = shared.as_ref() {
+                if let Some(sc) = store.load_cert(&cert_key) {
+                    let fp = cert_fingerprint(&sc.chain_pem);
+                    if installed_fp.as_deref() != Some(fp.as_str()) {
+                        match certified_key_from_pem(&sc.chain_pem, &sc.key_pem) {
+                            Ok(ck) => {
+                                resolver_for_task.install(Arc::new(ck));
+                                store_cached_cert(&cache_dir, &sc.chain_pem, &sc.key_pem);
+                                installed_fp = Some(fp);
+                                installed_not_after = Some(sc.not_after_unix);
+                                info!(key = %cert_key, "DNS-01 cluster: converged on shared certificate");
+                            }
+                            Err(e) => warn!(error = %e, "DNS-01 cluster: shared cert failed to load"),
+                        }
+                    } else {
+                        installed_not_after = Some(sc.not_after_unix);
+                    }
+                }
+            }
+
+            // 2. Renewal due? (No cert yet, or the leaf is inside the renewal window.)
+            let need = match installed_not_after {
+                Some(na) => na - now_unix() < cfg.renewal_interval.as_secs() as i64,
+                None => true,
+            };
+            if !need {
+                sleep(cfg.convergence_poll).await;
+                continue;
+            }
+
+            // 3. Issue (leader / single-node) or wait for the leader to publish (follower).
+            match shared.as_ref() {
+                Some(store) => {
+                    if store.try_lock(&cert_key, &node_id, cfg.lock_ttl) {
+                        info!(key = %cert_key, node = %node_id, "DNS-01 cluster: acquired issuance lock (leader)");
+                        let outcome = issue_as_leader(
+                            store, &cert_key, &node_id, &account, &domains,
+                            provider.as_ref(), &resolver_for_task, &cfg, &cache_dir,
+                        )
+                        .await;
+                        match outcome {
+                            Ok(issued) => {
+                                let sc = SharedCert {
+                                    chain_pem: issued.chain_pem.clone(),
+                                    key_pem: issued.key_pem.clone(),
+                                    not_after_unix: issued.not_after_unix,
+                                };
+                                if store.store_cert(&cert_key, &node_id, &sc) {
+                                    info!(key = %cert_key, "DNS-01 cluster: published issued cert to shared store");
+                                } else {
+                                    warn!(key = %cert_key, "DNS-01 cluster: could not publish cert (lock lost?)");
+                                }
+                                store.unlock(&cert_key, &node_id);
+                                installed_fp = Some(cert_fingerprint(&issued.chain_pem));
+                                installed_not_after = Some(issued.not_after_unix);
+                                sleep(cfg.convergence_poll).await;
+                            }
+                            Err(e) => {
+                                store.unlock(&cert_key, &node_id);
+                                warn!(error = %e, "DNS-01 cluster: issuance failed; keeping current cert, will retry");
+                                sleep(cfg.retry_backoff).await;
+                            }
+                        }
+                    } else {
+                        // Follower: another node holds the lock and is issuing → poll to converge.
+                        info!(key = %cert_key, "DNS-01 cluster: issuance in progress elsewhere; waiting to converge");
+                        sleep(cfg.convergence_poll).await;
+                    }
+                }
+                None => {
+                    // Single-node: today's path, now renewing off the leaf's real notAfter.
+                    match issue_once(
+                        &account, &domains, provider.as_ref(), &resolver_for_task, &cfg,
+                        Some(&cache_dir), None,
+                    )
+                    .await
+                    {
+                        Ok(issued) => {
+                            installed_fp = Some(cert_fingerprint(&issued.chain_pem));
+                            installed_not_after = Some(issued.not_after_unix);
+                            sleep(cfg.convergence_poll).await;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "DNS-01: issuance failed; keeping current certificate, will retry");
+                            sleep(cfg.retry_backoff).await;
+                        }
+                    }
                 }
             }
         }
@@ -517,5 +748,51 @@ mod tests {
         // key.pem missing → None (never serve half a pair).
         assert!(load_cached_cert(&dir).is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn domainset_key_is_order_independent_and_dedup() {
+        // apex + wildcard in any order → the SAME key (so every node coordinates on one cert).
+        let a = domainset_key(&["example.com".into(), "*.example.com".into()]);
+        let b = domainset_key(&["*.example.com".into(), "example.com".into()]);
+        let c = domainset_key(&["*.example.com".into(), "example.com".into(), "example.com".into()]);
+        assert_eq!(a, b, "domain order must not change the key");
+        assert_eq!(a, c, "duplicates must not change the key");
+        // A different domain set → a different key.
+        assert_ne!(a, domainset_key(&["other.com".into()]));
+    }
+
+    #[test]
+    fn cert_fingerprint_is_stable_and_distinguishes_chains() {
+        let x = cert_fingerprint("chain-A");
+        assert_eq!(x, cert_fingerprint("chain-A"), "same input → same fingerprint");
+        assert_ne!(x, cert_fingerprint("chain-B"), "different chain → different fingerprint");
+        assert_eq!(x.len(), 64, "SHA-256 hex is 64 chars");
+    }
+
+    #[test]
+    fn leaf_not_after_parses_a_real_cert() {
+        // A real (self-signed) cert's notAfter must parse to a future timestamp — this is what
+        // drives the renewal decision. A garbage chain falls back to ~80 days (never 0 → no loop).
+        let issued = rcgen::generate_simple_self_signed(vec!["example.com".to_string()]).unwrap();
+        let na = leaf_not_after_unix(&issued.cert.pem());
+        assert!(na > now_unix(), "issued cert must expire in the future");
+
+        let fallback = leaf_not_after_unix("not a certificate");
+        assert!(fallback > now_unix() + 70 * 24 * 60 * 60, "unparseable ⇒ ~80d fallback, not 0");
+    }
+
+    #[test]
+    fn node_ids_are_unique_per_call() {
+        assert_ne!(make_node_id(), make_node_id(), "each node id must be distinct");
+    }
+
+    #[test]
+    fn aborted_flag_reads_through_the_option() {
+        assert!(!aborted(None), "no flag ⇒ never aborted");
+        let f = AtomicBool::new(false);
+        assert!(!aborted(Some(&f)));
+        f.store(true, Ordering::SeqCst);
+        assert!(aborted(Some(&f)));
     }
 }
