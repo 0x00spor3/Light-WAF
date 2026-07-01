@@ -321,7 +321,12 @@ pub async fn issue_once(
     order.poll_ready(&RetryPolicy::default()).await?;
 
     let key_pair = rcgen::KeyPair::generate()?;
-    let csr = rcgen::CertificateParams::new(domains.to_vec())?.serialize_request(&key_pair)?;
+    let mut csr_params = rcgen::CertificateParams::new(domains.to_vec())?;
+    // ACME wants the identifiers in the SAN extension ONLY. rcgen otherwise stamps a default
+    // subject CN ("rcgen self signed cert"), which Boulder parses as a domain to issue for and
+    // rejects (`rejectedIdentifier`: the space is an invalid DNS character). Empty DN → SAN-only.
+    csr_params.distinguished_name = rcgen::DistinguishedName::new();
+    let csr = csr_params.serialize_request(&key_pair)?;
     order.finalize_csr(csr.der()).await?;
     let chain_pem = order.poll_certificate(&RetryPolicy::default()).await?;
 
