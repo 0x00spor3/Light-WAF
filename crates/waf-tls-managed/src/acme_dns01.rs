@@ -41,7 +41,7 @@ use tokio_rustls::rustls::sign::CertifiedKey;
 use tracing::{error, info, warn};
 
 use crate::acme::{AcmeError, AcmeParams};
-use crate::dns::DnsProvider;
+use crate::dns::{DnsProvider, TxtHandle};
 
 /// Anything that can go wrong issuing a DNS-01 certificate. Boxed so the many underlying error
 /// types (ACME, DNS provider, rcgen, rustls, PEM I/O) compose without a bespoke enum here.
@@ -282,7 +282,8 @@ async fn wait_for_propagation(name: &str, expected: &str, cfg: &Dns01Config) -> 
 /// Provider- and CA-agnostic: the caller supplies the [`Account`] and the [`DnsProvider`]. The
 /// flow per authorization: publish the DNS-01 TXT → wait for authoritative propagation → mark
 /// the challenge ready. Then: poll until valid → finalize with our own CSR → fetch the chain →
-/// build the `CertifiedKey` → install. Challenge TXT records are removed best-effort at the end.
+/// build the `CertifiedKey` → install. Every challenge TXT we publish is removed best-effort on
+/// **all** exit paths (success OR failure), so a failed attempt never leaks orphaned records.
 pub async fn issue_once(
     account: &Account,
     domains: &[String],
@@ -291,59 +292,74 @@ pub async fn issue_once(
     cfg: &Dns01Config,
     cache_dir: Option<&Path>,
 ) -> Result<(), Dns01Error> {
-    let identifiers: Vec<Identifier> = domains.iter().cloned().map(Identifier::Dns).collect();
-    let mut order = account.new_order(&NewOrder::new(&identifiers)).await?;
+    // Records every TXT we publish so cleanup runs on ALL exit paths below. Populated inside the
+    // issuance block; drained by the unconditional cleanup loop after it, whatever the outcome.
+    let mut handles: Vec<TxtHandle> = Vec::new();
 
-    let mut handles = Vec::new();
-    {
-        let mut authorizations = order.authorizations();
-        while let Some(authz) = authorizations.next().await {
-            let mut authz = authz?;
-            // The authorization identifier is the BASE domain even for a wildcard order
-            // (`*.example.com` authorizes `example.com`), so the TXT name is correct as-is.
-            let base = match authz.identifier().identifier {
-                Identifier::Dns(ref d) => d.clone(),
-                _ => return Err("dns-01 authorization had a non-DNS identifier".into()),
-            };
-            let name = format!("_acme-challenge.{base}");
-            let mut challenge = authz
-                .challenge(ChallengeType::Dns01)
-                .ok_or("authorization offers no dns-01 challenge")?;
-            let value = challenge.key_authorization().dns_value();
-            let handle = provider.add_txt(&name, &value).await.map_err(Box::new)?;
-            handles.push(handle);
-            wait_for_propagation(&name, &value, cfg).await?;
-            challenge.set_ready().await?;
+    // The whole issuance. Its `?` short-circuits into `result` (NOT out of `issue_once`), so the
+    // cleanup loop after always runs. `handles` is borrowed mutably here and read after — the
+    // future is dropped at the end of this statement, releasing the borrow before cleanup.
+    let result: Result<(), Dns01Error> = async {
+        let identifiers: Vec<Identifier> = domains.iter().cloned().map(Identifier::Dns).collect();
+        let mut order = account.new_order(&NewOrder::new(&identifiers)).await?;
+
+        {
+            let mut authorizations = order.authorizations();
+            while let Some(authz) = authorizations.next().await {
+                let mut authz = authz?;
+                // The authorization identifier is the BASE domain even for a wildcard order
+                // (`*.example.com` authorizes `example.com`), so the TXT name is correct as-is.
+                let base = match authz.identifier().identifier {
+                    Identifier::Dns(ref d) => d.clone(),
+                    _ => return Err("dns-01 authorization had a non-DNS identifier".into()),
+                };
+                let name = format!("_acme-challenge.{base}");
+                let mut challenge = authz
+                    .challenge(ChallengeType::Dns01)
+                    .ok_or("authorization offers no dns-01 challenge")?;
+                let value = challenge.key_authorization().dns_value();
+                // Record the handle BEFORE waiting: if propagation times out, the TXT is already
+                // published and must still be cleaned up.
+                let handle = provider.add_txt(&name, &value).await.map_err(Box::new)?;
+                handles.push(handle);
+                wait_for_propagation(&name, &value, cfg).await?;
+                challenge.set_ready().await?;
+            }
         }
+
+        // Wait for the CA to validate every authorization, then finalize with a key WE own.
+        order.poll_ready(&RetryPolicy::default()).await?;
+
+        let key_pair = rcgen::KeyPair::generate()?;
+        let mut csr_params = rcgen::CertificateParams::new(domains.to_vec())?;
+        // ACME wants the identifiers in the SAN extension ONLY. rcgen otherwise stamps a default
+        // subject CN ("rcgen self signed cert"), which Boulder parses as a domain to issue for and
+        // rejects (`rejectedIdentifier`: the space is an invalid DNS character). Empty DN → SAN-only.
+        csr_params.distinguished_name = rcgen::DistinguishedName::new();
+        let csr = csr_params.serialize_request(&key_pair)?;
+        order.finalize_csr(csr.der()).await?;
+        let chain_pem = order.poll_certificate(&RetryPolicy::default()).await?;
+
+        let key_pem = key_pair.serialize_pem();
+        let certified = certified_key_from_pem(&chain_pem, &key_pem)?;
+        resolver.install(Arc::new(certified));
+        if let Some(dir) = cache_dir {
+            store_cached_cert(dir, &chain_pem, &key_pem);
+        }
+        info!(domains = ?domains, "DNS-01: certificate issued and installed");
+        Ok(())
     }
+    .await;
 
-    // Wait for the CA to validate every authorization, then finalize with a key WE own.
-    order.poll_ready(&RetryPolicy::default()).await?;
-
-    let key_pair = rcgen::KeyPair::generate()?;
-    let mut csr_params = rcgen::CertificateParams::new(domains.to_vec())?;
-    // ACME wants the identifiers in the SAN extension ONLY. rcgen otherwise stamps a default
-    // subject CN ("rcgen self signed cert"), which Boulder parses as a domain to issue for and
-    // rejects (`rejectedIdentifier`: the space is an invalid DNS character). Empty DN → SAN-only.
-    csr_params.distinguished_name = rcgen::DistinguishedName::new();
-    let csr = csr_params.serialize_request(&key_pair)?;
-    order.finalize_csr(csr.der()).await?;
-    let chain_pem = order.poll_certificate(&RetryPolicy::default()).await?;
-
-    let key_pem = key_pair.serialize_pem();
-    let certified = certified_key_from_pem(&chain_pem, &key_pem)?;
-    resolver.install(Arc::new(certified));
-    if let Some(dir) = cache_dir {
-        store_cached_cert(dir, &chain_pem, &key_pem);
-    }
-    info!(domains = ?domains, "DNS-01: certificate issued and installed");
-
+    // Always remove the challenge TXT records we published — success or failure — so repeated
+    // failures (slow propagation, finalize errors, …) never accumulate orphaned records.
     for handle in &handles {
         if let Err(e) = provider.remove_txt(handle).await {
             warn!(name = %handle.name, error = %e, "DNS-01: TXT cleanup failed (non-fatal)");
         }
     }
-    Ok(())
+
+    result
 }
 
 /// Create the ACME account against `server_url` (a public CA the system trusts — Let's Encrypt
