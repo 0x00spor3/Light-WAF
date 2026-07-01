@@ -15,12 +15,13 @@
 //!   cluster-wide over-allow / TOCTOU) — the whole reason the Redis store exists;
 //! - NOSCRIPT recovery after `SCRIPT FLUSH`.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use waf_core::{BucketParams, InMemoryStateStore, ManualClock, StateStore};
-use waf_state_redis::RedisStore;
+use waf_state_redis::{RedisStore, Reputation, ReputationStore};
 
 fn redis_url() -> Option<String> {
     std::env::var("WAF_REDIS_URL").ok().filter(|s| !s.is_empty())
@@ -120,6 +121,33 @@ fn concurrent_grants_exactly_capacity() {
         50,
         "atomic script must grant EXACTLY capacity across all threads (no over-allow)"
     );
+}
+
+#[test]
+fn reputation_reads_seeded_values() {
+    let url = require_redis!();
+    let store = RedisStore::connect(&url).expect("connect");
+
+    // Seed RAW via the documented key format `rep:<ip>` — there is intentionally NO
+    // production seed API in the crate (the feed §6 owns writes; tests/redis-cli seed raw).
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut conn = client.get_connection().unwrap();
+    let bad: IpAddr = "203.0.113.7".parse().unwrap();
+    let sus: IpAddr = "203.0.113.8".parse().unwrap();
+    let unknown: IpAddr = "203.0.113.9".parse().unwrap();
+    redis::cmd("SET").arg(format!("rep:{bad}")).arg("malicious").query::<()>(&mut conn).unwrap();
+    redis::cmd("SET").arg(format!("rep:{sus}")).arg("suspicious").query::<()>(&mut conn).unwrap();
+    redis::cmd("DEL").arg(format!("rep:{unknown}")).query::<()>(&mut conn).unwrap();
+
+    assert_eq!(store.reputation(bad), Reputation::Malicious);
+    assert_eq!(store.reputation(sus), Reputation::Suspicious);
+    assert_eq!(store.reputation(unknown), Reputation::Unknown, "no entry ⇒ Unknown");
+
+    redis::cmd("DEL")
+        .arg(format!("rep:{bad}"))
+        .arg(format!("rep:{sus}"))
+        .query::<()>(&mut conn)
+        .unwrap();
 }
 
 #[test]

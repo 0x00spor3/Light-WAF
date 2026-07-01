@@ -74,6 +74,11 @@ la pipeline.
 
 ## 3. Stato distribuito multi-nodo (`StateStore` Redis) — `BOUNDARY.md` §2.1
 
+> **STATO: §3 INTERAMENTE IMPLEMENTATO (2026-06-30).** Rate-limit distribuito (`waf-state-redis`,
+> provato a 2 nodi sul wire) **+** IP-reputation cluster-wide (`waf-threatintel` + `waf-state-redis`).
+> Unico residuo: il **feed §6** che *popola* la reputazione in Redis (capability di scrittura,
+> deliberatamente separata).
+
 Il seam OPEN `StateStore` (`waf-core::state`) ha **una sola operazione atomica**:
 
 ```rust
@@ -104,20 +109,51 @@ esegue refill + consume + writeback in **una sola** round-trip atomica.
 - **Non azzerabile al reload** (eredita §9 del core): i bucket vivono in Redis, oltre il
   process-lifetime del nodo → un reload/restart di un nodo non resetta il throttle.
 
-### IP-reputation cluster-wide (estensione additiva)
-Aggiunta come **nuovo metodo di trait con default impl** (`BOUNDARY.md` §4), non un KV
-get/update separato:
+### IP-reputation cluster-wide (capability ENTERPRISE-ONLY — NON sul trait core)
+
+> **Correzione di design (2026-06-30).** Una stesura precedente proponeva un metodo
+> `reputation()` **defaulted sul `StateStore` core**. È sbagliato e va respinto: il datapath
+> OPEN consuma `try_acquire` (rate-limit) e **non chiama mai** `reputation()`. Un metodo che
+> il core non invoca **non appartiene alla ABI core** — sarebbe contaminazione del confine
+> mascherata da "additivo", a costo di una `core 0.3` e di un metodo congelato per sempre, a
+> **beneficio zero**: poiché l'enterprise costruisce comunque lo store e lo inietta nel modulo
+> via `.add_module()`, il modulo ha già in mano il tipo enterprise → il metodo sul trait core
+> non aggiunge alcuna capacità. Resta la regola "ENTERPRISE → OPEN è l'unico movimento".
+
+**IMPLEMENTATO (`waf-threatintel` + `waf-state-redis`).** La reputation vive **interamente
+nell'enterprise**, usando solo i seam core già esistenti (`.add_module()` + `.state_store()`) —
+**nessuna modifica al core**:
 
 ```rust
-pub trait StateStore: Send + Sync {
-    fn try_acquire(&self, key: &str, cost: f64, params: BucketParams) -> Acquired;
-    // additivo, default = neutro (nessuna reputazione) → non-breaking per OPEN:
-    fn reputation(&self, _ip: &str) -> Reputation { Reputation::Unknown }
+// crate enterprise (es. waf-state-redis): trait + dato, NON in waf-core
+pub trait ReputationStore: Send + Sync {
+    fn reputation(&self, ip: IpAddr) -> Reputation;   // IpAddr, non &str (chiave canonica in UN punto)
 }
+pub enum Reputation { Unknown, Suspicious, Malicious }
 ```
 
-La reputation alimenta un `WafModule` premium in `Phase::Connection` (§4) che contribuisce
-allo **stesso anomaly score** del core (nessuna logica di decisione nuova).
+- **Un solo `RedisStore`, due capability**: `RedisStore` implementa **sia** `StateStore`
+  (`try_acquire`) **sia** `ReputationStore` (`reputation`), condividendo lo **stesso pool**
+  (keyspace separato dai bucket, popolato dal feed §6). `Arc<RedisStore>` coercia a entrambi i
+  trait. Lookup read-only → **niente atomicità/Lua** (non è refill-then-consume).
+- **Chiave canonica in UN punto**: `IpAddr::to_string()` è già la forma canonica RFC 5952
+  (IPv6 compresso, no brackets/zone-id). Un solo helper `rep_key(ip)` serve sia il lookup sia
+  il popolamento → niente mismatch fra forme dell'IP.
+- **fail → `Unknown`** (fail-to-no-opinion): Redis giù ⇒ `reputation()` ritorna `Unknown`, la
+  pipeline **ispeziona comunque**. Un feed giù non deve né bloccare né sbloccare. È l'analogo
+  del `local_fallback` dello store, per una capability additiva per natura.
+- **Consumo**: un `WafModule` premium (`waf-threatintel`) in `Phase::Connection` legge
+  `ctx.client_ip` → `reputation(ip)` → `Decision::Scores` con **severità** (Malicious/Suspicious
+  → severity, `Unknown` → `Allow`); la pipeline mappa severity→points (§4: nessun punteggio
+  hardcoded). Contribuisce allo **stesso anomaly score** cumulativo del core, nessuna logica di
+  decisione nuova.
+- **Anti doppio-conteggio** (nota di design per §6): se in futuro il feed alimenta anche moduli
+  di firma premium, lo **stesso IP non deve contribuire due volte** allo score cumulativo →
+  namespace di `rule_id` dedicato + dedup. Non un problema per l'MVP (solo modulo reputation),
+  ma vincolo da rispettare quando §6 cresce.
+- **Popolamento**: in produzione = feed §6. Per i test = seed esplicito (`set_reputation`
+  **test-only**, `#[cfg(test)]` / non esposto come API di prodotto) o `redis-cli` sul formato
+  chiave documentato.
 
 ---
 

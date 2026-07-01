@@ -11,7 +11,11 @@
 //! That keeps the enterprise knobs out of the OPEN schema while still living in one
 //! file (BOUNDARY §4: extend without forking).
 
+use std::time::Duration;
+
 use serde::Deserialize;
+use waf_core::Severity;
+use waf_tls_managed::acme_dns01::Dns01Config;
 use waf_tls_managed::ChallengeStrategy;
 
 /// A view over the config file that extracts ONLY the enterprise-relevant tables
@@ -49,8 +53,10 @@ pub struct AcmeSection {
     pub staging: bool,
     /// Override the ACME directory URL (a Pebble test server, or a private CA).
     pub directory_url: Option<String>,
-    /// DNS provider name (only meaningful for `strategy = "dns-01"`).
+    /// DNS provider name (only meaningful for `strategy = "dns-01"`). E.g. `"cloudflare"`.
     pub provider: Option<String>,
+    /// `[tls.acme.dns]` — DNS-01 tunables (zone + propagation/renewal timing).
+    pub dns: DnsSection,
 }
 
 impl Default for AcmeSection {
@@ -64,6 +70,49 @@ impl Default for AcmeSection {
             staging: true,
             directory_url: None,
             provider: None,
+            dns: DnsSection::default(),
+        }
+    }
+}
+
+/// `[tls.acme.dns]` — DNS-01 settings. Secrets (e.g. the Cloudflare token) come from the
+/// environment (`CF_API_TOKEN`), never this file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DnsSection {
+    /// Provider zone identifier (e.g. the Cloudflare zone id the records live in).
+    pub zone_id: String,
+    /// Max wait for the TXT to appear on the zone's authoritative nameservers.
+    pub propagation_timeout_secs: u64,
+    /// Interval between propagation polls.
+    pub poll_interval_secs: u64,
+    /// Courtesy delay after the TXT is first seen (CAs validate from several vantage points).
+    pub grace_secs: u64,
+    /// Days between successful issuance and the next renewal attempt.
+    pub renewal_days: u64,
+}
+
+impl Default for DnsSection {
+    fn default() -> Self {
+        Self {
+            zone_id: String::new(),
+            propagation_timeout_secs: 120,
+            poll_interval_secs: 5,
+            grace_secs: 10,
+            renewal_days: 60,
+        }
+    }
+}
+
+impl DnsSection {
+    /// Build the driver's [`Dns01Config`] from these tunables.
+    pub fn to_config(&self) -> Dns01Config {
+        Dns01Config {
+            propagation_timeout: Duration::from_secs(self.propagation_timeout_secs),
+            poll_interval: Duration::from_secs(self.poll_interval_secs),
+            grace: Duration::from_secs(self.grace_secs),
+            renewal_interval: Duration::from_secs(self.renewal_days * 24 * 60 * 60),
+            retry_backoff: Duration::from_secs(300),
         }
     }
 }
@@ -105,11 +154,60 @@ pub struct EnterpriseConfig {
     /// `false` ⇒ fail-closed (deny). A misconfigured/unreachable Redis at BOOT is
     /// always fatal regardless of this flag.
     pub fail_open: bool,
+    /// `[enterprise.reputation]` — cluster-wide IP-reputation module (reads the same Redis).
+    pub reputation: ReputationSection,
 }
 
 impl Default for EnterpriseConfig {
     fn default() -> Self {
-        Self { redis_url: None, pool_size: None, fail_open: true }
+        Self {
+            redis_url: None,
+            pool_size: None,
+            fail_open: true,
+            reputation: ReputationSection::default(),
+        }
+    }
+}
+
+/// `[enterprise.reputation]` — the cluster-wide IP-reputation `WafModule`. It reads the Redis
+/// store (so it needs `redis_url`) and contributes to the cumulative anomaly score. The score
+/// weight is a **severity** (no hardcoded points — the pipeline maps severity→points).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ReputationSection {
+    pub enabled: bool,
+    /// Severity contributed for a Malicious IP: `critical` | `error` | `warning` | `notice`.
+    pub malicious_severity: String,
+    /// Severity contributed for a Suspicious IP.
+    pub suspicious_severity: String,
+}
+
+impl Default for ReputationSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            malicious_severity: "critical".to_string(),
+            suspicious_severity: "warning".to_string(),
+        }
+    }
+}
+
+impl ReputationSection {
+    /// Parse the `(malicious, suspicious)` severities, rejecting unknown names.
+    pub fn severities(&self) -> Result<(Severity, Severity), String> {
+        Ok((parse_severity(&self.malicious_severity)?, parse_severity(&self.suspicious_severity)?))
+    }
+}
+
+fn parse_severity(s: &str) -> Result<Severity, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "critical" => Ok(Severity::Critical),
+        "error" => Ok(Severity::Error),
+        "warning" => Ok(Severity::Warning),
+        "notice" => Ok(Severity::Notice),
+        other => Err(format!(
+            "unknown [enterprise.reputation] severity {other:?} (use critical|error|warning|notice)"
+        )),
     }
 }
 
@@ -193,6 +291,99 @@ ca_path = "/etc/waf/clients-ca.pem"
         assert_eq!(f.tls.acme.challenge_strategy().unwrap(), ChallengeStrategy::TlsAlpn01);
         assert!(f.tls.mtls.enabled);
         assert_eq!(f.tls.mtls.ca_path, "/etc/waf/clients-ca.pem");
+    }
+
+    #[test]
+    fn reads_reputation_section_and_parses_severities() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise]
+redis_url = "redis://localhost:6379"
+[enterprise.reputation]
+enabled = true
+malicious_severity = "error"
+suspicious_severity = "notice"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        let rep = &f.enterprise.reputation;
+        assert!(rep.enabled);
+        assert_eq!(rep.severities().unwrap(), (Severity::Error, Severity::Notice));
+    }
+
+    #[test]
+    fn reputation_defaults_off_with_critical_warning() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        assert!(!f.enterprise.reputation.enabled, "reputation default OFF");
+        assert_eq!(
+            f.enterprise.reputation.severities().unwrap(),
+            (Severity::Critical, Severity::Warning)
+        );
+    }
+
+    #[test]
+    fn reputation_unknown_severity_is_rejected() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.reputation]
+malicious_severity = "nope"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert!(f.enterprise.reputation.severities().is_err());
+    }
+
+    #[test]
+    fn reads_dns01_section_and_builds_driver_config() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[tls.acme]
+enabled = true
+strategy = "dns-01"
+provider = "cloudflare"
+domains = ["example.com", "*.example.com"]
+[tls.acme.dns]
+zone_id = "zone-abc"
+propagation_timeout_secs = 90
+poll_interval_secs = 3
+grace_secs = 7
+renewal_days = 45
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        let acme = &f.tls.acme;
+        assert_eq!(
+            acme.challenge_strategy().unwrap(),
+            ChallengeStrategy::Dns01 { provider: Some("cloudflare".to_string()) }
+        );
+        assert_eq!(acme.dns.zone_id, "zone-abc");
+        let cfg = acme.dns.to_config();
+        assert_eq!(cfg.propagation_timeout, Duration::from_secs(90));
+        assert_eq!(cfg.poll_interval, Duration::from_secs(3));
+        assert_eq!(cfg.grace, Duration::from_secs(7));
+        assert_eq!(cfg.renewal_interval, Duration::from_secs(45 * 24 * 60 * 60));
+    }
+
+    #[test]
+    fn dns_section_defaults_when_omitted() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        assert_eq!(f.tls.acme.dns.zone_id, "");
+        assert_eq!(f.tls.acme.dns.to_config().propagation_timeout, Duration::from_secs(120));
     }
 
     #[test]

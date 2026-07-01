@@ -14,6 +14,44 @@ cert_path = "/etc/waf/tls/cert.pem"   # catena PEM (leaf per primo)
 key_path  = "/etc/waf/tls/key.pem"    # chiave PEM (PKCS#8 / PKCS#1 / SEC1)
 alpn      = ["h2", "http/1.1"]         # h2-ready (gRPC-over-TLS futuro); h1-only ripiega a http/1.1
 
+# ── ENTERPRISE: TLS gestito (waf-tls-managed) ───────────────────────────────────
+# Sotto-tabelle lette SOLO dall'enterprise (EnterpriseFile); le chiavi OPEN di [tls]
+# qui sopra restano di waf_core::Config. Iniettate via il seam TlsCertSource (core 0.2:
+# resolver()/client_verifier()) → NIENTE fork del core.
+#
+# Certificati ACME gestiti (rotazione HITLESS senza ricostruire l'acceptor). Quando
+# enabled=true la sorgente cert è ACME → cert_path/key_path di [tls] sono IGNORATI.
+# [tls].enabled governa comunque l'on/off del TLS; con tls-alpn-01 il listener annuncia
+# l'ALPN `acme-tls/1` per la challenge sulla stessa porta.
+[tls.acme]
+enabled       = false
+domains       = ["waf.example.com"]      # SAN del certificato (dns-01 supporta i wildcard "*.example.com")
+email         = "ops@example.com"        # account ACME (contatto)
+strategy      = "tls-alpn-01"            # "tls-alpn-01" (default) | "dns-01" (wildcard, dietro NAT)
+cache_dir     = "acme-cache"             # persistenza account/cert tra i restart
+staging       = true                      # true = CA di staging (evita i rate-limit di LE prod)
+# directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"  # o un Pebble di test
+# provider      = "cloudflare"            # solo per strategy = "dns-01": "cloudflare" | "route53"
+
+# DNS-01 (solo con strategy = "dns-01"). Pubblica il TXT `_acme-challenge.<dominio>` via API
+# del provider, poi attende la propagazione sugli NS AUTORITATIVI prima di far validare la CA.
+# I SEGRETI del provider NON stanno qui, ma in env:
+#   - cloudflare → `CF_API_TOKEN`
+#   - route53    → `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ opz. `AWS_SESSION_TOKEN`, `AWS_REGION`)
+# La strategia è GLOBALE al blocco [tls.acme] → ALPN e DNS-01 sono mutuamente esclusivi.
+[tls.acme.dns]
+zone_id                  = ""             # id zona del provider (zona Cloudflare o hosted-zone id Route53)
+propagation_timeout_secs = 120            # attesa max comparsa TXT sugli NS autoritativi
+poll_interval_secs       = 5
+grace_secs               = 10             # delay di cortesia dopo il primo match (più vantage point)
+renewal_days             = 60             # rinnovo periodico (cert LE ~90gg)
+
+# mTLS / managed-PKI: richiede e verifica il certificato CLIENT (client_verifier()).
+# enabled=false ⇒ nessuna autenticazione client, esattamente come il core OPEN.
+[tls.mtls]
+enabled = false
+ca_path = "/etc/waf/clients-ca.pem"      # bundle PEM delle CA client fidate
+
 [waf]
 mode = "blocking"
 block_threshold = 5
@@ -153,7 +191,22 @@ on_compressed     = "reject"         # payload compresso = opaco: "reject" (fail
 enabled = true
 files   = ["test.conf"]
 
-[enterprise]          # solo il DOVE + i tunable enterprise
-redis_url = "redis://10.0.0.5:6379"
-pool_size = 32
-fail_open = true
+# ── ENTERPRISE: StateStore distribuito su Redis (waf-state-redis) ───────────────
+# Rate-limit cluster-wide: i nodi WAF condividono UN solo budget via Redis (try_acquire
+# atomico server-side), iniettato col seam StateStore. Assente ⇒ store in-memory single-node.
+[enterprise]
+redis_url = "redis://10.0.0.5:6379"   # connessione Redis; override con env WAF_REDIS_URL (vince l'env)
+pool_size = 32                         # dimensione pool connessioni
+fail_open = true                       # errore Redis a RUNTIME: true=allow (fail-open) | false=deny.
+                                       # Redis irraggiungibile al BOOT = sempre fatale (a prescindere)
+
+# ── ENTERPRISE: IP-reputation cluster-wide (waf-threatintel) ────────────────────
+# Modulo premium in Phase::Connection che legge la reputazione dell'IP client dallo STESSO
+# Redis (keyspace `rep:<ip>`, popolato dal feed threat-intel) e contribuisce allo STESSO
+# anomaly score cumulativo (severity→points dalla pipeline, niente punteggi hardcoded).
+# RICHIEDE redis_url. fail→Unknown (feed giù = nessuna opinione, la pipeline ispeziona comunque).
+# DEFAULT OFF. La severità decide se un IP "malicious" da solo supera block_threshold.
+[enterprise.reputation]
+enabled            = false
+malicious_severity = "critical"        # critical | error | warning | notice
+suspicious_severity = "warning"

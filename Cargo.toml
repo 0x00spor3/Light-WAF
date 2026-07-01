@@ -15,6 +15,7 @@ resolver = "2"
 members = [
     "crates/waf-state-redis",
     "crates/waf-tls-managed",
+    "crates/waf-threatintel",
     "crates/waf-enterprise",
 ]
 
@@ -30,6 +31,8 @@ authors = ["0x00spor3"]
 # enterprise tier builds against the real published crate, exactly as the separate repo will.
 waf-core = "0.2"
 waf-proxy = "0.2"
+# Used by waf-threatintel tests to run the reputation module through the real pipeline.
+waf-pipeline = "0.2"
 
 redis = { version = "0.27", features = ["r2d2"] }
 r2d2 = "0.8"

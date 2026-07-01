@@ -18,7 +18,34 @@ rustls-pemfile = "2"
 # async driver + on-disk cache.
 rustls-acme = { version = "0.13", default-features = false, features = ["ring", "tokio"] }
 futures = "0.3"
+# DNS-01 provider abstraction (object-safe async trait for `dyn DnsProvider`).
+async-trait = "0.1"
+# ACME client for DNS-01 (rustls-acme is TLS-ALPN-01 only). Used purely as a PROTOCOL
+# client: it yields the issued cert PEM, and we build the rustls CertifiedKey with the
+# CORE's rustls — so instant-acme's internal rustls version need not match. `ring` (no
+# aws-lc-rs/cmake) to stay consistent with the core's provider.
+instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls"] }
+# Hot-swappable server-cert resolver (lock-free read on the TLS hot path).
+arc-swap = "1"
+# We own the cert private key: generate the keypair + CSR (DER) for ACME finalize_csr,
+# so the suture (issued chain + our key) is built into the core's rustls CertifiedKey.
+rcgen = "0.13"
+serde = { version = "1", features = ["derive"] }
+# Persist the ACME account credentials + issued cert/key under `cache_dir` (warm restarts).
+serde_json = "1"
+# HTTP for the DNS providers. `rustls-no-provider` so reqwest does NOT pull its own crypto
+# provider (no aws-lc-rs/cmake); CloudflareDns supplies a preconfigured rustls ClientConfig
+# built on `ring` (the core's provider). challtestsrv is plain HTTP and needs no TLS.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+# Public CA roots for the Cloudflare HTTPS client's rustls config.
+webpki-roots = "1"
+# DNS-01 propagation check: query the zone's AUTHORITATIVE nameservers directly (not the
+# system resolver) so we don't tell the CA "ready" against a stale cache. Pure Rust, UDP/TCP
+# only (no DoT/DoH/DNSSEC features).
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
+aws-sdk-route53 = { version = "1.115.0", features = ["behavior-version-latest"] }
 
 [dev-dependencies]
-rcgen = "0.13"
 tokio = { workspace = true, features = ["io-util", "rt", "macros", "time"] }
+# CloudflareDns wire-shape unit tests (request body + response envelope parsing).
+serde_json = "1"

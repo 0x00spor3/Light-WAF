@@ -22,6 +22,7 @@
 //!   worker.
 
 use std::fmt;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use r2d2::Pool;
@@ -225,6 +226,66 @@ impl StateStore for RedisStore {
     }
 }
 
+// ── IP reputation (ENTERPRISE-only capability; NOT on the core `StateStore`) ───
+//
+// Cluster-wide IP reputation read from the SAME Redis (a keyspace separate from the rate-limit
+// buckets, populated by the threat-intel feed). It is a plain READ — no atomicity / Lua, unlike
+// the token bucket. A premium `WafModule` (`waf-threatintel`) consumes it. Deliberately an
+// enterprise trait, NOT a method on `waf_core::StateStore`: the OPEN datapath never calls
+// reputation, so it must not enter the frozen core ABI.
+
+/// Reputation verdict for an IP. `Unknown` = no opinion (also the fail-safe on any error).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reputation {
+    Unknown,
+    Suspicious,
+    Malicious,
+}
+
+/// Read-only cluster-wide IP-reputation lookup — the enterprise injection seam a premium
+/// reputation module consumes (the analogue of `StateStore`, but enterprise-side).
+pub trait ReputationStore: Send + Sync {
+    /// Reputation of `ip`. Takes [`IpAddr`] (not `&str`) so the canonical key form is fixed in
+    /// exactly ONE place; any error or absence yields [`Reputation::Unknown`].
+    fn reputation(&self, ip: IpAddr) -> Reputation;
+}
+
+/// The Redis key for an IP's reputation. `IpAddr`'s `Display` is the RFC 5952 canonical form
+/// (compressed IPv6, lowercase, no brackets / zone-id), so this is the single normalization
+/// point shared by lookups and any writer (the feed / a seed tool / `redis-cli`). Format:
+/// `rep:<ip>` → value `"malicious"` | `"suspicious"` (absent ⇒ Unknown).
+fn rep_key(ip: IpAddr) -> String {
+    format!("rep:{ip}")
+}
+
+impl ReputationStore for RedisStore {
+    fn reputation(&self, ip: IpAddr) -> Reputation {
+        let key = rep_key(ip);
+        let exec = || -> redis::RedisResult<Option<String>> {
+            let mut conn = self.pool.get().map_err(pool_to_redis_err)?;
+            redis::cmd("GET").arg(&key).query::<Option<String>>(&mut *conn)
+        };
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(_) => tokio::task::block_in_place(exec),
+            Err(_) => exec(),
+        };
+        match result {
+            Ok(Some(v)) => match v.as_str() {
+                "malicious" => Reputation::Malicious,
+                "suspicious" => Reputation::Suspicious,
+                _ => Reputation::Unknown,
+            },
+            Ok(None) => Reputation::Unknown,
+            // fail-to-no-opinion: a down feed must neither block nor unblock — the pipeline
+            // still inspects. A SECURITY property (see the bite-test), not an edge case.
+            Err(e) => {
+                warn!(error = %e, ip = %ip, "redis reputation lookup error — treating as Unknown");
+                Reputation::Unknown
+            }
+        }
+    }
+}
+
 /// Map an r2d2 pool error (exhausted / unreachable) into a redis error so the
 /// fail-open path in [`RedisStore::acquire`] handles it uniformly.
 fn pool_to_redis_err(e: r2d2::Error) -> redis::RedisError {
@@ -281,6 +342,22 @@ mod tests {
         let params = BucketParams { capacity: 3.0, refill_per_sec: 1.0 };
         let a = store.try_acquire("any-key", 1.0, params);
         assert!(!a.allowed, "fail_open=false must DENY when Redis is down");
+    }
+
+    #[test]
+    fn rep_key_is_canonical_for_v4_and_v6() {
+        assert_eq!(rep_key("1.2.3.4".parse().unwrap()), "rep:1.2.3.4");
+        // RFC 5952 canonical: compressed, lowercase, no leading zeros.
+        let v6: std::net::IpAddr = "2001:0DB8:0000:0000:0000:0000:0000:0001".parse().unwrap();
+        assert_eq!(rep_key(v6), "rep:2001:db8::1");
+    }
+
+    #[test]
+    fn reputation_is_unknown_when_redis_unreachable() {
+        // Down feed ⇒ no opinion (fail-to-Unknown), so the pipeline still inspects.
+        let store = RedisStore::connect_lazy("redis://127.0.0.1:1").expect("url parses");
+        let ip: std::net::IpAddr = "9.9.9.9".parse().unwrap();
+        assert_eq!(store.reputation(ip), Reputation::Unknown);
     }
 
     #[test]

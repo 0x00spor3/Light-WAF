@@ -20,7 +20,50 @@ use tracing::{error, info, warn};
 use waf_proxy::tls::FileCertSource;
 use waf_proxy::Proxy;
 use waf_state_redis::{RedisStore, RedisStoreOptions};
-use waf_tls_managed::{acme, mtls, ManagedTlsCertSource};
+use waf_tls_managed::acme::ChallengeStrategy;
+use waf_tls_managed::dns::{CloudflareDns, DnsProvider, Route53Dns};
+use waf_tls_managed::{acme, acme_dns01, mtls, ManagedTlsCertSource};
+use waf_threatintel::{ReputationConfig, ReputationModule};
+
+/// Build the DNS-01 [`DnsProvider`] selected by `[tls.acme].provider`. Secrets come from the
+/// environment, never the config file. Boot-fatal on a missing token / unknown provider.
+fn build_dns_provider(
+    acme_cfg: &config::AcmeSection,
+) -> Result<Arc<dyn DnsProvider>, Box<dyn std::error::Error + Send + Sync>> {
+    match acme_cfg.provider.as_deref().unwrap_or("cloudflare") {
+        "cloudflare" => {
+            let token = std::env::var("CF_API_TOKEN").map_err(|_| {
+                "[tls.acme] provider=cloudflare requires the CF_API_TOKEN environment variable"
+            })?;
+            if acme_cfg.dns.zone_id.is_empty() {
+                return Err("[tls.acme.dns].zone_id is required for the cloudflare provider".into());
+            }
+            Ok(Arc::new(CloudflareDns::new(token, acme_cfg.dns.zone_id.clone())?))
+        }
+        "route53" => {
+            // Standard AWS credential env vars; Route 53 is global, region is signing-only.
+            let access = std::env::var("AWS_ACCESS_KEY_ID")
+                .map_err(|_| "[tls.acme] provider=route53 requires AWS_ACCESS_KEY_ID")?;
+            let secret = std::env::var("AWS_SECRET_ACCESS_KEY")
+                .map_err(|_| "[tls.acme] provider=route53 requires AWS_SECRET_ACCESS_KEY")?;
+            let session = std::env::var("AWS_SESSION_TOKEN").ok();
+            let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+            if acme_cfg.dns.zone_id.is_empty() {
+                return Err("[tls.acme.dns].zone_id (the Route 53 hosted-zone id) is required for route53".into());
+            }
+            Ok(Arc::new(Route53Dns::new(
+                access,
+                secret,
+                session,
+                region,
+                acme_cfg.dns.zone_id.clone(),
+            )))
+        }
+        other => {
+            Err(format!("unknown [tls.acme] provider {other:?} (use \"cloudflare\" or \"route53\")").into())
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -71,38 +114,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut builder = Proxy::builder(&config);
 
-    // ── Seam 1: distributed rate-limit StateStore (Redis). Source for the URL is
-    // `WAF_REDIS_URL` (env wins, for ops overrides) else `[enterprise].redis_url`.
-    // The injected store survives SIGHUP (it lives in the proxy's process-lifetime
-    // state), so distributed limiting is not reset to single-node on a reload.
+    // ── Seam 1: distributed state on Redis — rate-limit StateStore AND/OR cluster-wide
+    // IP-reputation. ONE `RedisStore` (one pool) backs both: it implements `StateStore`
+    // (rate-limit) and `ReputationStore` (reputation), with separate keyspaces. URL source is
+    // `WAF_REDIS_URL` (env wins) else `[enterprise].redis_url`. The injected store survives
+    // SIGHUP (process-lifetime state); the reputation MODULE, added via `.add_module`, does NOT
+    // survive a reload yet (core `.module_factory` is the TBD seam for that).
     let (redis_url, url_src) = match std::env::var("WAF_REDIS_URL").ok().filter(|s| !s.is_empty()) {
         Some(u) => (Some(u), "WAF_REDIS_URL env"),
         None => (ent.redis_url.clone(), "[enterprise].redis_url"),
     };
+    let reputation_on = ent.reputation.enabled;
+    let needs_store = config.rate_limit.enabled || reputation_on;
     match redis_url {
-        Some(url) if config.rate_limit.enabled => {
+        Some(url) if needs_store => {
             let mut opts = RedisStoreOptions::default();
             if let Some(ps) = ent.pool_size {
                 opts.pool_size = ps;
             }
             opts.fail_open = ent.fail_open;
-            info!(
-                redis = %url, source = url_src, pool_size = opts.pool_size, fail_open = opts.fail_open,
-                "wiring distributed rate-limit StateStore (Redis)"
-            );
-            // Boot-time validation: a configured-but-unreachable Redis is fatal —
-            // silently degrading to in-memory would be "looks-protected-but-isn't".
-            // (Runtime Redis errors follow `fail_open`, inside the store.)
+            // Boot-time validation: a configured-but-unreachable Redis is fatal — silently
+            // degrading would be "looks-protected-but-isn't". (Runtime: rate-limit follows
+            // `fail_open`; reputation always fails to `Unknown`.)
             let store = match RedisStore::connect_with_options(&url, opts) {
-                Ok(s) => s,
+                Ok(s) => Arc::new(s),
                 Err(e) => {
                     error!(error = %e, "configured Redis unreachable; refusing to start");
                     return Err(e.into());
                 }
             };
-            builder = builder.state_store(Arc::new(store));
+            if config.rate_limit.enabled {
+                info!(
+                    redis = %url, source = url_src, pool_size = opts.pool_size, fail_open = opts.fail_open,
+                    "wiring distributed rate-limit StateStore (Redis)"
+                );
+                builder = builder.state_store(store.clone());
+            }
+            if reputation_on {
+                let (malicious, suspicious) = match ent.reputation.severities() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("waf-enterprise: {e}");
+                        std::process::exit(2);
+                    }
+                };
+                info!(redis = %url, source = url_src, "wiring cluster-wide IP-reputation module");
+                builder = builder.add_module(Box::new(ReputationModule::new(
+                    store.clone(),
+                    ReputationConfig { enabled: true, malicious, suspicious },
+                )));
+            }
         }
-        Some(_) => warn!(source = url_src, "redis_url configured but [rate_limit] is disabled — Redis store NOT wired"),
+        // Redis configured but nothing consumes it.
+        Some(_) => warn!(
+            source = url_src,
+            "redis_url configured but neither [rate_limit] nor [enterprise.reputation] is enabled — Redis NOT wired"
+        ),
+        // Cluster-wide reputation REQUIRES Redis (there is no in-memory reputation); rate-limit
+        // alone falls back to the OPEN in-memory store.
+        None if reputation_on => {
+            error!("[enterprise.reputation].enabled = true but no redis_url — reputation needs Redis; refusing to start");
+            return Err("[enterprise.reputation] enabled without redis_url".into());
+        }
         None => info!("no redis_url ([enterprise] or WAF_REDIS_URL) — using the OPEN in-memory rate-limit store (single-node)"),
     }
 
@@ -133,11 +206,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     directory_url: acme_cfg.directory_url.clone(),
                     strategy,
                 };
-                info!(domains = ?params.domains, staging = params.staging, "wiring managed ACME server certs (hitless)");
-                let resolver = acme::start_resolver(&params).map_err(|e| {
-                    error!(error = %e, "ACME resolver could not start; refusing to start");
-                    e
-                })?;
+                // The challenge strategy is GLOBAL to this `[tls.acme]` block, so a domain can
+                // never run under both TLS-ALPN-01 and DNS-01 at once (R3: mutual exclusion by
+                // construction — no per-domain conflict possible with this config shape).
+                let resolver = match &params.strategy {
+                    ChallengeStrategy::TlsAlpn01 => {
+                        info!(domains = ?params.domains, staging = params.staging, "wiring managed ACME (TLS-ALPN-01, hitless)");
+                        acme::start_resolver(&params).map_err(|e| {
+                            error!(error = %e, "ACME resolver could not start; refusing to start");
+                            e
+                        })?
+                    }
+                    ChallengeStrategy::Dns01 { .. } => {
+                        let provider = build_dns_provider(acme_cfg).map_err(|e| {
+                            error!(error = %e, "DNS-01 provider could not be built; refusing to start");
+                            e
+                        })?;
+                        info!(domains = ?params.domains, staging = params.staging, provider = ?acme_cfg.provider, "wiring managed ACME (DNS-01, hitless)");
+                        acme_dns01::start_dns01_resolver(&params, provider, acme_cfg.dns.to_config())
+                            .map_err(|e| {
+                                error!(error = %e, "DNS-01 resolver could not start; refusing to start");
+                                e
+                            })?
+                    }
+                };
                 mb = mb.resolver(resolver);
             } else {
                 // mTLS-only: the server cert still comes from the configured file pair

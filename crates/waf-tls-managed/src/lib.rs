@@ -17,6 +17,8 @@
 //! when ACME is off but mTLS is on).
 
 pub mod acme;
+pub mod acme_dns01;
+pub mod dns;
 pub mod mtls;
 
 use std::path::Path;
