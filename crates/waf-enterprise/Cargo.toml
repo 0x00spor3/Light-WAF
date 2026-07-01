@@ -16,6 +16,10 @@ waf-proxy.workspace = true
 waf-state-redis = { path = "../waf-state-redis", version = "0.1.0" }
 waf-tls-managed = { path = "../waf-tls-managed", version = "0.1.0" }
 waf-threatintel = { path = "../waf-threatintel", version = "0.1.0" }
+# Pin the process-level rustls CryptoProvider (see main.rs). The dep graph links BOTH `ring`
+# (core/instant-acme/Cloudflare client) AND `aws-lc-rs` (pulled by the AWS SDK for Route 53),
+# so rustls can no longer auto-pick a default — we install `ring` explicitly at startup.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

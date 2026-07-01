@@ -75,6 +75,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .init();
 
+    // Install ONE process-level rustls CryptoProvider before any TLS is built. The dependency
+    // graph links both `ring` (core, instant-acme's hyper-rustls ACME client, the Cloudflare
+    // client) and `aws-lc-rs` (pulled transitively by the AWS SDK for the Route 53 provider), so
+    // rustls can no longer auto-determine a default and panics on the first `ClientConfig::builder`
+    // — which is exactly the DNS-01 ACME client on a background worker. Pin `ring`, the provider
+    // the core already uses. `install_default` errors only if one is already set; ignore that.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Identical config resolution to the OPEN binary — no duplication.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config_path =
