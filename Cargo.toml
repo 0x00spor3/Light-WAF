@@ -16,6 +16,7 @@ members = [
     "crates/waf-state-redis",
     "crates/waf-tls-managed",
     "crates/waf-threatintel",
+    "crates/waf-crs-curated",
     "crates/waf-enterprise",
 ]
 
@@ -33,6 +34,9 @@ waf-core = "0.2"
 waf-proxy = "0.2"
 # Used by waf-threatintel tests to run the reputation module through the real pipeline.
 waf-pipeline = "0.2"
+# The OPEN CRS engine (B2) — a DEV-dep of waf-crs-curated: its compat gate loads the curated
+# content through the real `CrsModule` to prove it all parses/loads under the supported subset.
+waf-detection = "0.2"
 
 redis = { version = "0.27", features = ["r2d2"] }
 r2d2 = "0.8"

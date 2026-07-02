@@ -15,6 +15,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use waf_core::Severity;
+use waf_state_redis::Reputation;
+use waf_threatintel::FeedConfig;
 use waf_tls_managed::acme_dns01::Dns01Config;
 use waf_tls_managed::ChallengeStrategy;
 
@@ -163,6 +165,8 @@ pub struct EnterpriseConfig {
     pub fail_open: bool,
     /// `[enterprise.reputation]` — cluster-wide IP-reputation module (reads the same Redis).
     pub reputation: ReputationSection,
+    /// `[enterprise.crs_curated]` — the curated premium CRS ruleset module (§6).
+    pub crs_curated: CrsCuratedSection,
 }
 
 impl Default for EnterpriseConfig {
@@ -172,8 +176,18 @@ impl Default for EnterpriseConfig {
             pool_size: None,
             fail_open: true,
             reputation: ReputationSection::default(),
+            crs_curated: CrsCuratedSection::default(),
         }
     }
+}
+
+/// `[enterprise.crs_curated]` — loads the curated premium CRS/ModSecurity ruleset (the
+/// `waf-crs-curated` content) as a `WafModule` via the OPEN CRS engine. Default OFF. No Redis
+/// needed (pure detection content); contributes to the same cumulative anomaly score.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CrsCuratedSection {
+    pub enabled: bool,
 }
 
 /// `[enterprise.reputation]` — the cluster-wide IP-reputation `WafModule`. It reads the Redis
@@ -187,6 +201,8 @@ pub struct ReputationSection {
     pub malicious_severity: String,
     /// Severity contributed for a Suspicious IP.
     pub suspicious_severity: String,
+    /// `[enterprise.reputation.feed]` — the threat-intel feed that POPULATES `rep:<ip>` (§6).
+    pub feed: FeedSection,
 }
 
 impl Default for ReputationSection {
@@ -195,6 +211,7 @@ impl Default for ReputationSection {
             enabled: false,
             malicious_severity: "critical".to_string(),
             suspicious_severity: "warning".to_string(),
+            feed: FeedSection::default(),
         }
     }
 }
@@ -203,6 +220,84 @@ impl ReputationSection {
     /// Parse the `(malicious, suspicious)` severities, rejecting unknown names.
     pub fn severities(&self) -> Result<(Severity, Severity), String> {
         Ok((parse_severity(&self.malicious_severity)?, parse_severity(&self.suspicious_severity)?))
+    }
+}
+
+/// `[enterprise.reputation.feed]` — the background feed that populates the `rep:<ip>` keyspace the
+/// reputation module reads (ARCHITECTURE_ENTERPRISE §6). Needs Redis (the shared store). One node
+/// (the single-writer lock winner) refreshes per cycle. Default OFF.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FeedSection {
+    pub enabled: bool,
+    /// Seconds between refresh cycles.
+    pub refresh_interval_secs: u64,
+    /// TTL (seconds) of each written `rep:<ip>` entry. Absent ⇒ 3× the refresh interval, so a
+    /// missed/failed cycle never drops still-listed IPs (a down feed ages everything to Unknown).
+    pub entry_ttl_secs: Option<u64>,
+    /// TTL (seconds) of the per-cycle single-writer lock — roughly the worst-case fetch+write time.
+    pub lock_ttl_secs: u64,
+    /// The list sources. Each has a fixed verdict (the content says WHICH ips, never HOW severe).
+    pub sources: Vec<FeedSourceSection>,
+}
+
+impl Default for FeedSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            refresh_interval_secs: 300,
+            entry_ttl_secs: None,
+            lock_ttl_secs: 90,
+            sources: Vec::new(),
+        }
+    }
+}
+
+impl FeedSection {
+    /// Build the driver's [`FeedConfig`]. `entry_ttl` defaults to 3× the refresh interval (F2).
+    pub fn to_config(&self) -> FeedConfig {
+        let refresh = Duration::from_secs(self.refresh_interval_secs.max(1));
+        let entry_ttl = match self.entry_ttl_secs {
+            Some(s) => Duration::from_secs(s.max(1)),
+            None => refresh * 3,
+        };
+        FeedConfig {
+            refresh_interval: refresh,
+            entry_ttl,
+            lock_ttl: Duration::from_secs(self.lock_ttl_secs.max(1)),
+        }
+    }
+}
+
+/// One `[[enterprise.reputation.feed.sources]]` entry.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FeedSourceSection {
+    /// `"file"` (local path) or `"http"` (HTTPS URL).
+    pub kind: String,
+    /// The file path or URL of the IP list.
+    pub location: String,
+    /// The verdict assigned to every IP in this source: `malicious` | `suspicious`.
+    pub verdict: String,
+}
+
+impl Default for FeedSourceSection {
+    fn default() -> Self {
+        Self { kind: String::new(), location: String::new(), verdict: "malicious".to_string() }
+    }
+}
+
+impl FeedSourceSection {
+    /// Parse the fixed verdict for this source, rejecting anything but malicious/suspicious
+    /// (`Unknown` as a source verdict is meaningless — it would write nothing).
+    pub fn verdict(&self) -> Result<Reputation, String> {
+        match self.verdict.trim().to_ascii_lowercase().as_str() {
+            "malicious" => Ok(Reputation::Malicious),
+            "suspicious" => Ok(Reputation::Suspicious),
+            other => Err(format!(
+                "unknown [enterprise.reputation.feed] verdict {other:?} (use malicious|suspicious)"
+            )),
+        }
     }
 }
 
@@ -322,6 +417,27 @@ suspicious_severity = "notice"
     }
 
     #[test]
+    fn reads_crs_curated_flag_and_defaults_off() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        assert!(!f.enterprise.crs_curated.enabled, "curated CRS default OFF");
+
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.crs_curated]
+enabled = true
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert!(f.enterprise.crs_curated.enabled);
+    }
+
+    #[test]
     fn reputation_defaults_off_with_critical_warning() {
         let f = EnterpriseFile::from_toml_str(
             "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
@@ -332,6 +448,94 @@ suspicious_severity = "notice"
             f.enterprise.reputation.severities().unwrap(),
             (Severity::Critical, Severity::Warning)
         );
+    }
+
+    #[test]
+    fn reads_feed_section_with_sources_and_builds_config() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise]
+redis_url = "redis://localhost:6379"
+[enterprise.reputation]
+enabled = true
+[enterprise.reputation.feed]
+enabled = true
+refresh_interval_secs = 120
+lock_ttl_secs = 60
+[[enterprise.reputation.feed.sources]]
+kind = "file"
+location = "/etc/waf/blocklist.txt"
+verdict = "malicious"
+[[enterprise.reputation.feed.sources]]
+kind = "http"
+location = "https://example.com/greylist.txt"
+verdict = "suspicious"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        let feed = &f.enterprise.reputation.feed;
+        assert!(feed.enabled);
+        assert_eq!(feed.sources.len(), 2);
+        assert_eq!(feed.sources[0].kind, "file");
+        assert_eq!(feed.sources[0].verdict().unwrap(), Reputation::Malicious);
+        assert_eq!(feed.sources[1].kind, "http");
+        assert_eq!(feed.sources[1].verdict().unwrap(), Reputation::Suspicious);
+
+        let cfg = feed.to_config();
+        assert_eq!(cfg.refresh_interval, Duration::from_secs(120));
+        assert_eq!(cfg.entry_ttl, Duration::from_secs(360), "entry_ttl defaults to 3× refresh");
+        assert_eq!(cfg.lock_ttl, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn feed_defaults_off_and_entry_ttl_follows_refresh() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        let feed = &f.enterprise.reputation.feed;
+        assert!(!feed.enabled, "feed default OFF");
+        assert!(feed.sources.is_empty());
+        let cfg = feed.to_config();
+        assert_eq!(cfg.refresh_interval, Duration::from_secs(300));
+        assert_eq!(cfg.entry_ttl, Duration::from_secs(900), "default entry_ttl = 3× default refresh");
+    }
+
+    #[test]
+    fn feed_explicit_entry_ttl_overrides_the_default() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.reputation.feed]
+enabled = true
+refresh_interval_secs = 100
+entry_ttl_secs = 111
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert_eq!(f.enterprise.reputation.feed.to_config().entry_ttl, Duration::from_secs(111));
+    }
+
+    #[test]
+    fn feed_unknown_verdict_is_rejected() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[[enterprise.reputation.feed.sources]]
+kind = "file"
+location = "/x"
+verdict = "nope"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert!(f.enterprise.reputation.feed.sources[0].verdict().is_err());
     }
 
     #[test]

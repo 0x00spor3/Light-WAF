@@ -19,11 +19,17 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 use waf_proxy::tls::FileCertSource;
 use waf_proxy::Proxy;
-use waf_state_redis::{CertCipher, RedisStore, RedisStoreOptions, SharedCertStore};
+use waf_state_redis::{
+    CertCipher, DistributedLock, RedisStore, RedisStoreOptions, ReputationWriter, SharedCertStore,
+};
 use waf_tls_managed::acme::ChallengeStrategy;
 use waf_tls_managed::dns::{CloudflareDns, DnsProvider, Route53Dns};
 use waf_tls_managed::{acme, acme_dns01, mtls, ManagedTlsCertSource};
-use waf_threatintel::{ReputationConfig, ReputationModule};
+use waf_detection::crs::CrsModule;
+use waf_threatintel::{
+    start_reputation_feed, FileFeed, HttpListFeed, ReputationConfig, ReputationFeed,
+    ReputationModule,
+};
 
 /// Build the DNS-01 [`DnsProvider`] selected by `[tls.acme].provider`. Secrets come from the
 /// environment, never the config file. Boot-fatal on a missing token / unknown provider.
@@ -63,6 +69,29 @@ fn build_dns_provider(
             Err(format!("unknown [tls.acme] provider {other:?} (use \"cloudflare\" or \"route53\")").into())
         }
     }
+}
+
+/// Build the threat-intel feed sources from `[enterprise.reputation.feed.sources]`. The verdict and
+/// kind are validated here; an HTTP source can also fail while building its TLS client. Boot-fatal
+/// on any error (a misconfigured feed must not silently do nothing).
+fn build_feed_sources(
+    feed: &config::FeedSection,
+) -> Result<Vec<Box<dyn ReputationFeed>>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut sources: Vec<Box<dyn ReputationFeed>> = Vec::new();
+    for s in &feed.sources {
+        let verdict = s.verdict()?;
+        match s.kind.trim().to_ascii_lowercase().as_str() {
+            "file" => sources.push(Box::new(FileFeed::new(s.location.clone(), verdict))),
+            "http" => sources.push(Box::new(HttpListFeed::new(s.location.clone(), verdict)?)),
+            other => {
+                return Err(format!(
+                    "unknown [enterprise.reputation.feed] source kind {other:?} (use \"file\" or \"http\")"
+                )
+                .into())
+            }
+        }
+    }
+    Ok(sources)
 }
 
 #[tokio::main]
@@ -145,6 +174,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     // Set from the Seam-1 Redis store when cluster mode is active; handed to the DNS-01 driver.
     let mut shared_cert_store: Option<Arc<dyn SharedCertStore>> = None;
+    // Keeps the threat-intel feed's background task alive for the process lifetime (§6).
+    let mut _feed_handle: Option<tokio::task::JoinHandle<()>> = None;
 
     let mut builder = Proxy::builder(&config);
 
@@ -159,7 +190,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None => (ent.redis_url.clone(), "[enterprise].redis_url"),
     };
     let reputation_on = ent.reputation.enabled;
-    let needs_store = config.rate_limit.enabled || reputation_on || cluster_certs;
+    // The feed populates `rep:<ip>` in Redis; it needs the store but NOT the local reputation
+    // module (a node can be a dedicated feed-writer while others read). So it drives `needs_store`
+    // on its own.
+    let feed_on = ent.reputation.feed.enabled;
+    let needs_store = config.rate_limit.enabled || reputation_on || cluster_certs || feed_on;
     match redis_url {
         Some(url) if needs_store => {
             let mut opts = RedisStoreOptions::default();
@@ -209,6 +244,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 info!(redis = %url, source = url_src, "wiring cluster-wide SharedCertStore (multi-node cert coordination)");
                 shared_cert_store = Some(store.clone());
             }
+            if feed_on {
+                // §6 threat-intel feed: the SAME store is both the ReputationWriter (writes
+                // `rep:<ip>`) and the DistributedLock (single-writer per cycle — F4). A background
+                // task refreshes the snapshot the reputation module reads.
+                if !reputation_on {
+                    warn!("[enterprise.reputation.feed] is enabled but [enterprise.reputation] is not — this node only POPULATES reputation for other nodes to read");
+                }
+                let sources = match build_feed_sources(&ent.reputation.feed) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("waf-enterprise: {e}");
+                        std::process::exit(2);
+                    }
+                };
+                if sources.is_empty() {
+                    warn!("[enterprise.reputation.feed].enabled = true but no sources configured — feed NOT started");
+                } else {
+                    info!(redis = %url, source = url_src, sources = sources.len(), "starting threat-intel reputation feed (single-writer)");
+                    let writer: Arc<dyn ReputationWriter> = store.clone();
+                    let lock: Arc<dyn DistributedLock> = store.clone();
+                    _feed_handle =
+                        Some(start_reputation_feed(sources, writer, lock, ent.reputation.feed.to_config()));
+                }
+            }
         }
         // Redis configured but nothing consumes it.
         Some(_) => warn!(
@@ -226,7 +285,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             error!("[tls.acme].cluster = true but no redis_url — cluster cert-sharing needs Redis; refusing to start");
             return Err("[tls.acme].cluster enabled without redis_url".into());
         }
+        // The feed writes to the shared store; there is no in-memory reputation to populate.
+        None if feed_on => {
+            error!("[enterprise.reputation.feed].enabled = true but no redis_url — the feed writes to Redis; refusing to start");
+            return Err("[enterprise.reputation.feed] enabled without redis_url".into());
+        }
         None => info!("no redis_url ([enterprise] or WAF_REDIS_URL) — using the OPEN in-memory rate-limit store (single-node)"),
+    }
+
+    // ── Seam 3: premium detection modules — curated CRS ruleset content (§6).
+    // The `seclang` engine is OPEN; here we load the enterprise `waf-crs-curated` CONTENT and
+    // inject it as a `WafModule`. Premium-additive: it contributes to the SAME cumulative score
+    // as the native modules (double-count accepted — the operator tunes the threshold with CRS on).
+    if ent.crs_curated.enabled {
+        let module = CrsModule::from_source(&waf_crs_curated::curated_source());
+        info!(expected = waf_crs_curated::EXPECTED_LOADED, "wiring curated premium CRS ruleset: {}", module.report());
+        if module.loaded_count() < waf_crs_curated::EXPECTED_LOADED {
+            warn!(
+                loaded = module.loaded_count(),
+                expected = waf_crs_curated::EXPECTED_LOADED,
+                "curated CRS: fewer rules loaded than expected — the OPEN engine subset may have changed"
+            );
+        }
+        // Like the reputation module, this does NOT survive SIGHUP yet (core `.module_factory` TBD).
+        builder = builder.add_module(Box::new(module));
     }
 
     // ── Seam 2: managed TLS — ACME server certs (hitless) and/or mTLS client auth.

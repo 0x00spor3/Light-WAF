@@ -24,7 +24,8 @@ use std::time::Duration;
 
 use waf_core::{BucketParams, InMemoryStateStore, ManualClock, StateStore};
 use waf_state_redis::{
-    CertCipher, RedisStore, Reputation, ReputationStore, SharedCert, SharedCertStore,
+    CertCipher, DistributedLock, RedisStore, Reputation, ReputationStore, ReputationWriter,
+    SharedCert, SharedCertStore,
 };
 
 fn redis_url() -> Option<String> {
@@ -152,6 +153,78 @@ fn reputation_reads_seeded_values() {
         .arg(format!("rep:{sus}"))
         .query::<()>(&mut conn)
         .unwrap();
+}
+
+#[test]
+fn feed_write_is_read_back_by_reputation_and_expires_to_unknown() {
+    // THE F1 contract on the wire: what the feed WRITES (`apply_snapshot`) is exactly what the
+    // datapath READS (`reputation`) — same key (`rep_key`) and value (`as_wire`/`from_wire`), so
+    // populate-but-never-match is impossible. Plus: a short TTL ages the entry back to Unknown.
+    let url = require_redis!();
+    let store = RedisStore::connect(&url).expect("connect");
+
+    // Use a unique third octet so parallel test runs never collide on these IPs.
+    let tag = unique_key("feed");
+    let n: u16 = (tag.len() % 250 + 1) as u16;
+    let bad: IpAddr = format!("198.51.100.{n}").parse().unwrap();
+    let sus: IpAddr = format!("198.51.100.{}", n + 1).parse().unwrap();
+    let unk: IpAddr = format!("198.51.100.{}", n + 2).parse().unwrap();
+
+    // A snapshot with an overlap (bad listed twice, strongest wins) + an Unknown (never written).
+    let entries = [
+        (bad, Reputation::Suspicious),
+        (bad, Reputation::Malicious),
+        (sus, Reputation::Suspicious),
+        (unk, Reputation::Unknown),
+    ];
+    let written = store.apply_snapshot(&entries, Duration::from_secs(30));
+    assert_eq!(written, 2, "two keys written (bad + sus); Unknown skipped, dup collapsed");
+
+    assert_eq!(store.reputation(bad), Reputation::Malicious, "feed write read back as Malicious");
+    assert_eq!(store.reputation(sus), Reputation::Suspicious, "feed write read back as Suspicious");
+    assert_eq!(store.reputation(unk), Reputation::Unknown, "Unknown was never written");
+
+    // TTL semantics (F2): a 1s entry is gone shortly after — reputation falls back to Unknown.
+    let ttl_ip: IpAddr = format!("198.51.100.{}", n + 3).parse().unwrap();
+    assert_eq!(store.apply_snapshot(&[(ttl_ip, Reputation::Malicious)], Duration::from_secs(1)), 1);
+    assert_eq!(store.reputation(ttl_ip), Reputation::Malicious, "present right after write");
+    std::thread::sleep(Duration::from_millis(1300));
+    assert_eq!(store.reputation(ttl_ip), Reputation::Unknown, "entry aged out to Unknown");
+
+    // Cleanup.
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut conn = client.get_connection().unwrap();
+    redis::cmd("DEL")
+        .arg(format!("rep:{bad}"))
+        .arg(format!("rep:{sus}"))
+        .query::<()>(&mut conn)
+        .unwrap();
+}
+
+#[test]
+fn feed_lock_is_single_writer_owner_scoped_and_expires() {
+    // F4 on the wire: the feed's DistributedLock is single-holder, release is owner-scoped, and a
+    // dead leader's lock frees via PX expiry so the next cycle another node acquires. Its own
+    // `feed_lock:` namespace ⇒ never collides with a cert issuance lock.
+    let url = require_redis!();
+    let store = RedisStore::connect(&url).expect("connect");
+    let name = unique_key("feedlock");
+
+    assert!(store.acquire(&name, "node-A", Duration::from_secs(30)), "A acquires the free lock");
+    assert!(!store.acquire(&name, "node-B", Duration::from_secs(30)), "B blocked while A holds");
+
+    store.release(&name, "node-B"); // non-owner release is a no-op
+    assert!(!store.acquire(&name, "node-B", Duration::from_secs(30)), "still A's after bogus release");
+    store.release(&name, "node-A");
+    assert!(store.acquire(&name, "node-B", Duration::from_secs(30)), "B acquires after A releases");
+    store.release(&name, "node-B");
+
+    // Dead-leader takeover via TTL (no release, no heartbeat — F4).
+    assert!(store.acquire(&name, "node-A", Duration::from_millis(800)), "A acquires short-TTL");
+    assert!(!store.acquire(&name, "node-B", Duration::from_secs(30)), "B blocked while A's lock lives");
+    std::thread::sleep(Duration::from_millis(1100));
+    assert!(store.acquire(&name, "node-B", Duration::from_secs(30)), "B takes over the expired lock");
+    store.release(&name, "node-B");
 }
 
 // ── SharedCertStore (cert TLS multi-nodo): lock CAS semantics + encrypted round-trip ──

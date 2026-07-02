@@ -31,7 +31,7 @@ use tracing::warn;
 use waf_core::{Acquired, BucketParams, StateStore};
 
 mod certstore;
-pub use certstore::{CertCipher, DecryptError, SharedCert, SharedCertStore};
+pub use certstore::{CertCipher, DecryptError, DistributedLock, SharedCert, SharedCertStore};
 
 /// Token-bucket step, executed atomically server-side.
 ///
@@ -261,12 +261,61 @@ pub enum Reputation {
     Malicious,
 }
 
+impl Reputation {
+    /// The wire value stored in / read from Redis. `Unknown` has **no** wire form (an absent key
+    /// already means Unknown), so the feed never persists it. This is the SINGLE encoding point
+    /// shared by the read ([`ReputationStore::reputation`]) and the write
+    /// ([`ReputationWriter::apply_snapshot`]) — they cannot drift (the load-bearing "key+value in
+    /// one place" contract: a mismatch would silently populate keys the reader never hits).
+    fn as_wire(self) -> Option<&'static str> {
+        match self {
+            Self::Malicious => Some("malicious"),
+            Self::Suspicious => Some("suspicious"),
+            Self::Unknown => None,
+        }
+    }
+
+    /// Inverse of [`Self::as_wire`]: any unrecognized / absent value collapses to `Unknown`.
+    fn from_wire(s: &str) -> Self {
+        match s {
+            "malicious" => Self::Malicious,
+            "suspicious" => Self::Suspicious,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Ordering by severity for the feed's in-memory dedup (an IP present in both a "malicious"
+    /// and a "suspicious" source keeps the stronger verdict). `Unknown` is the weakest.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::Suspicious => 1,
+            Self::Malicious => 2,
+        }
+    }
+}
+
 /// Read-only cluster-wide IP-reputation lookup — the enterprise injection seam a premium
 /// reputation module consumes (the analogue of `StateStore`, but enterprise-side).
 pub trait ReputationStore: Send + Sync {
     /// Reputation of `ip`. Takes [`IpAddr`] (not `&str`) so the canonical key form is fixed in
     /// exactly ONE place; any error or absence yields [`Reputation::Unknown`].
     fn reputation(&self, ip: IpAddr) -> Reputation;
+}
+
+/// Write side of cluster-wide IP-reputation — the seam the threat-intel **feed** (§6) consumes to
+/// populate the same `rep:<ip>` keyspace the [`ReputationStore`] reads. Deliberately a separate
+/// trait from the read: the datapath never writes, and keeping it here (next to [`rep_key`] and
+/// [`Reputation::as_wire`]) means the key + value encoding live in ONE crate, shared by both sides.
+pub trait ReputationWriter: Send + Sync {
+    /// Publish a snapshot of `(ip, verdict)` entries, each `SET rep:<ip> <verdict> EX <ttl>`.
+    /// `Unknown` entries are skipped (no key written). Returns the number of keys written.
+    ///
+    /// **TTL-based snapshot, no atomic swap**: a de-listed IP simply ages out once it stops being
+    /// refreshed, and a down feed lets every entry expire back to `Unknown` — the same
+    /// fail-to-no-opinion posture as the read. Callers pick `ttl` a few refresh cycles wide so a
+    /// single missed cycle never drops still-listed IPs.
+    fn apply_snapshot(&self, entries: &[(IpAddr, Reputation)], ttl: Duration) -> usize;
 }
 
 /// The Redis key for an IP's reputation. `IpAddr`'s `Display` is the RFC 5952 canonical form
@@ -289,17 +338,68 @@ impl ReputationStore for RedisStore {
             Err(_) => exec(),
         };
         match result {
-            Ok(Some(v)) => match v.as_str() {
-                "malicious" => Reputation::Malicious,
-                "suspicious" => Reputation::Suspicious,
-                _ => Reputation::Unknown,
-            },
+            // Same encoding as the writer, via the shared `from_wire` (contract: one place).
+            Ok(Some(v)) => Reputation::from_wire(&v),
             Ok(None) => Reputation::Unknown,
             // fail-to-no-opinion: a down feed must neither block nor unblock — the pipeline
             // still inspects. A SECURITY property (see the bite-test), not an edge case.
             Err(e) => {
                 warn!(error = %e, ip = %ip, "redis reputation lookup error — treating as Unknown");
                 Reputation::Unknown
+            }
+        }
+    }
+}
+
+/// Resolve a raw list of `(ip, verdict)` (possibly with duplicate IPs from overlapping feed
+/// sources) into the concrete `SET rep:<ip> <value>` write-set: dedup per IP keeping the STRONGEST
+/// verdict, drop `Unknown` (no wire form), and map to keys via the shared [`rep_key`]. Pure and
+/// Redis-free so the dedup/encoding contract is unit-tested offline; [`RedisStore::apply_snapshot`]
+/// just pipelines the result.
+fn resolve_writes(entries: &[(IpAddr, Reputation)]) -> Vec<(String, &'static str)> {
+    use std::collections::HashMap;
+    let mut strongest: HashMap<IpAddr, Reputation> = HashMap::new();
+    for (ip, rep) in entries {
+        let slot = strongest.entry(*ip).or_insert(Reputation::Unknown);
+        if rep.rank() > slot.rank() {
+            *slot = *rep;
+        }
+    }
+    strongest
+        .into_iter()
+        .filter_map(|(ip, rep)| rep.as_wire().map(|v| (rep_key(ip), v)))
+        .collect()
+}
+
+impl ReputationWriter for RedisStore {
+    fn apply_snapshot(&self, entries: &[(IpAddr, Reputation)], ttl: Duration) -> usize {
+        let writes = resolve_writes(entries);
+        if writes.is_empty() {
+            return 0;
+        }
+        // EX needs a whole-second TTL ≥ 1; the caller already sizes it in seconds.
+        let ttl_secs = ttl.as_secs().max(1);
+        let exec = || -> redis::RedisResult<()> {
+            let mut conn = self.pool.get().map_err(pool_to_redis_err)?;
+            // One pipelined round-trip for the whole snapshot (a feed list is large; a SET per
+            // round-trip would be pathological). Not atomic across keys — deliberate (F2).
+            let mut pipe = redis::pipe();
+            for (k, v) in &writes {
+                pipe.cmd("SET").arg(k).arg(*v).arg("EX").arg(ttl_secs).ignore();
+            }
+            pipe.query::<()>(&mut *conn)
+        };
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(_) => tokio::task::block_in_place(exec),
+            Err(_) => exec(),
+        };
+        match result {
+            Ok(()) => writes.len(),
+            // Fail-safe on the write side too: a failed cycle simply does not refresh — existing
+            // entries keep living until their TTL, then age out to `Unknown`. Never fabricate.
+            Err(e) => {
+                warn!(error = %e, "redis reputation feed write error — snapshot not applied this cycle");
+                0
             }
         }
     }
@@ -377,6 +477,64 @@ mod tests {
         let store = RedisStore::connect_lazy("redis://127.0.0.1:1").expect("url parses");
         let ip: std::net::IpAddr = "9.9.9.9".parse().unwrap();
         assert_eq!(store.reputation(ip), Reputation::Unknown);
+    }
+
+    #[test]
+    fn wire_encoding_round_trips_and_is_the_single_source_of_truth() {
+        // read (`from_wire`) and write (`as_wire`) MUST agree — the F1 contract in one place.
+        for r in [Reputation::Malicious, Reputation::Suspicious] {
+            let w = r.as_wire().expect("has a wire form");
+            assert_eq!(Reputation::from_wire(w), r, "round-trip {r:?}");
+        }
+        // Unknown has no wire form (absent key ⇒ Unknown), and junk decodes to Unknown.
+        assert_eq!(Reputation::Unknown.as_wire(), None);
+        assert_eq!(Reputation::from_wire(""), Reputation::Unknown);
+        assert_eq!(Reputation::from_wire("MALICIOUS"), Reputation::Unknown, "case-sensitive on purpose");
+        assert_eq!(Reputation::from_wire("bogus"), Reputation::Unknown);
+    }
+
+    #[test]
+    fn resolve_writes_dedups_to_strongest_and_drops_unknown() {
+        let a: IpAddr = "1.1.1.1".parse().unwrap();
+        let b: IpAddr = "2.2.2.2".parse().unwrap();
+        let c: IpAddr = "3.3.3.3".parse().unwrap();
+        // `a` appears in both a suspicious and a malicious source (either order) ⇒ malicious wins.
+        // `c` is Unknown ⇒ no write. `b` stays suspicious.
+        let entries = [
+            (a, Reputation::Suspicious),
+            (b, Reputation::Suspicious),
+            (a, Reputation::Malicious),
+            (c, Reputation::Unknown),
+        ];
+        let mut writes = resolve_writes(&entries);
+        writes.sort();
+        assert_eq!(
+            writes,
+            vec![
+                ("rep:1.1.1.1".to_string(), "malicious"),
+                ("rep:2.2.2.2".to_string(), "suspicious"),
+            ],
+            "strongest verdict per IP, Unknown dropped, keyed via rep_key"
+        );
+    }
+
+    #[test]
+    fn apply_snapshot_with_only_unknown_writes_nothing_without_touching_redis() {
+        // All-Unknown ⇒ empty write-set ⇒ early return, so a dead Redis is never contacted.
+        let store = RedisStore::connect_lazy("redis://127.0.0.1:1").expect("url parses");
+        let ip: IpAddr = "9.9.9.9".parse().unwrap();
+        let n = store.apply_snapshot(&[(ip, Reputation::Unknown)], Duration::from_secs(60));
+        assert_eq!(n, 0, "nothing to write, and no Redis round-trip attempted");
+    }
+
+    #[test]
+    fn apply_snapshot_returns_zero_when_redis_unreachable() {
+        // Fail-safe write side: a down Redis means the cycle simply does not refresh (returns 0),
+        // never panics. Existing entries age out via TTL to Unknown.
+        let store = RedisStore::connect_lazy("redis://127.0.0.1:1").expect("url parses");
+        let ip: IpAddr = "203.0.113.1".parse().unwrap();
+        let n = store.apply_snapshot(&[(ip, Reputation::Malicious)], Duration::from_secs(60));
+        assert_eq!(n, 0, "write error ⇒ 0 applied, no panic");
     }
 
     #[test]

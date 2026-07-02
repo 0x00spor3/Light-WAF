@@ -16,6 +16,10 @@ waf-proxy.workspace = true
 waf-state-redis = { path = "../waf-state-redis", version = "0.1.0" }
 waf-tls-managed = { path = "../waf-tls-managed", version = "0.1.0" }
 waf-threatintel = { path = "../waf-threatintel", version = "0.1.0" }
+waf-crs-curated = { path = "../waf-crs-curated", version = "0.1.0" }
+# The OPEN CRS engine — the enterprise binary builds a `CrsModule` from the curated content
+# (`waf-crs-curated`) and injects it via `.add_module()`.
+waf-detection.workspace = true
 # Pin the process-level rustls CryptoProvider (see main.rs). The dep graph links BOTH `ring`
 # (core/instant-acme/Cloudflare client) AND `aws-lc-rs` (pulled by the AWS SDK for Route 53),
 # so rustls can no longer auto-pick a default — we install `ring` explicitly at startup.

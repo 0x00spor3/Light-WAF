@@ -109,6 +109,63 @@ fn cert_key(key: &str) -> String {
 fn lock_key(key: &str) -> String {
     format!("issuance_lock:{key}")
 }
+fn feed_lock_key(name: &str) -> String {
+    format!("feed_lock:{name}")
+}
+
+/// A minimal distributed lock (acquire / release) for cluster-wide single-writer coordination,
+/// **separate** from the cert issuance lock (its own `feed_lock:` namespace). The threat-intel feed
+/// uses it so exactly ONE node fetches + writes the reputation snapshot per cycle (avoids N×
+/// external fetches of a possibly-metered subscription). Unlike the cert lock there is **no
+/// heartbeat/extend** (F4): the feed cycle is short, and if the leader dies the next cycle another
+/// node simply acquires — liveness is covered by the entries' TTL, not by holding the lock.
+///
+/// Distinct method names (`acquire`/`release`, not `try_lock`/`unlock`) so a `RedisStore` can carry
+/// both this and [`SharedCertStore`] without an ambiguous call.
+pub trait DistributedLock: Send + Sync {
+    /// Try to become the single holder of `name` (`SET NX PX`). `true` iff acquired.
+    fn acquire(&self, name: &str, holder: &str, ttl: Duration) -> bool;
+    /// Release `name`, ONLY if we still own it (compare-and-delete; reuses the lock's CAS Lua).
+    fn release(&self, name: &str, holder: &str);
+}
+
+impl DistributedLock for RedisStore {
+    fn acquire(&self, name: &str, holder: &str, ttl: Duration) -> bool {
+        let lk = feed_lock_key(name);
+        let ttl_ms = ttl.as_millis().max(1) as u64;
+        let result = blocking(|| -> redis::RedisResult<Option<String>> {
+            let mut conn = self.pool.get().map_err(pool_to_redis_err)?;
+            redis::cmd("SET")
+                .arg(&lk)
+                .arg(holder)
+                .arg("NX")
+                .arg("PX")
+                .arg(ttl_ms)
+                .query::<Option<String>>(&mut *conn)
+        });
+        match result {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(e) => {
+                // Fail-safe: cannot confirm ownership ⇒ do NOT claim the lock (avoids two writers).
+                warn!(error = %e, name, "DistributedLock.acquire Redis error — treating as NOT acquired");
+                false
+            }
+        }
+    }
+
+    fn release(&self, name: &str, holder: &str) {
+        let lk = feed_lock_key(name);
+        let script = Script::new(UNLOCK_LUA);
+        let result = blocking(|| -> redis::RedisResult<i64> {
+            let mut conn = self.pool.get().map_err(pool_to_redis_err)?;
+            script.key(&lk).arg(holder).invoke::<i64>(&mut *conn)
+        });
+        if let Err(e) = result {
+            warn!(error = %e, name, "DistributedLock.release Redis error (lock will expire via TTL)");
+        }
+    }
+}
 
 /// Run a blocking Redis closure, yielding the worker for the round-trip when a multi-thread
 /// runtime is present (same sync-on-async discipline as `StateStore`/`ReputationStore`).
@@ -384,5 +441,7 @@ mod tests {
     fn cert_and_lock_keys_are_namespaced() {
         assert_eq!(cert_key("abc"), "cert:abc");
         assert_eq!(lock_key("abc"), "issuance_lock:abc");
+        // The feed lock lives in its OWN namespace, so it can never collide with a cert lock.
+        assert_eq!(feed_lock_key("reputation-feed"), "feed_lock:reputation-feed");
     }
 }

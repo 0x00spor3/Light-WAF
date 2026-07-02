@@ -214,3 +214,36 @@ fail_open = true                       # errore Redis a RUNTIME: true=allow (fai
 enabled            = false
 malicious_severity = "critical"        # critical | error | warning | notice
 suspicious_severity = "warning"
+
+# ── ENTERPRISE: feed threat-intel che POPOLA la reputazione (waf-threatintel §6) ─
+# Task in background che scarica liste di IP e scrive `rep:<ip>` nello STESSO Redis (ciò che
+# il modulo reputation qui sopra legge). SINGLE-WRITER: solo UN nodo per ciclo scrive (lock
+# distribuito), così N nodi non ripetono lo stesso fetch. RICHIEDE redis_url. DEFAULT OFF.
+# Semantica TTL: le entry scadono (entry_ttl); un IP de-listato invecchia da solo, un feed
+# giù fa scadere tutto → Unknown (fail-safe). Il verdetto è PER-SORGENTE (il contenuto dice
+# QUALI ip, mai QUANTO gravi). CIDR non supportati in v1 (skip-con-warn, solo IP esatti).
+[enterprise.reputation.feed]
+enabled              = false
+refresh_interval_secs = 300            # secondi tra un ciclo e il successivo
+# entry_ttl_secs     = 900             # TTL di ogni entry; assente ⇒ 3× refresh (una finestra sicura)
+lock_ttl_secs        = 90              # TTL del lock single-writer per-ciclo (~ worst-case fetch+write)
+
+# Sorgenti (0..N). kind = "file" (path locale) | "http" (URL HTTPS). verdict = malicious | suspicious.
+# [[enterprise.reputation.feed.sources]]
+# kind     = "http"
+# location = "https://example.com/blocklist.txt"
+# verdict  = "malicious"
+#
+# [[enterprise.reputation.feed.sources]]
+# kind     = "file"
+# location = "/etc/waf/greylist.txt"
+# verdict  = "suspicious"
+
+# ── ENTERPRISE: ruleset CRS curato premium (waf-crs-curated §6) ──────────────────
+# Carica il CONTENUTO CRS curato (firme premium CVE/app/evasion: Log4Shell, Spring4Shell,
+# SSRF cloud-metadata, webshell, .git/.env exposure, …) come WafModule via il motore CRS
+# OPEN. È ADDITIVO ai moduli nativi (conta nello STESSO score cumulativo → con CRS attivo
+# il tuning di soglia è dell'operatore). Nessun Redis. DEFAULT OFF. Nota: come i moduli
+# premium, non sopravvive a SIGHUP (finché il core non espone module_factory).
+[enterprise.crs_curated]
+enabled = false

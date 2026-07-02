@@ -1,19 +1,29 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: BUSL-1.1
 
-//! Threat intelligence (enterprise) — the cluster-wide **IP-reputation** `WafModule`
-//! (ARCHITECTURE_ENTERPRISE §3). It reads a [`ReputationStore`] (e.g. the Redis store that
-//! also backs rate-limit) at `Phase::Connection` and contributes to the **same** cumulative
-//! anomaly score the core already uses — no new decision logic.
+//! Threat intelligence (enterprise). Two halves of cluster-wide IP-reputation:
 //!
-//! Deliberately enterprise-only and injected via the core's existing `.add_module()` seam:
-//! the OPEN datapath never queries reputation, so it stays out of the frozen core ABI (the
-//! reputation read lives on the enterprise [`ReputationStore`], not `waf_core::StateStore`).
+//! - **Read** (ARCHITECTURE_ENTERPRISE §3): the [`ReputationModule`] `WafModule` reads a
+//!   [`ReputationStore`] (e.g. the Redis store that also backs rate-limit) at `Phase::Connection`
+//!   and contributes to the **same** cumulative anomaly score the core already uses — no new
+//!   decision logic. Injected via the core's existing `.add_module()` seam.
+//! - **Write** (§6): the [`start_reputation_feed`] driver polls [`ReputationFeed`] sources
+//!   ([`FileFeed`] / [`HttpListFeed`]) and *populates* the `rep:<ip>` keyspace via the
+//!   `ReputationWriter` seam, gated by a per-cycle single-writer lock.
+//!
+//! Deliberately enterprise-only: the OPEN datapath never queries or writes reputation, so it stays
+//! out of the frozen core ABI (the reputation seams live on `waf-state-redis`, not
+//! `waf_core::StateStore`).
 
 use std::sync::Arc;
 
 use waf_core::{Config, Decision, Phase, RequestContext, ScoreItem, Severity, WafModule};
 use waf_state_redis::{Reputation, ReputationStore};
+
+mod driver;
+mod feed;
+pub use driver::{start_reputation_feed, FeedConfig};
+pub use feed::{FeedError, FileFeed, HttpListFeed, ReputationFeed};
 
 /// How an IP-reputation verdict maps to an anomaly-score severity. No hardcoded points: the
 /// module declares a [`Severity`] and the pipeline resolves `severity -> points` via

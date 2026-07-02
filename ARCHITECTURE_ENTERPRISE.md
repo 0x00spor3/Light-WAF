@@ -76,8 +76,8 @@ la pipeline.
 
 > **STATO: §3 INTERAMENTE IMPLEMENTATO (2026-06-30).** Rate-limit distribuito (`waf-state-redis`,
 > provato a 2 nodi sul wire) **+** IP-reputation cluster-wide (`waf-threatintel` + `waf-state-redis`).
-> Unico residuo: il **feed §6** che *popola* la reputazione in Redis (capability di scrittura,
-> deliberatamente separata).
+> Il **feed §6** che *popola* la reputazione in Redis (capability di scrittura, deliberatamente
+> separata) è ora anch'esso IMPLEMENTATO (2026-07-02) — vedi §6.
 
 Il seam OPEN `StateStore` (`waf-core::state`) ha **una sola operazione atomica**:
 
@@ -151,9 +151,9 @@ pub enum Reputation { Unknown, Suspicious, Malicious }
   di firma premium, lo **stesso IP non deve contribuire due volte** allo score cumulativo →
   namespace di `rule_id` dedicato + dedup. Non un problema per l'MVP (solo modulo reputation),
   ma vincolo da rispettare quando §6 cresce.
-- **Popolamento**: in produzione = feed §6. Per i test = seed esplicito (`set_reputation`
-  **test-only**, `#[cfg(test)]` / non esposto come API di prodotto) o `redis-cli` sul formato
-  chiave documentato.
+- **Popolamento**: in produzione = **feed §6** (`ReputationWriter::apply_snapshot`, IMPLEMENTATO —
+  vedi §6). Il crate NON espone un `set_reputation` di prodotto (il feed possiede le scritture); i
+  test seminano `rep:<ip>` grezzo via `redis-cli` sul formato chiave documentato.
 
 ---
 
@@ -219,15 +219,45 @@ da config (la **sorgente governa solo la provenienza** del cert); **no silent do
 
 ## 6. Threat intelligence e contenuto curato — `BOUNDARY.md` §2.4
 
-- **Feed reputazione/firme premium** (`waf-threatintel`): subscription che popola
-  `StateStore` (reputation, §3) e/o aggiorna i moduli premium (§4). Aggiornamento a caldo
-  riusando l'hot-reload OPEN del core (validate-then-swap).
-- **Regole CRS/ModSecurity curate** (`waf-crs-curated`): il **parser/engine `seclang`** è
-  OPEN (`BOUNDARY.md` §1.7); qui vive **solo il contenuto curato** (file `SecRule`
-  mantenuti e tarati). Caricato via `[modules.crs].files` del core, senza modificare il
-  parser. **Conta nello stesso anomaly score cumulativo** → con CRS-curated attivo il
-  tuning di soglia è dell'operatore (le CRS hanno la propria logica di threshold), come
-  già documentato nel core (§9 "Import regole CRS").
+- **Feed reputazione** (`waf-threatintel`) — **IMPLEMENTATO (2026-07-02)**: il *writer* che popola il
+  keyspace `rep:<ip>` letto dal modulo reputation (§3). Simmetrico al read: seam di scrittura
+  `ReputationWriter::apply_snapshot` su `RedisStore` (stessa `rep_key` + encoding valore in UN punto —
+  read e write non possono divergere), sorgenti dietro il trait `ReputationFeed` (v1: `FileFeed` +
+  `HttpListFeed`, lista IP-per-riga, **verdetto per-sorgente**; API di subscription commerciali =
+  follow-on dietro lo stesso trait), driver `start_reputation_feed` in background.
+  - **Single-writer** (`DistributedLock`, chiave `feed_lock:` sullo stesso pool): solo UN nodo per
+    ciclo fa fetch+scrive → N nodi non ripetono lo stesso fetch (subscription potenzialmente metered).
+    Lock per-ciclo, niente heartbeat; leader morto → il ciclo dopo un altro nodo subentra.
+  - **Snapshot TTL-based** (niente swap atomico): ogni `rep:<ip>` scritto con `entry_ttl` (default 3×
+    refresh). Un IP de-listato invecchia da solo; un feed giù fa scadere tutto → `Unknown`
+    (fail-to-no-opinion, coerente col read). **Solo IP esatti** in v1 (il read è `GET rep:<ip>`; i CIDR
+    sono skippati con warn, follow-on).
+  - Config `[enterprise.reputation.feed]` (default off; richiede `redis_url`). Un nodo può essere un
+    **feed-writer puro** (popola per gli altri) anche senza il modulo reputation locale.
+  - Il rinnovo/hot-update è intrinseco al loop (ri-fetch periodico), NON serve un SIGHUP.
+- **Regole CRS/ModSecurity curate** (`waf-crs-curated`) — **IMPLEMENTATO (2026-07-02)**: il
+  **parser/engine `seclang`** è OPEN (`BOUNDARY.md` §1.7, B2); qui vive **solo il contenuto curato**
+  (file `SecRule` premium mantenuti e tarati). **Conta nello stesso anomaly score cumulativo** → con
+  CRS-curated attivo il tuning di soglia è dell'operatore (doppio-conteggio coi nativi accettato,
+  paletto #4 di B2).
+  - **Contenuto premium-ADDITIVO, non baseline**: firme CVE/app/evasion ad alta-cura. **27 regole v1**:
+    (a) categorie generiche (SSRF cloud-metadata, PHP wrapper LFI, webshell, `.git`/`.env` exposure, metodi
+    HTTP pericolosi, deserialization marker, recon UA); (b) **pack CVE nominali** da CISA KEV (`rules/cve.conf`,
+    id 9100000+): Joomla JCE, Mirasvit/Magento object-injection, UniFi/Cisco-SD-WAN/FortiWeb/TeamCity/PAN-OS
+    traversal, Next.js middleware bypass, SharePoint ToolShell, PHP-CGI arg-injection, MOVEit, GoAnywhere,
+    Kentico, PaperCut, Oracle EBS, Log4Shell/Spring4Shell. **Non** reimplementa SQLi/XSS/PT/RCE/LFI-RFI
+    baseline (restano OPEN nei moduli nativi). Solo costrutti del **subset v1** del motore (`@rx`/`@pm`;
+    `@detectSQLi`/`@detectXSS` restano fuori → SQLi/XSS ai nativi). CVE FP-prone (Serv-U deflate, `/_layouts/`
+    generico) **scartati esplicitamente** con nota nel `.conf`.
+  - **Packaging = embed + `.add_module()`**: il crate embedda i `.conf` (`include_str!`) ed espone
+    `curated_source()` + `EXPECTED_LOADED`; il binario enterprise costruisce `CrsModule::from_source`
+    e lo inietta gated da `[enterprise.crs_curated]` (default off, no Redis). Il canale OPEN
+    `[modules.crs].files` resta per le regole DELL'operatore. Caveat: come i moduli premium, **non
+    sopravvive a SIGHUP** (finché il core non espone `module_factory`).
+  - **Gate di compatibilità** (il valore ingegneristico del tier): il test del crate carica il
+    contenuto attraverso il motore OPEN e asserisce `loaded_count() == EXPECTED_LOADED` **esatto** +
+    `skipped()` **vuoto** + un bite-test per-regola → il contenuto è *garantito-compatibile* col
+    subset spedito, niente perdita silenziosa (la lezione del bug setvar B2).
 
 ---
 

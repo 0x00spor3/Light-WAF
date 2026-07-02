@@ -2985,6 +2985,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "waf-crs-curated"
+version = "0.1.0"
+dependencies = [
+ "waf-core",
+ "waf-detection",
+ "waf-pipeline",
+]
+
+[[package]]
 name = "waf-detection"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3007,6 +3016,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "waf-core",
+ "waf-crs-curated",
+ "waf-detection",
  "waf-proxy",
  "waf-state-redis",
  "waf-threatintel",
@@ -3076,10 +3087,15 @@ dependencies = [
 name = "waf-threatintel"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "tokio",
+ "tokio-rustls 0.26.4",
  "tracing",
  "waf-core",
  "waf-pipeline",
  "waf-state-redis",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
