@@ -848,6 +848,12 @@ single-node self-sufficiency). Config `[tls]` (default **off**): `enabled`, `cer
 
 - **Structured JSON logging** (`tracing` + `tracing_subscriber`, `EnvFilter`): one line per decision
   (`request_id`, decision, score, contributions), plus `→ request`/`← response`.
+  - **`score_contributions` in the decision-log (0.4)**: a **blocked/rejected** request's line carries the
+    **per-rule breakdown** as a JSON field — an array of `{module, rule_id, severity, points}` (lowercased
+    severity). Only on the denied path (never for benign traffic, never on the hot path). `ScoreContribution`/
+    `Severity` derive `Serialize`/`Deserialize`, so a downstream consumer (the §7 control-plane drill-down,
+    ARCHITECTURE_ENTERPRISE) reconstructs the verdict into the same types. **Field names/format are a stable
+    ingestion contract** (locked by a shape test), alongside the metrics ABI.
 - **Prometheus metrics** (`[metrics]`, default **off**): text exposition on `GET /metrics`. **OPEN
   baseline** (`BOUNDARY.md` §1.6); OTLP-push deferred (the counters are **exporter-neutral**, `render()`
   is the Prometheus exporter → OTLP later is a second sink, not a rewrite).

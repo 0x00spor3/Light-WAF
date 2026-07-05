@@ -4,7 +4,7 @@
 use std::net::IpAddr;
 use std::time::SystemTime;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub use bytes::Bytes;
 
@@ -58,7 +58,13 @@ pub struct ScoreItem {
 
 /// Rule severity classes (CRS-inspired). The numeric weight of each class is
 /// configurable via `[waf.severity_scores]`, never hardcoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `Serialize`/`Deserialize` (lowercase) so the severity travels verbatim in the enriched
+/// decision-log (`ScoreContribution`) and can be reconstructed by a downstream consumer
+/// (e.g. the enterprise control-plane drill-down) from the same type — the field name/format
+/// is the single-sourced contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Severity {
     Critical,
     Error,
@@ -1066,7 +1072,11 @@ pub struct Normalized {
 
 /// One recorded contribution to the anomaly score, kept for audit/logging.
 /// Populated exclusively by the pipeline as it accumulates `ctx.score`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` so the per-rule breakdown can be emitted in the decision-log
+/// (the core logs the array on a denied request) and reconstructed downstream — this is the
+/// data the enterprise control-plane drill-down (§7) rebuilds the verdict from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScoreContribution {
     /// Id of the module that produced the contribution.
     pub module: String,
@@ -1077,6 +1087,40 @@ pub struct ScoreContribution {
     pub severity: Option<Severity>,
     /// Points actually added to `ctx.score`.
     pub points: u32,
+}
+
+#[cfg(test)]
+mod scoring_serde_tests {
+    use super::*;
+
+    /// Locks the decision-log `score_contributions` JSON shape — the §7 control-plane
+    /// drill-down parses exactly this. Field names are snake_case; severity is lowercase;
+    /// a `Score`-derived contribution has `severity: null`.
+    #[test]
+    fn score_contribution_json_shape_is_stable() {
+        let items = vec![
+            ScoreContribution {
+                module: "sqli".to_string(),
+                rule_id: "sqli-union-select".to_string(),
+                severity: Some(Severity::Critical),
+                points: 5,
+            },
+            ScoreContribution {
+                module: "rate_limit".to_string(),
+                rule_id: "rl-client-ip".to_string(),
+                severity: None,
+                points: 3,
+            },
+        ];
+        let json = serde_json::to_string(&items).unwrap();
+        assert_eq!(
+            json,
+            r#"[{"module":"sqli","rule_id":"sqli-union-select","severity":"critical","points":5},{"module":"rate_limit","rule_id":"rl-client-ip","severity":null,"points":3}]"#
+        );
+        // Round-trips back into the same typed model the control plane will reuse.
+        let back: Vec<ScoreContribution> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, items);
+    }
 }
 
 // ── RequestContext ────────────────────────────────────────────────────────────

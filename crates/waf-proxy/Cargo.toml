@@ -32,6 +32,9 @@ http-body-util = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 toml = "0.8"
+# Serialize the per-rule score breakdown as one JSON field in the decision-log (§7 drill-down
+# data source). Only on the denied-request log path — not the hot path.
+serde_json = "1"
 # TLS termination (Fase 12). ring provider (no aws-lc-rs/cmake); detection stays serde-free,
 # this is the ONE legitimate exception to "hand-roll the parser" — TLS is never hand-rolled.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

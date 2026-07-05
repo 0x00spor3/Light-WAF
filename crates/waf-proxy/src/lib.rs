@@ -377,6 +377,15 @@ fn upstream_error_response(
     Response::builder().status(status).body(full_body(body)).unwrap()
 }
 
+/// Serialize the per-rule score breakdown to a compact JSON array for the decision-log
+/// (`score_contributions` field). This is the data the enterprise control-plane drill-down
+/// (§7) reconstructs a blocked verdict from — emitted only on the already-logged denied path,
+/// never per benign request. Serialization of this plain data cannot realistically fail; an
+/// empty array on the theoretical error keeps the log line well-formed.
+fn contributions_json(ctx: &RequestContext) -> String {
+    serde_json::to_string(&ctx.score_contributions).unwrap_or_else(|_| "[]".to_string())
+}
+
 /// Map a denying pipeline verdict to an HTTP response (403 for Block, the
 /// carried status — e.g. 429 + `Retry-After` — for Reject). `Allow` → `None`.
 fn deny_response(
@@ -391,6 +400,7 @@ fn deny_response(
                 rule_id = %rule_id,
                 reason = %reason,
                 score = ctx.score,
+                score_contributions = %contributions_json(ctx),
                 "request blocked"
             );
             Some((
@@ -407,6 +417,7 @@ fn deny_response(
                 rule_id = %rule_id,
                 reason = %reason,
                 status = status,
+                score_contributions = %contributions_json(ctx),
                 "request rejected"
             );
             // Reason phrase + metric outcome by status: 429 rate-limit, 400 illegal framing

@@ -15,6 +15,10 @@ homepage.workspace = true
 serde = { version = "1", features = ["derive"] }
 bytes = "1"
 
+[dev-dependencies]
+# Locks the decision-log `score_contributions` JSON shape (the §7 drill-down contract).
+serde_json = "1"
+
 [features]
 # Test-only builders for `RequestContext` (see `src/testkit.rs`). Additive and
 # never enabled by the proxy — zero-cost in production, confined to test/tooling
