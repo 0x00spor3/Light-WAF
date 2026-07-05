@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Sample app schema for the schema-enforcement live-wire check (see RUNBOOK.md).
+# Point [enterprise.schema_enforcement].schema_path at this file. A query that references anything
+# NOT declared here (unknown field/type/argument, missing subselection, undefined variable) is a
+# query the real client never sends → scored as `schema-graphql-unknown-field` (Critical).
+
+type Query {
+  user(id: ID!): User
+  users: [User!]!
+  me: User
+}
+
+type User {
+  id: ID!
+  name: String
+  email: String
+  friends: [User!]
+}

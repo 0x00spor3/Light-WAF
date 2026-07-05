@@ -162,23 +162,80 @@ pub enum Reputation { Unknown, Suspicious, Malicious }
 > **Confine rigido**: qui vivono SOLO firme **premium curate** e moduli che consumano
 > stato/intelligence enterprise — MAI riportare nel core capacità baseline.
 
-- **Firme premium** (`waf-modules-premium`): regole ad alta-cura (es. abuse GraphQL/gRPC
-  depth/complexity, evasion families aggiornate, bot/scanner avanzati) impacchettate come
-  `WafModule` aggiuntivi, iniettati via `.modules(premium_modules)` **dopo** i built-in.
-  Stesso contratto `inspect -> Decision`, stesso scoring §7 del core, filtro per
-  `paranoia_level`: **nessun punteggio hardcoded**, ogni regola dichiara solo una severità.
-- **Schema-enforcement GraphQL/gRPC** (`BOUNDARY.md` §3.1): validare la query/messaggio
-  contro lo **schema reale** dell'app (`.graphql` / `.proto`) è **gestione schema =
-  governance** → enterprise. Si aggancia come modulo strutturale (`structural() = true`)
-  che gira anche sul fast-path-skip, esattamente come i cap strutturali OPEN.
+- **Firme premium** (`waf-modules-premium`): regole ad alta-cura impacchettate come `WafModule`
+  aggiuntivi, iniettati via `.add_module()` **dopo** i built-in. Stesso contratto `inspect -> Decision`,
+  stesso scoring del core: **nessun punteggio hardcoded**, ogni regola dichiara solo una severità.
+  - **Client-integrity / bot detection** (`bot.rs`) — **IMPLEMENTATO (2026-07-03)**: heuristiche
+    **native cross-header** che una regex non esprime — deliberatamente **fuori** dal modulo `scanner`
+    OPEN (che fa UA-tool-matching = baseline) e da `waf-crs-curated` (contenuto firma). v1 = **browser
+    impersonation (S1)**: una UA che dichiara un browser **moderno** (Chromium/Firefox major a 3 cifre;
+    Safari escluso — Sec-Fetch storicamente incoerente) **senza NESSUN header `sec-fetch-*`** → un bot
+    che si spaccia per browser (`curl`/`requests` non manda Fetch-Metadata; un client non-browser non
+    dichiara un browser → non scatta). `Phase::Headers`, `structural()=true`, `Decision::Scores` additive
+    (`bot-browser-impersonation`, `Critical` tarabile). Config `[enterprise.bot_detection]` (default off,
+    niente file/Redis, costruzione infallibile). FP-source = browser vecchi/edge o proxy che strippano
+    header → governata dalla severità. Namespace `rule_id` `bot-*` (registry strutturale).
+  - **Follow-on** dichiarati: **scanner comportamentale** (contatori per-IP nello store §3), **TLS/JA
+    fingerprint** (ClientHello), segnali corroboranti (`sec-ch-ua`/`accept-language`), header-order/casing.
+- **Schema-enforcement GraphQL** (`waf-modules-premium`) — **IMPLEMENTATO (2026-07-03)**: valida
+  ogni operazione GraphQL contro lo **schema reale** dell'app (`.graphql` SDL) — è **gestione schema =
+  governance** → enterprise. Modulo strutturale (`Phase::Body`, `structural() = true`) che gira anche
+  sul fast-path-skip, come i cap strutturali OPEN.
+  - **Validatore = `apollo-compiler`** (l'engine dell'Apollo Router): zero-gap — un validatore
+    hand-rolled sarebbe falsa sicurezza per un security control. **DoS-parser bounded**: i cap
+    strutturali OPEN di Fase 11 (depth/size/batch → `Reject{400}`) girano PRIMA, quindi il validatore
+    vede solo operazioni già limitate.
+  - **Estrazione = specchio del modulo GraphQL OPEN**: `application/graphql` raw-body by Content-Type
+    (any path), JSON `query`-leaf + batch `<i>.query` e GET `?query=` **solo sui `paths` configurati**;
+    riusa `waf_normalizer::graphql::unwrap_query_envelope` così non diverge mai dall'OPEN.
+  - **Contributo = `Decision::Scores` additive** (mai `Reject` secco): due `rule_id` con severità
+    distinte — `schema-graphql-parse-error` (body non-GraphQL, più bassa) vs `schema-graphql-unknown-field`
+    (query valida ma fuori-schema, `Critical`). Dedup per-kind (un batch di N violazioni = un segnale).
+    L'introspection **non** è flaggata qui (è compito del modulo OPEN). Namespace `rule_id` `schema-*`
+    riservato + enforced strutturalmente (registry `rules`), disgiunto dagli id OPEN (anti-doppio-conteggio).
+  - **Confine FP**: l'unica vera fonte-FP è lo **schema-drift** (app aggiornata prima della copia SDL del
+    WAF) — governato dalla severità configurabile, non dall'allentare la validazione (un client conforme
+    non manda mai query fuori-schema; il backend reale le rifiuta comunque).
+  - **Config** `[enterprise.schema_enforcement]` (default off; `schema_path` obbligatorio se enabled →
+    **boot-fatal** se manca/è invalido = fail-closed sulla config, mai sul traffico). Nessun Redis.
+  - ⚠️ **No hot-reload in v1** (G5): lo schema è immutabile in-memory → **drift → restart** (come gli
+    altri moduli premium, non sopravvive a SIGHUP). Il fix è il **follow-on core-0.3 `module_factory`**
+    (i moduli iniettati sopravvivono E si re-init sul reload → hot-reload keep-old-on-invalid gratis per
+    reputation + CRS-curated + schema insieme). La `load_schema(path)` è già una fn pura re-entrant pronta
+    per quel factory.
+- **Schema-enforcement gRPC** (`waf-modules-premium`, stesso crate) — **IMPLEMENTATO (2026-07-03)**: valida
+  ogni messaggio gRPC **unary** contro il **descrittore reale** dell'app (`FileDescriptorSet` `.bin` da
+  `protoc`/`buf`). Il `:path` (`/pkg.Service/Method`) seleziona l'input message-type; il messaggio viene
+  decodificato via **`prost-reflect`** (`DynamicMessage`). Modulo strutturale (`Phase::Body`, `structural()`),
+  riconosciuto via `Content-Type: application/grpc*` (niente lista `paths` — in gRPC il path È il metodo).
+  - **Tre segnali** `Decision::Scores` additive sotto `schema-grpc-*`: `unknown-method` (`:path` non nel
+    descrittore) → `Critical`; `decode-error` (byte che non decodificano) → `Warning`; `unknown-field` (campo
+    top-level fuori descrittore) → **opt-in `flag_unknown_fields`, default off**. Dedup per-kind del batch di frame.
+  - **Differenze dal GraphQL** (a verbale): (1) `GrpcExtract` OPEN non espone i byte grezzi → il modulo **de-frama
+    da sé** (`[flag:1][len:4][msg]`, mirror del framing OPEN) e **salta i frame compressi** (opachi → mai
+    decode-error FP); (2) protobuf **tollera by-design i campi sconosciuti** (forward-compat) → unknown-field è
+    opt-in per non generare FP quando un client usa un `.proto` più nuovo della copia del WAF. Rilevamento
+    unknown-field = tag-walk manuale, **scope v1 = top-level** (nested = follow-on).
+  - **Config** `[enterprise.grpc_schema_enforcement]` (default off; `descriptor_path` obbligatorio se enabled →
+    **boot-fatal** su descrittore mancante/invalido). `load_descriptors(path)` puro reload-ready (come GraphQL, G5).
+  - **Solo unary** in v1 (streaming, grpc-web, validazione risposte, input `.proto`-via-protox = follow-on).
 - **IP-reputation module** (consuma §3): `Phase::Connection`, legge `StateStore::reputation`.
 
 ### Marketplace / signing dei plugin WASM (`BOUNDARY.md` §1.7, §2.4)
-Il **runtime** Proxy-Wasm (`waf-wasm`, `wasmi`) è **OPEN**. L'enterprise aggiunge:
-- **Signing**: verifica firma del `.wasm` prima del load (catena di fiducia gestita).
-- **Marketplace**: distribuzione/versioning/aggiornamento dei plugin firmati.
-- Si integra senza toccare il runtime: un `verified_plugin_loader` valida la firma e poi
-  delega al loader OPEN esistente.
+Il **runtime** Proxy-Wasm (`waf-wasm`, `wasmi`) è **OPEN** e carica già `.wasm` **non firmati** da
+`[modules.wasm]` (skip-on-error). L'enterprise (`waf-marketplace`) aggiunge il **gate di fiducia** — **IMPLEMENTATO
+(2026-07-03)**:
+- **Signing**: `verify_signature` valida una **firma staccata minisign (ed25519)** del `.wasm` contro le
+  `trusted_keys` configurate; `load_verified_plugin` verifica e SOLO se la firma è valida delega a
+  `WasmModule::from_bytes` (API OPEN, **zero core**) — stesso buffer verificato e caricato (no TOCTOU).
+- **Postura fail-closed (divergenza voluta dall'OPEN)**: un plugin firmato che **non** verifica (firma
+  assente/invalida/chiave-non-fidata) è **boot-fatal**, mai skip. Motivo: nel path OPEN l'assenza degrada la
+  copertura; qui una firma che non verifica è **indistinguibile da una manomissione** → si rifiuta.
+- **Config** `[enterprise.wasm]` (default off): `trusted_keys` + `plugins[{wasm_path, sig_path, config?}]` +
+  limiti runtime section-global. **`exclusive = true`** = rifiuta al boot una config con `[modules.wasm]` OPEN
+  popolato (enforcement del lockdown: senza il flag, un `.wasm` non firmato nel blocco OPEN bypasserebbe il gate —
+  limite v1 dichiarato).
+- **Marketplace** completo (distribuzione/versioning/aggiornamento, PKI/cert-chain + revoca, cosign/OCI) = **follow-on**.
 
 ---
 

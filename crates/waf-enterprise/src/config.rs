@@ -11,10 +11,13 @@
 //! That keeps the enterprise knobs out of the OPEN schema while still living in one
 //! file (BOUNDARY §4: extend without forking).
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
 use waf_core::Severity;
+use waf_marketplace::WasmOptions;
+use waf_modules_premium::{BotDetectionConfig, GrpcSchemaEnforcementConfig, SchemaEnforcementConfig};
 use waf_state_redis::Reputation;
 use waf_threatintel::FeedConfig;
 use waf_tls_managed::acme_dns01::Dns01Config;
@@ -167,6 +170,14 @@ pub struct EnterpriseConfig {
     pub reputation: ReputationSection,
     /// `[enterprise.crs_curated]` — the curated premium CRS ruleset module (§6).
     pub crs_curated: CrsCuratedSection,
+    /// `[enterprise.schema_enforcement]` — GraphQL schema-enforcement module (§4-B).
+    pub schema_enforcement: SchemaEnforcementSection,
+    /// `[enterprise.grpc_schema_enforcement]` — gRPC schema-enforcement module (§4-B part 2).
+    pub grpc_schema_enforcement: GrpcSchemaEnforcementSection,
+    /// `[enterprise.bot_detection]` — client-integrity / bot detection module (§4-A).
+    pub bot_detection: BotDetectionSection,
+    /// `[enterprise.wasm]` — signed WASM plugin loader (§4-C).
+    pub wasm: WasmSection,
 }
 
 impl Default for EnterpriseConfig {
@@ -177,7 +188,194 @@ impl Default for EnterpriseConfig {
             fail_open: true,
             reputation: ReputationSection::default(),
             crs_curated: CrsCuratedSection::default(),
+            schema_enforcement: SchemaEnforcementSection::default(),
+            grpc_schema_enforcement: GrpcSchemaEnforcementSection::default(),
+            bot_detection: BotDetectionSection::default(),
+            wasm: WasmSection::default(),
         }
+    }
+}
+
+/// `[enterprise.wasm]` — load Proxy-Wasm plugins ONLY after verifying a minisign signature against
+/// `trusted_keys` (§4-C). Default OFF. A signed plugin whose signature does not verify is boot-fatal
+/// (fail-closed, K5 — unlike the OPEN `[modules.wasm]`, which skips a broken UNSIGNED plugin).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct WasmSection {
+    pub enabled: bool,
+    /// K6 enforcement: when `true`, refuse to boot if the OPEN `[modules.wasm]` also loads plugins
+    /// (which would be UNSIGNED, bypassing the gate). Off by default — coexistence is a convention.
+    pub exclusive: bool,
+    /// Base64 minisign public keys (the key line of a `.pub`) plugins are trusted against.
+    pub trusted_keys: Vec<String>,
+    /// Section-global runtime limits (mirror `[modules.wasm]`).
+    pub pool_size: usize,
+    pub fuel_per_request: u64,
+    pub max_memory_bytes: usize,
+    pub checkout_timeout_ms: u64,
+    pub plugins: Vec<WasmPluginSection>,
+}
+
+impl Default for WasmSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exclusive: false,
+            trusted_keys: Vec::new(),
+            pool_size: 4,
+            fuel_per_request: 10_000_000,
+            max_memory_bytes: 16 * 1024 * 1024,
+            checkout_timeout_ms: 100,
+            plugins: Vec::new(),
+        }
+    }
+}
+
+impl WasmSection {
+    /// K6 enforcement predicate: `true` when `exclusive` is set AND the OPEN `[modules.wasm]` would
+    /// load UNSIGNED plugins (which bypass the signature gate) → the boot must be refused.
+    pub fn exclusive_conflict(&self, open: &waf_core::WasmConfig) -> bool {
+        self.exclusive && open.enabled && !open.plugins.is_empty()
+    }
+
+    /// The runtime options shared by every plugin in this section.
+    pub fn to_options(&self) -> WasmOptions {
+        WasmOptions {
+            pool_size: self.pool_size,
+            fuel_per_request: self.fuel_per_request,
+            max_memory_bytes: self.max_memory_bytes,
+            checkout_timeout: Duration::from_millis(self.checkout_timeout_ms),
+        }
+    }
+}
+
+/// One `[[enterprise.wasm.plugins]]` entry: the `.wasm`, its detached `.minisig`, and an optional
+/// plugin config string passed to the runtime.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct WasmPluginSection {
+    pub wasm_path: String,
+    pub sig_path: String,
+    pub config: Option<String>,
+}
+
+/// `[enterprise.bot_detection]` — client-integrity / bot detection (§4-A). Default OFF. No file, no
+/// Redis (native heuristics). v1 = browser-impersonation (S1): a UA advertising a modern browser
+/// with no `sec-fetch-*` headers scores `browser_impersonation_severity`. Contributes to the same
+/// cumulative anomaly score.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct BotDetectionSection {
+    pub enabled: bool,
+    pub browser_impersonation_severity: String,
+}
+
+impl Default for BotDetectionSection {
+    fn default() -> Self {
+        Self { enabled: false, browser_impersonation_severity: "critical".to_string() }
+    }
+}
+
+impl BotDetectionSection {
+    /// Build the module's [`BotDetectionConfig`], parsing the severity (rejecting unknown names).
+    pub fn to_config(&self) -> Result<BotDetectionConfig, String> {
+        Ok(BotDetectionConfig {
+            enabled: self.enabled,
+            browser_impersonation_severity: parse_severity(&self.browser_impersonation_severity)?,
+        })
+    }
+}
+
+/// `[enterprise.grpc_schema_enforcement]` — validates each unary gRPC message against the app's REAL
+/// compiled schema (a `FileDescriptorSet` `.bin` from `protoc`/`buf`, §4-B part 2). Default OFF. No
+/// Redis. Contributes to the same cumulative anomaly score. An unknown RPC method scores
+/// `unknown_method_severity`; a message that won't decode scores `decode_error_severity`; a message
+/// carrying fields not in the descriptor scores `unknown_field_severity` ONLY when
+/// `flag_unknown_fields` (opt-in — protobuf tolerates unknown fields by design). `descriptor_path` is
+/// required when enabled (boot-fatal if missing/invalid).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct GrpcSchemaEnforcementSection {
+    pub enabled: bool,
+    /// Path to the app's compiled `FileDescriptorSet` (`.bin`).
+    pub descriptor_path: String,
+    /// Opt-in: flag messages carrying fields not in the descriptor (default off — forward-compat).
+    pub flag_unknown_fields: bool,
+    pub unknown_method_severity: String,
+    pub decode_error_severity: String,
+    pub unknown_field_severity: String,
+}
+
+impl Default for GrpcSchemaEnforcementSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            descriptor_path: String::new(),
+            flag_unknown_fields: false,
+            unknown_method_severity: "critical".to_string(),
+            decode_error_severity: "warning".to_string(),
+            unknown_field_severity: "notice".to_string(),
+        }
+    }
+}
+
+impl GrpcSchemaEnforcementSection {
+    /// Build the module's [`GrpcSchemaEnforcementConfig`], parsing the severities (rejecting unknown
+    /// names). The descriptor file is read later by `GrpcSchemaModule::from_config` (boot-fatal).
+    pub fn to_config(&self) -> Result<GrpcSchemaEnforcementConfig, String> {
+        Ok(GrpcSchemaEnforcementConfig {
+            enabled: self.enabled,
+            descriptor_path: PathBuf::from(&self.descriptor_path),
+            flag_unknown_fields: self.flag_unknown_fields,
+            unknown_method_severity: parse_severity(&self.unknown_method_severity)?,
+            decode_error_severity: parse_severity(&self.decode_error_severity)?,
+            unknown_field_severity: parse_severity(&self.unknown_field_severity)?,
+        })
+    }
+}
+
+/// `[enterprise.schema_enforcement]` — validates each GraphQL operation against the app's REAL SDL
+/// schema (§4-B). Default OFF. No Redis (pure detection). Contributes to the same cumulative anomaly
+/// score. A schema-invalid query scores `unknown_field_severity`; a non-GraphQL body scores the
+/// lower `parse_error_severity`. `schema_path` is required when enabled (boot-fatal if missing).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SchemaEnforcementSection {
+    pub enabled: bool,
+    /// Path to the app's `.graphql` SDL schema file (loaded once at boot; no hot-reload in v1).
+    pub schema_path: String,
+    /// GraphQL endpoint path(s): the JSON/GET transports are inspected ONLY here (a non-GraphQL JSON
+    /// API with a `query` field is left alone). The `application/graphql` body is caught on any path.
+    pub paths: Vec<String>,
+    /// Severity for a body that is not parseable as GraphQL (lower — broken client / generic probing).
+    pub parse_error_severity: String,
+    /// Severity for a syntactically valid query that violates the schema (Critical — targeted probing).
+    pub unknown_field_severity: String,
+}
+
+impl Default for SchemaEnforcementSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schema_path: String::new(),
+            paths: vec!["/graphql".to_string()],
+            parse_error_severity: "warning".to_string(),
+            unknown_field_severity: "critical".to_string(),
+        }
+    }
+}
+
+impl SchemaEnforcementSection {
+    /// Build the module's [`SchemaEnforcementConfig`], parsing the severities (rejecting unknown
+    /// names). The schema file itself is read later by `GraphqlSchemaModule::from_config` (boot-fatal).
+    pub fn to_config(&self) -> Result<SchemaEnforcementConfig, String> {
+        Ok(SchemaEnforcementConfig {
+            enabled: self.enabled,
+            paths: self.paths.clone(),
+            schema_path: PathBuf::from(&self.schema_path),
+            parse_error_severity: parse_severity(&self.parse_error_severity)?,
+            unknown_field_severity: parse_severity(&self.unknown_field_severity)?,
+        })
     }
 }
 
@@ -536,6 +734,235 @@ verdict = "nope"
 "#;
         let f = EnterpriseFile::from_toml_str(toml).expect("parses");
         assert!(f.enterprise.reputation.feed.sources[0].verdict().is_err());
+    }
+
+    #[test]
+    fn reads_schema_enforcement_section_and_builds_config() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.schema_enforcement]
+enabled = true
+schema_path = "/etc/waf/app.graphql"
+paths = ["/graphql", "/api/graphql"]
+parse_error_severity = "notice"
+unknown_field_severity = "error"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        let se = &f.enterprise.schema_enforcement;
+        assert!(se.enabled);
+        let cfg = se.to_config().unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.schema_path, PathBuf::from("/etc/waf/app.graphql"));
+        assert_eq!(cfg.paths, vec!["/graphql".to_string(), "/api/graphql".to_string()]);
+        assert_eq!(cfg.parse_error_severity, Severity::Notice);
+        assert_eq!(cfg.unknown_field_severity, Severity::Error);
+    }
+
+    #[test]
+    fn schema_enforcement_defaults_off_with_graphql_path_and_warning_critical() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        let se = &f.enterprise.schema_enforcement;
+        assert!(!se.enabled, "schema-enforcement default OFF");
+        let cfg = se.to_config().unwrap();
+        assert_eq!(cfg.paths, vec!["/graphql".to_string()]);
+        assert_eq!(cfg.parse_error_severity, Severity::Warning);
+        assert_eq!(cfg.unknown_field_severity, Severity::Critical);
+    }
+
+    #[test]
+    fn schema_enforcement_unknown_severity_is_rejected() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.schema_enforcement]
+enabled = true
+unknown_field_severity = "nope"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert!(f.enterprise.schema_enforcement.to_config().is_err());
+    }
+
+    #[test]
+    fn reads_grpc_schema_enforcement_section_and_builds_config() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.grpc_schema_enforcement]
+enabled = true
+descriptor_path = "/etc/waf/app.bin"
+flag_unknown_fields = true
+unknown_method_severity = "critical"
+decode_error_severity = "error"
+unknown_field_severity = "warning"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        let se = &f.enterprise.grpc_schema_enforcement;
+        assert!(se.enabled);
+        let cfg = se.to_config().unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.descriptor_path, PathBuf::from("/etc/waf/app.bin"));
+        assert!(cfg.flag_unknown_fields);
+        assert_eq!(cfg.unknown_method_severity, Severity::Critical);
+        assert_eq!(cfg.decode_error_severity, Severity::Error);
+        assert_eq!(cfg.unknown_field_severity, Severity::Warning);
+    }
+
+    #[test]
+    fn grpc_schema_enforcement_defaults_off_flag_off_critical_warning_notice() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        let se = &f.enterprise.grpc_schema_enforcement;
+        assert!(!se.enabled, "gRPC schema-enforcement default OFF");
+        let cfg = se.to_config().unwrap();
+        assert!(!cfg.flag_unknown_fields, "unknown-field flagging is opt-in");
+        assert_eq!(cfg.unknown_method_severity, Severity::Critical);
+        assert_eq!(cfg.decode_error_severity, Severity::Warning);
+        assert_eq!(cfg.unknown_field_severity, Severity::Notice);
+    }
+
+    #[test]
+    fn grpc_schema_enforcement_unknown_severity_is_rejected() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.grpc_schema_enforcement]
+enabled = true
+unknown_method_severity = "nope"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert!(f.enterprise.grpc_schema_enforcement.to_config().is_err());
+    }
+
+    #[test]
+    fn reads_bot_detection_section_and_builds_config() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.bot_detection]
+enabled = true
+browser_impersonation_severity = "error"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        let bd = &f.enterprise.bot_detection;
+        assert!(bd.enabled);
+        let cfg = bd.to_config().unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.browser_impersonation_severity, Severity::Error);
+    }
+
+    #[test]
+    fn bot_detection_defaults_off_with_critical() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        let bd = &f.enterprise.bot_detection;
+        assert!(!bd.enabled, "bot-detection default OFF");
+        assert_eq!(bd.to_config().unwrap().browser_impersonation_severity, Severity::Critical);
+    }
+
+    #[test]
+    fn bot_detection_unknown_severity_is_rejected() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.bot_detection]
+enabled = true
+browser_impersonation_severity = "nope"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert!(f.enterprise.bot_detection.to_config().is_err());
+    }
+
+    #[test]
+    fn reads_wasm_section_with_plugins_keys_and_exclusive() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.wasm]
+enabled = true
+exclusive = true
+trusted_keys = ["RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"]
+pool_size = 8
+fuel_per_request = 5000000
+checkout_timeout_ms = 250
+[[enterprise.wasm.plugins]]
+wasm_path = "/etc/waf/denylist.wasm"
+sig_path  = "/etc/waf/denylist.wasm.minisig"
+config    = "block=/admin"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        let w = &f.enterprise.wasm;
+        assert!(w.enabled);
+        assert!(w.exclusive);
+        assert_eq!(w.trusted_keys.len(), 1);
+        assert_eq!(w.plugins.len(), 1);
+        assert_eq!(w.plugins[0].wasm_path, "/etc/waf/denylist.wasm");
+        assert_eq!(w.plugins[0].sig_path, "/etc/waf/denylist.wasm.minisig");
+        assert_eq!(w.plugins[0].config.as_deref(), Some("block=/admin"));
+        let opts = w.to_options();
+        assert_eq!(opts.pool_size, 8);
+        assert_eq!(opts.fuel_per_request, 5_000_000);
+        assert_eq!(opts.checkout_timeout, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn exclusive_conflict_detects_unsigned_open_plugins() {
+        use waf_core::{Config, WasmPluginConfig};
+        let ent = WasmSection { exclusive: true, ..Default::default() };
+        let mut open = Config::default();
+        // No OPEN plugins → no conflict.
+        assert!(!ent.exclusive_conflict(&open.modules.wasm));
+        // OPEN [modules.wasm] loads a plugin → conflict (it would be unsigned).
+        open.modules.wasm.enabled = true;
+        open.modules.wasm.plugins = vec![WasmPluginConfig { path: "x.wasm".into(), config: None }];
+        assert!(ent.exclusive_conflict(&open.modules.wasm));
+        // Non-exclusive → never a conflict (coexistence allowed).
+        let non_excl = WasmSection::default();
+        assert!(!non_excl.exclusive_conflict(&open.modules.wasm));
+    }
+
+    #[test]
+    fn wasm_section_defaults_off_and_non_exclusive() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        let w = &f.enterprise.wasm;
+        assert!(!w.enabled, "signed WASM loader default OFF");
+        assert!(!w.exclusive, "exclusive default OFF (coexistence allowed)");
+        assert!(w.trusted_keys.is_empty());
+        assert!(w.plugins.is_empty());
+        let opts = w.to_options();
+        assert_eq!(opts.pool_size, 4);
+        assert_eq!(opts.max_memory_bytes, 16 * 1024 * 1024);
     }
 
     #[test]

@@ -17,6 +17,8 @@ members = [
     "crates/waf-tls-managed",
     "crates/waf-threatintel",
     "crates/waf-crs-curated",
+    "crates/waf-modules-premium",
+    "crates/waf-marketplace",
     "crates/waf-enterprise",
 ]
 
@@ -27,16 +29,22 @@ license = "BUSL-1.1"
 authors = ["0x00spor3"]
 
 [workspace.dependencies]
-# Core dependency = crates.io VERSION (no path, no patch). The additive TLS seams
-# (`TlsCertSource::resolver`/`client_verifier`) ship in core 0.2, now published — so the
-# enterprise tier builds against the real published crate, exactly as the separate repo will.
-waf-core = "0.2"
-waf-proxy = "0.2"
+# Core dependency = crates.io VERSION (no path, no patch). Requires core 0.3 for the
+# `.module_factory` builder seam (injected modules survive a reload) on top of the 0.2 TLS seams —
+# so the enterprise tier builds against the real published crate, exactly as the separate repo will.
+waf-core = "0.3"
+waf-proxy = "0.3"
 # Used by waf-threatintel tests to run the reputation module through the real pipeline.
-waf-pipeline = "0.2"
+waf-pipeline = "0.3"
 # The OPEN CRS engine (B2) — a DEV-dep of waf-crs-curated: its compat gate loads the curated
 # content through the real `CrsModule` to prove it all parses/loads under the supported subset.
-waf-detection = "0.2"
+waf-detection = "0.3"
+# OPEN normalizer — waf-modules-premium reuses `graphql::unwrap_query_envelope` so the enterprise
+# GraphQL extraction sees the same operations the OPEN Phase-11 module does (no divergent parsing).
+waf-normalizer = "0.3"
+# OPEN Proxy-Wasm runtime (B3) — waf-marketplace verifies a plugin's signature then delegates to the
+# OPEN `WasmModule::from_bytes` loader (§4-C, zero core).
+waf-wasm = "0.3"
 
 redis = { version = "0.27", features = ["r2d2"] }
 r2d2 = "0.8"

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 0x00spor3
+# SPDX-License-Identifier: BUSL-1.1
+[package]
+name = "waf-marketplace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Signed WASM plugin loader for Light WAF — enterprise tier (BSL 1.1). §4-C: verify a minisign signature before delegating to the OPEN Proxy-Wasm runtime."
+
+[dependencies]
+# The OPEN Proxy-Wasm runtime — after verifying the signature we delegate to `WasmModule::from_bytes`.
+waf-wasm = { workspace = true }
+waf-core = { workspace = true }
+# minisign / ed25519 detached-signature verification (§4-C, K2). Real, standard format.
+minisign = "0.7"
+
+[dev-dependencies]
+# The datapath bite-test runs a verified plugin through the REAL pipeline.
+waf-pipeline = { workspace = true }
+# Assemble minimal wasm fixtures inline (no wasm32 toolchain) to prove the verify→from_bytes compose.
+wat = "1"

@@ -26,10 +26,31 @@ use waf_tls_managed::acme::ChallengeStrategy;
 use waf_tls_managed::dns::{CloudflareDns, DnsProvider, Route53Dns};
 use waf_tls_managed::{acme, acme_dns01, mtls, ManagedTlsCertSource};
 use waf_detection::crs::CrsModule;
+use waf_marketplace::{load_verified_plugin, WasmOptions};
+use waf_modules_premium::{
+    BotDetectionConfig, BotDetectionModule, GraphqlSchemaModule, GrpcSchemaEnforcementConfig,
+    GrpcSchemaModule, SchemaEnforcementConfig,
+};
 use waf_threatintel::{
     start_reputation_feed, FileFeed, HttpListFeed, ReputationConfig, ReputationFeed,
     ReputationModule,
 };
+
+/// Owned copy of one signed-WASM plugin's paths, captured by the module factory (core 0.3) so
+/// the plugin is re-read and re-verified on every reload — never a borrow of the parsed config.
+struct WasmPluginSpec {
+    name: String,
+    wasm_path: String,
+    sig_path: String,
+    config: Option<String>,
+}
+
+/// Owned spec for the signed-WASM module set, captured by the module factory (core 0.3).
+struct WasmFactorySpec {
+    plugins: Vec<WasmPluginSpec>,
+    trusted_keys: Vec<String>,
+    opts: WasmOptions,
+}
 
 /// Build the DNS-01 [`DnsProvider`] selected by `[tls.acme].provider`. Secrets come from the
 /// environment, never the config file. Boot-fatal on a missing token / unknown provider.
@@ -177,6 +198,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Keeps the threat-intel feed's background task alive for the process lifetime (§6).
     let mut _feed_handle: Option<tokio::task::JoinHandle<()>> = None;
 
+    // ── core-0.3 module_factory: owned specs for the injected premium modules. We validate
+    // config up front (boot-fatal on error, as before) and stash owned, cloneable specs here;
+    // ONE factory closure (built just before `builder.build()`) rebuilds the modules from these.
+    // The factory runs at boot AND on every reload, so these modules survive a SIGHUP — the
+    // core no longer drops them to `Vec::new()`. `.add_module` is NOT used for them any more.
+    let mut rep_spec: Option<(Arc<RedisStore>, ReputationConfig)> = None;
+    let mut crs_curated_on = false;
+    let mut se_cfg: Option<SchemaEnforcementConfig> = None;
+    let mut ge_cfg: Option<GrpcSchemaEnforcementConfig> = None;
+    let mut bd_cfg: Option<BotDetectionConfig> = None;
+    let mut wasm_spec: Option<WasmFactorySpec> = None;
+
     let mut builder = Proxy::builder(&config);
 
     // ── Seam 1: distributed state on Redis — rate-limit StateStore AND/OR cluster-wide
@@ -233,10 +266,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 };
                 info!(redis = %url, source = url_src, "wiring cluster-wide IP-reputation module");
-                builder = builder.add_module(Box::new(ReputationModule::new(
-                    store.clone(),
-                    ReputationConfig { enabled: true, malicious, suspicious },
-                )));
+                // Captured by the module factory (survives reload). Store is process-lifetime.
+                rep_spec = Some((store.clone(), ReputationConfig { enabled: true, malicious, suspicious }));
             }
             if cluster_certs {
                 // The SAME store also backs cluster cert coordination (Step 3): the DNS-01 driver
@@ -298,6 +329,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // inject it as a `WafModule`. Premium-additive: it contributes to the SAME cumulative score
     // as the native modules (double-count accepted — the operator tunes the threshold with CRS on).
     if ent.crs_curated.enabled {
+        // Validate the load once at boot (the factory rebuilds it identically on each reload —
+        // the curated source is embedded, so a reload cannot make it fail). The loaded-count gate
+        // stays here as a boot-time diagnostic.
         let module = CrsModule::from_source(&waf_crs_curated::curated_source());
         info!(expected = waf_crs_curated::EXPECTED_LOADED, "wiring curated premium CRS ruleset: {}", module.report());
         if module.loaded_count() < waf_crs_curated::EXPECTED_LOADED {
@@ -307,8 +341,111 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "curated CRS: fewer rules loaded than expected — the OPEN engine subset may have changed"
             );
         }
-        // Like the reputation module, this does NOT survive SIGHUP yet (core `.module_factory` TBD).
-        builder = builder.add_module(Box::new(module));
+        crs_curated_on = true;
+    }
+
+    // ── Seam 3: premium detection modules — GraphQL schema-enforcement (§4-B).
+    // Validates each GraphQL operation against the app's REAL SDL schema. Premium-additive: it
+    // contributes to the SAME cumulative anomaly score as the native modules (governance of the
+    // schema, not baseline detection — the OPEN §6/Phase-11 modules keep value-injection and DoS caps).
+    if ent.schema_enforcement.enabled {
+        let cfg = match ent.schema_enforcement.to_config() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("waf-enterprise: {e}");
+                std::process::exit(2);
+            }
+        };
+        info!(
+            schema = %cfg.schema_path.display(),
+            paths = ?cfg.paths,
+            "wiring GraphQL schema-enforcement module (§4-B)"
+        );
+        // The SDL is loaded (and re-loaded on reload) inside the module factory via the SAME pure
+        // `load_schema`: boot-fatal on an invalid schema; on a reload that goes invalid the whole
+        // reload aborts and the last-good module is kept (core-0.3 whole-set fallibility).
+        se_cfg = Some(cfg);
+    }
+
+    // ── Seam 3: premium detection modules — gRPC schema-enforcement (§4-B part 2).
+    // Validates each unary gRPC message against the app's compiled FileDescriptorSet. Same posture
+    // as the GraphQL module: governance of the schema, additive `Decision::Scores`, zero core.
+    if ent.grpc_schema_enforcement.enabled {
+        let cfg = match ent.grpc_schema_enforcement.to_config() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("waf-enterprise: {e}");
+                std::process::exit(2);
+            }
+        };
+        info!(
+            descriptor = %cfg.descriptor_path.display(),
+            flag_unknown_fields = cfg.flag_unknown_fields,
+            "wiring gRPC schema-enforcement module (§4-B part 2)"
+        );
+        // The descriptor is loaded (and re-loaded on reload) inside the module factory: boot-fatal
+        // on a missing/invalid descriptor; whole-set abort keeps the last-good module on a bad reload.
+        ge_cfg = Some(cfg);
+    }
+
+    // ── Seam 3: premium detection modules — client-integrity / bot detection (§4-A).
+    // Native cross-header heuristics (browser impersonation). Additive `Decision::Scores`, zero core.
+    if ent.bot_detection.enabled {
+        let cfg = match ent.bot_detection.to_config() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("waf-enterprise: {e}");
+                std::process::exit(2);
+            }
+        };
+        // Construction is infallible (native heuristics — no schema/file to load), so the factory
+        // rebuilds it identically on every reload.
+        info!("wiring client-integrity / bot-detection module (§4-A)");
+        bd_cfg = Some(cfg);
+    }
+
+    // ── Seam 3: signed WASM plugins — verify a minisign signature before loading (§4-C).
+    // A signed plugin that does not verify is boot-fatal (fail-closed, K5); this is the enterprise
+    // trust gate on top of the OPEN Proxy-Wasm runtime.
+    if ent.wasm.enabled {
+        // K6 enforcement: `exclusive` refuses to boot if the OPEN [modules.wasm] also loads plugins
+        // (which would be UNSIGNED, bypassing the gate).
+        if ent.wasm.exclusive_conflict(&config.modules.wasm) {
+            eprintln!(
+                "waf-enterprise: [enterprise.wasm].exclusive = true but [modules.wasm] loads {} \
+                 unsigned plugin(s) — refusing to boot (they would bypass signature verification)",
+                config.modules.wasm.plugins.len()
+            );
+            std::process::exit(2);
+        }
+        if ent.wasm.trusted_keys.is_empty() {
+            eprintln!("waf-enterprise: [enterprise.wasm].enabled but no trusted_keys — nothing can verify");
+            std::process::exit(2);
+        }
+        // The plugin is re-read from disk AND its signature re-verified inside the module factory,
+        // at boot AND on every reload — so a signed plugin rotated on disk is picked up (and a
+        // tampered one is rejected) on reload, fail-closed. Only owned paths/keys are captured.
+        let plugins = ent
+            .wasm
+            .plugins
+            .iter()
+            .map(|p| WasmPluginSpec {
+                name: std::path::Path::new(&p.wasm_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("plugin")
+                    .to_string(),
+                wasm_path: p.wasm_path.clone(),
+                sig_path: p.sig_path.clone(),
+                config: p.config.clone(),
+            })
+            .collect();
+        info!(plugins = ent.wasm.plugins.len(), "wiring signed WASM plugins (§4-C, verified in the module factory)");
+        wasm_spec = Some(WasmFactorySpec {
+            plugins,
+            trusted_keys: ent.wasm.trusted_keys.clone(),
+            opts: ent.wasm.to_options(),
+        });
     }
 
     // ── Seam 2: managed TLS — ACME server certs (hitless) and/or mTLS client auth.
@@ -387,17 +524,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    // ── core-0.3 module_factory: ONE closure that (re)builds every injected premium module from
+    // the owned specs gathered above. The core runs it at bind AND on every reload, so these
+    // modules SURVIVE a SIGHUP and are re-`init`'d — the old `.add_module` set was silently
+    // dropped by the core's `Vec::new()` on reload. Whole-set fallibility: if any module fails to
+    // rebuild (e.g. an SDL/descriptor went invalid, or a signed WASM plugin no longer verifies),
+    // the factory returns `Err`, the core aborts that reload, and the last-good modules are kept.
+    let has_factory_modules = rep_spec.is_some()
+        || crs_curated_on
+        || se_cfg.is_some()
+        || ge_cfg.is_some()
+        || bd_cfg.is_some()
+        || wasm_spec.is_some();
+    if has_factory_modules {
+        builder = builder.module_factory(move || {
+            let mut mods: Vec<Box<dyn waf_core::WafModule>> = Vec::new();
+            if let Some((store, cfg)) = &rep_spec {
+                mods.push(Box::new(ReputationModule::new(store.clone(), *cfg)));
+            }
+            if crs_curated_on {
+                mods.push(Box::new(CrsModule::from_source(&waf_crs_curated::curated_source())));
+            }
+            if let Some(cfg) = &se_cfg {
+                let m = GraphqlSchemaModule::from_config(cfg)
+                    .map_err(|e| format!("GraphQL schema-enforcement: {e}"))?;
+                mods.push(Box::new(m));
+            }
+            if let Some(cfg) = &ge_cfg {
+                let m = GrpcSchemaModule::from_config(cfg)
+                    .map_err(|e| format!("gRPC schema-enforcement: {e}"))?;
+                mods.push(Box::new(m));
+            }
+            if let Some(cfg) = &bd_cfg {
+                mods.push(Box::new(BotDetectionModule::from_config(cfg)));
+            }
+            if let Some(w) = &wasm_spec {
+                for p in &w.plugins {
+                    let wasm = std::fs::read(&p.wasm_path)
+                        .map_err(|e| format!("cannot read {}: {e}", p.wasm_path))?;
+                    let sig = std::fs::read_to_string(&p.sig_path)
+                        .map_err(|e| format!("cannot read {}: {e}", p.sig_path))?;
+                    let cfg_bytes = p.config.as_deref().unwrap_or("").as_bytes();
+                    let m = load_verified_plugin(&p.name, &wasm, &sig, &w.trusted_keys, cfg_bytes, &w.opts)
+                        .map_err(|e| format!("signed WASM plugin {:?}: {e}", p.name))?;
+                    mods.push(Box::new(m));
+                }
+            }
+            Ok(mods)
+        });
+    }
+
     // ── Seam 2 (follow-on): enterprise TLS cert source (ACME / managed PKI / mTLS).
     //     builder = builder.cert_source(Arc::new(AcmeCertSource::new(..)));
-    // ── Seam 3 (follow-on): premium detection modules.
-    //     builder = builder.modules(premium_modules);
-    //     NOTE: extra modules do NOT survive SIGHUP yet (core `.module_factory` TBD).
 
     let proxy = builder.build().await?;
     info!(addr = %proxy.local_addr()?, "listening (enterprise)");
 
-    // Hot reload (SIGHUP) — same wiring as the OPEN binary; the injected seams are
-    // preserved across the validate-then-swap.
+    // Hot reload (SIGHUP) — same wiring as the OPEN binary. All injected extension points now
+    // survive the validate-then-swap: the *seams* (`state_store` via the shared rate-limit state,
+    // `cert_source` on the immutable acceptor) as before, AND the injected *modules* — the core-0.3
+    // `.module_factory` re-runs the closure above on every reload (in place of the old `Vec::new()`),
+    // so reputation / curated CRS / schema-enforcement / bot / signed-WASM are rebuilt and re-`init`'d
+    // (e.g. a changed GraphQL SDL is reloaded). A rebuild that fails aborts that reload, last-good kept.
     #[cfg(unix)]
     {
         let reloader = proxy.reloader();

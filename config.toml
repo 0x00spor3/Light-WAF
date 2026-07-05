@@ -247,3 +247,68 @@ lock_ttl_secs        = 90              # TTL del lock single-writer per-ciclo (~
 # premium, non sopravvive a SIGHUP (finché il core non espone module_factory).
 [enterprise.crs_curated]
 enabled = false
+
+# ── ENTERPRISE: GraphQL schema-enforcement (waf-modules-premium, §4-B) ───────────
+# Valida OGNI operazione GraphQL contro lo SCHEMA REALE dell'app (file SDL .graphql):
+# un campo/tipo/argomento NON nello schema = query che il client reale non manda mai =
+# segnale di probing → contribuisce allo STESSO score cumulativo (governance dello schema,
+# NON detection baseline; l'injection nei valori resta al §6, i cap DoS al modulo GraphQL OPEN).
+# Additivo, nessun Redis. DEFAULT OFF. schema_path è OBBLIGATORIO quando enabled (boot-fatal se
+# manca/è invalido). Nessun hot-reload in v1 (drift schema → restart; come gli altri moduli premium
+# non sopravvive a SIGHUP finché il core non espone module_factory).
+[enterprise.schema_enforcement]
+enabled = false
+# schema_path = "/etc/waf/app.graphql"     # file SDL dell'app (obbligatorio se enabled)
+# paths = ["/graphql"]                       # endpoint GraphQL su cui gating JSON/GET (app/graphql = any-path)
+# parse_error_severity = "warning"           # body non-GraphQL (client rotto / probing generico)
+# unknown_field_severity = "critical"        # query valida ma fuori-schema (probing mirato)
+
+# ── ENTERPRISE: gRPC schema-enforcement (waf-modules-premium, §4-B parte 2) ──────
+# Valida OGNI messaggio gRPC (protobuf) contro il DESCRITTORE REALE dell'app (FileDescriptorSet
+# .bin da `protoc`/`buf build -o app.bin`): il `:path` (/pkg.Service/Method) seleziona l'input-type
+# e il messaggio viene decodificato contro di esso. Metodo inesistente o messaggio indecodificabile
+# = probing → STESSO score cumulativo. Riconosciuto via Content-Type application/grpc* (niente paths).
+# Additivo, nessun Redis. DEFAULT OFF. descriptor_path OBBLIGATORIO se enabled (boot-fatal se manca/
+# invalido). Solo unary; no hot-reload v1 (drift → restart). NB: protobuf tollera by-design i campi
+# sconosciuti → flag_unknown_fields è OPT-IN (default off) per non generare FP quando un client usa
+# un .proto più nuovo della copia del WAF.
+[enterprise.grpc_schema_enforcement]
+enabled = false
+# descriptor_path = "/etc/waf/app.bin"       # FileDescriptorSet compilato (obbligatorio se enabled)
+# flag_unknown_fields = false                 # opt-in: segnala campi fuori descrittore (top-level)
+# unknown_method_severity = "critical"        # :path non nel descrittore (probing mirato)
+# decode_error_severity  = "warning"          # messaggio che non decodifica (malformato)
+# unknown_field_severity = "notice"           # usato solo con flag_unknown_fields
+
+# ── ENTERPRISE: client-integrity / bot detection (waf-modules-premium, §4-A) ─────
+# Heuristiche NATIVE cross-header (non UA-tool-matching, che è il modulo `scanner` OPEN, né contenuto
+# firma, che è CRS-curated). v1 = browser-impersonation (S1): una UA che dichiara un browser MODERNO
+# (Chrome/Edge/Firefox versione a 3 cifre; Safari escluso) MA senza NESSUN header `sec-fetch-*` =
+# client che si spaccia per browser (un bot via curl/requests non manda Fetch-Metadata). I client
+# non-browser (curl/SDK) non dichiarano un browser → non scattano. Additivo (Scores), mai Reject.
+# Nessun file, nessun Redis. DEFAULT OFF. FP-source = browser vecchi/edge o proxy che strippano header
+# → si tara con la severità.
+[enterprise.bot_detection]
+enabled = false
+# browser_impersonation_severity = "critical"   # UA-browser-moderna senza Sec-Fetch-*
+
+# ── ENTERPRISE: signed WASM plugin loader (waf-marketplace, §4-C) ────────────────
+# Il runtime Proxy-Wasm è OPEN (`[modules.wasm]`, carica .wasm NON firmati skip-on-error). Qui si
+# aggiunge il GATE DI FIDUCIA: si verifica una firma STACCATA minisign (ed25519) del .wasm contro
+# `trusted_keys` PRIMA di caricarlo. Un plugin firmato che NON verifica = BOOT-FATAL (fail-closed;
+# postura diversa dall'OPEN: firma-che-non-verifica = indistinguibile da manomissione). DEFAULT OFF.
+# `exclusive = true` = rifiuta al boot una config con `[modules.wasm]` OPEN popolato (enforcement del
+# lockdown, non convenzione). Firma: `minisign -Sm plugin.wasm` → plugin.wasm.minisig; la chiave da
+# mettere in trusted_keys è la RIGA base64 del .pub.
+[enterprise.wasm]
+enabled = false
+# exclusive = false                              # true = vieta i plugin OPEN non firmati
+# trusted_keys = ["RWQ...base64-minisign-pubkey..."]
+# pool_size = 4
+# fuel_per_request = 10000000
+# max_memory_bytes = 16777216
+# checkout_timeout_ms = 100
+# [[enterprise.wasm.plugins]]
+# wasm_path = "/etc/waf/denylist.wasm"
+# sig_path  = "/etc/waf/denylist.wasm.minisig"
+# config    = "block=/admin"
