@@ -44,6 +44,33 @@ impl WafModule for BoomModule {
     }
 }
 
+/// A test module injected VIA THE FACTORY (core 0.3) that BLOCKS (403) any request carrying
+/// the `x-keep` header. `structural()` so it runs regardless of the content prefilter — a
+/// header-only request is not a content candidate, so a non-structural module would be
+/// skipped and prove nothing. Used to prove factory modules SURVIVE a reload: before core
+/// 0.3 the reload rebuilt with `Vec::new()`, so injected modules vanished and the block was lost.
+struct KeepModule;
+
+impl WafModule for KeepModule {
+    fn id(&self) -> &str {
+        "keep"
+    }
+    fn phase(&self) -> Phase {
+        Phase::Headers
+    }
+    fn init(&mut self, _: &Config) {}
+    fn structural(&self) -> bool {
+        true
+    }
+    fn inspect(&self, ctx: &RequestContext) -> Decision {
+        if ctx.normalized.headers.iter().any(|(k, _)| k == "x-keep") {
+            Decision::Block { rule_id: "keep".into(), reason: "x-keep present".into() }
+        } else {
+            Decision::Allow
+        }
+    }
+}
+
 type TestBody = BoxBody<Bytes, hyper::Error>;
 
 fn bytes_body(data: impl Into<Bytes>) -> TestBody {
@@ -652,6 +679,109 @@ async fn sqli_status(client: &Client<HttpConnector, TestBody>, addr: std::net::S
         .unwrap()
         .status()
         .as_u16()
+}
+
+/// Sends `GET /` carrying the `x-keep` header (triggers `KeepModule`). Returns the status.
+async fn keep_status(client: &Client<HttpConnector, TestBody>, addr: std::net::SocketAddr) -> u16 {
+    client
+        .request(
+            Request::builder()
+                .uri(format!("http://{addr}/"))
+                .header("x-keep", "1")
+                .body(empty_body())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test]
+async fn factory_modules_survive_reload() {
+    // core 0.3 `.module_factory`: a module injected through the factory must STILL be active
+    // after a config reload. Pre-0.3 the reload rebuilt the pipeline with `Vec::new()` extra
+    // modules, so `.add_module`-style injected modules vanished on the first SIGHUP.
+    let backend = start_echo_backend().await;
+    let mut cfg = make_config(backend);
+    cfg.waf.mode = WafMode::Blocking;
+    let proxy = Proxy::builder(&cfg)
+        .module_factory(|| Ok(vec![Box::new(KeepModule) as Box<dyn WafModule>]))
+        .build()
+        .await
+        .unwrap();
+    let addr = proxy.local_addr().unwrap();
+    let reloader = proxy.reloader();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+
+    // Boot: the factory module blocks the x-keep request → 403.
+    assert_eq!(keep_status(&client, addr).await, 403, "factory module must block at boot");
+
+    // Reload with a valid config (same shape) — the factory re-runs and rebuilds the module.
+    let reload_cfg = format!(
+        "[proxy]\nlisten = \"{addr}\"\nbackend = \"http://{backend}\"\n[waf]\nmode = \"blocking\"\n"
+    );
+    let path = write_cfg("factory-survive", &reload_cfg);
+    reloader.reload_from(&path).expect("valid reload should succeed");
+
+    // After reload: STILL 403. Pre-0.3 this dropped to `Vec::new()` → the module vanished →
+    // 200. The 403 proves the injected module survived the reload AND was re-`init`'d.
+    assert_eq!(
+        keep_status(&client, addr).await,
+        403,
+        "injected module must survive the reload (core 0.3 module_factory)"
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+#[tokio::test]
+async fn factory_error_on_reload_aborts_and_keeps_modules() {
+    // Whole-set fallibility: if the factory errors on a reload (e.g. an enterprise schema file
+    // went invalid on disk between boot and reload), the WHOLE reload aborts and the last-good
+    // Reloadable — which still holds the working modules — is kept. No unprotected window.
+    let backend = start_echo_backend().await;
+    let mut cfg = make_config(backend);
+    cfg.waf.mode = WafMode::Blocking;
+    // Ok on the first (boot) call, Err on every later (reload) call.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_f = Arc::clone(&calls);
+    let proxy = Proxy::builder(&cfg)
+        .module_factory(move || {
+            if calls_f.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(vec![Box::new(KeepModule) as Box<dyn WafModule>])
+            } else {
+                Err("simulated: schema became invalid on disk".into())
+            }
+        })
+        .build()
+        .await
+        .unwrap();
+    let addr = proxy.local_addr().unwrap();
+    let reloader = proxy.reloader();
+    tokio::spawn(proxy.run());
+    let client = test_client();
+
+    // Boot: module active → 403.
+    assert_eq!(keep_status(&client, addr).await, 403, "factory module must block at boot");
+
+    // Reload with a VALID config, but the factory now errors. The reload must be rejected.
+    let reload_cfg = format!(
+        "[proxy]\nlisten = \"{addr}\"\nbackend = \"http://{backend}\"\n[waf]\nmode = \"blocking\"\n"
+    );
+    let path = write_cfg("factory-err", &reload_cfg);
+    assert!(
+        reloader.reload_from(&path).is_err(),
+        "a factory error must abort the reload even when the config itself is valid"
+    );
+
+    // No unprotected window: the last-good modules are kept → the x-keep request is STILL 403.
+    assert_eq!(
+        keep_status(&client, addr).await,
+        403,
+        "protection must never drop on a factory-failed reload (modules preserved)"
+    );
+    std::fs::remove_file(&path).ok();
 }
 
 #[tokio::test]

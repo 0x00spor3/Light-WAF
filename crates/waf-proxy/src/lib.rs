@@ -50,6 +50,17 @@ use waf_wasm::{WasmModule, WasmOptions};
 
 pub type HyperBoxBody = BoxBody<Bytes, hyper::Error>;
 
+/// A factory that (re)builds the injected detection modules. Called ONCE at bind and again
+/// on every config reload — so modules injected by an embedder (BOUNDARY §4) SURVIVE a
+/// SIGHUP and are re-`init`'d, instead of being dropped (the pre-0.3 behaviour). It returns
+/// a `Result` as a UNIT: on error the whole reload is aborted and the last-good `Reloadable`
+/// (which still holds the working modules) is kept — the modules are never dropped on a
+/// failed rebuild. A boxed closure so an embedder can capture its own (enterprise) config.
+pub type ModuleFactory =
+    dyn Fn() -> Result<Vec<Box<dyn WafModule>>, Box<dyn std::error::Error + Send + Sync>>
+        + Send
+        + Sync;
+
 /// Headers that must not be forwarded verbatim to the backend (RFC 7230).
 const HOP_BY_HOP: &[&str] = &[
     "connection",
@@ -248,6 +259,11 @@ struct StaticState {
     /// Process-lifetime metrics (B1). Survives reloads like the rate-limit store. Recorded
     /// once per request in `handle`; served by the metrics task (`Proxy::metrics_listener`).
     metrics: Arc<Metrics>,
+    /// Factory that rebuilds the injected (embedder) modules on every reload (core 0.3). Process
+    /// lifetime, so `Reloader::reload_from` can re-run it in place of the pre-0.3 `Vec::new()` —
+    /// this is what makes `.add_module`-style injected modules survive a SIGHUP. `None` ⇒ no
+    /// injected modules to carry across a reload (the default OPEN build).
+    module_factory: Option<Arc<ModuleFactory>>,
 }
 
 /// Which request handler the accept loop dispatches to. `Inspect` is the ONLY mode a
@@ -303,9 +319,26 @@ impl Reloader {
             );
         }
 
+        // Rebuild the injected (embedder) modules via the factory (core 0.3). Pre-0.3 this
+        // passed `Vec::new()`, silently dropping every `.add_module` module on a reload. The
+        // factory is fallible as a UNIT: if it errors (e.g. an enterprise schema file became
+        // invalid on disk), the whole reload is ABORTED and the current `Reloadable` — which
+        // still holds the working modules — is kept, exactly like a rejected config. No
+        // partial rebuild, no unprotected window, and the modules are never dropped on error.
+        let extra = match &self.0.module_factory {
+            Some(factory) => match factory() {
+                Ok(modules) => modules,
+                Err(e) => {
+                    error!(error = %e, "module factory failed on reload; keeping current configuration");
+                    return Err(config::LoadError::ModuleFactory(e.to_string()));
+                }
+            },
+            None => Vec::new(),
+        };
+
         // Rebuild ALL config-derived state (rules recompiled, CIDR re-parsed),
         // reusing the shared rate-limit buckets so the throttle state survives.
-        let new_reloadable = build_reloadable(&new_cfg, self.0.rl_state.clone(), Vec::new());
+        let new_reloadable = build_reloadable(&new_cfg, self.0.rl_state.clone(), extra);
 
         // Atomic swap. The write section is a single pointer assignment that
         // cannot panic, so the lock is never poisoned by this path; recover
@@ -847,6 +880,7 @@ impl Proxy {
             modules: Vec::new(),
             state_store: None,
             cert_source: None,
+            module_factory: None,
             mode: HandlerMode::Inspect,
         }
     }
@@ -861,7 +895,7 @@ impl Proxy {
         config: &Config,
         extra: Vec<Box<dyn WafModule>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::bind_inner(config, extra, HandlerMode::Inspect, None, None).await
+        Self::bind_inner(config, extra, HandlerMode::Inspect, None, None, None).await
     }
 
     /// `#[doc(hidden)]` bench seam: bind a proxy that FORWARDS WITHOUT inspecting (no
@@ -872,7 +906,7 @@ impl Proxy {
     pub async fn bind_passthrough(
         config: &Config,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::bind_inner(config, Vec::new(), HandlerMode::Passthrough, None, None).await
+        Self::bind_inner(config, Vec::new(), HandlerMode::Passthrough, None, None, None).await
     }
 
     async fn bind_inner(
@@ -881,6 +915,7 @@ impl Proxy {
         mode: HandlerMode,
         state_store: Option<RateLimitState>,
         cert_source: Option<Arc<dyn TlsCertSource>>,
+        module_factory: Option<Arc<ModuleFactory>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let listener = TcpListener::bind(config.proxy.listen).await?;
         let listen_addr = listener.local_addr()?;
@@ -905,7 +940,16 @@ impl Proxy {
         // store (e.g. enterprise Redis) replaces the default in-memory one.
         let rl_state = state_store
             .unwrap_or_else(|| RateLimitState::in_memory(config.rate_limit.max_tracked_keys));
-        let reloadable = build_reloadable(config, rl_state.clone(), extra);
+
+        // Injected modules (core 0.3): the static `.add_module` extras first, then the factory's
+        // output. The factory is the SINGLE source of reload-surviving modules, so it also runs
+        // at boot here — a boot-time error is fatal (fail-closed), the same posture an embedder
+        // had when it built these modules inline before passing them in.
+        let mut extra_total = extra;
+        if let Some(factory) = &module_factory {
+            extra_total.extend(factory()?);
+        }
+        let reloadable = build_reloadable(config, rl_state.clone(), extra_total);
 
         // Metrics (B1): a dedicated `/metrics` listener bound here for fail-fast (a busy
         // port is a boot error, never a silent miss). Loopback by default; NEVER the data
@@ -930,6 +974,7 @@ impl Proxy {
                 mode,
                 tls_acceptor,
                 metrics,
+                module_factory,
             }),
             metrics_listener,
         })
@@ -995,6 +1040,7 @@ pub struct ProxyBuilder<'a> {
     modules: Vec<Box<dyn WafModule>>,
     state_store: Option<RateLimitState>,
     cert_source: Option<Arc<dyn TlsCertSource>>,
+    module_factory: Option<Arc<ModuleFactory>>,
     mode: HandlerMode,
 }
 
@@ -1029,10 +1075,35 @@ impl<'a> ProxyBuilder<'a> {
         self
     }
 
+    /// Inject a [`ModuleFactory`] that (re)builds the extra detection modules (core 0.3).
+    /// Unlike [`Self::add_module`]/[`Self::modules`] (built once, dropped on a reload), the
+    /// factory is re-run on every config reload, so injected modules SURVIVE a SIGHUP and are
+    /// re-`init`'d. It runs at bind too (the single source of reload-surviving modules): a
+    /// boot error is fatal, and a reload error aborts that reload and keeps the last-good
+    /// modules. This is the seam an embedder uses to keep premium modules across reloads
+    /// (BOUNDARY §4). Factory output is appended AFTER any static `.add_module` extras.
+    pub fn module_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn() -> Result<Vec<Box<dyn WafModule>>, Box<dyn std::error::Error + Send + Sync>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.module_factory = Some(Arc::new(factory));
+        self
+    }
+
     /// Bind the listener and construct the proxy with the chosen seams.
     pub async fn build(self) -> Result<Proxy, Box<dyn std::error::Error + Send + Sync>> {
-        Proxy::bind_inner(self.config, self.modules, self.mode, self.state_store, self.cert_source)
-            .await
+        Proxy::bind_inner(
+            self.config,
+            self.modules,
+            self.mode,
+            self.state_store,
+            self.cert_source,
+            self.module_factory,
+        )
+        .await
     }
 }
 

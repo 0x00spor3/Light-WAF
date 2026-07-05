@@ -67,9 +67,16 @@ exposed by a **stable** builder — every seam has a default, so a builder with 
 let proxy = Proxy::builder(&config)
     .state_store(Arc::new(my_store))    // Arc<dyn StateStore>   — default: in-memory token bucket
     .cert_source(Arc::new(my_certs))    // Arc<dyn TlsCertSource> — default: FileCertSource (PEM)
-    .modules(extra_modules)             // Vec<Box<dyn WafModule>> — extra, after the built-ins
+    .module_factory(|| Ok(build_modules())) // Fn()->Result<Vec<Box<dyn WafModule>>> — extra, survive reload
     .build().await?;
 ```
+
+`.modules(..)`/`.add_module(..)` inject a **static** set built once: handy for tests, but
+**dropped on a reload** (the core rebuilds the pipeline). `.module_factory(F)` (**core 0.3**) takes a
+closure the core **re-runs on every reload** (and at bind): injected modules **survive a SIGHUP** and
+are re-`init`'d (e.g. a changed GraphQL SDL is reloaded). It is fallible as a **unit**: a failed
+rebuild **aborts that reload** and keeps the last-good modules (never an unprotected window), exactly
+like a rejected config. This is the seam an embedder uses for premium modules.
 
 The three OPEN→ENTERPRISE seams:
 - **`StateStore`** (`waf-core::state`) — rate-limit state (and future IP-reputation). The contract is
@@ -86,6 +93,8 @@ The three OPEN→ENTERPRISE seams:
 `#[non_exhaustive]` → adding a future top-level section is **additive, non-breaking** (external code
 builds from `Config::default()`/TOML, not a literal). Same for the sub-configs taken by-value by a
 public fn (`TlsConfig`, `NetworkConfig`, `LimitsConfig`); the rest are protected transitively.
+A **new builder method with a default** is likewise additive: **core 0.3** added `.module_factory`
+(+ the public `ModuleFactory` alias) this way, without touching `WafModule` — minor version.
 
 ---
 
@@ -745,6 +754,14 @@ Reload of the config at runtime **without a restart** and **without dropping con
   normalizer/limits/backend/resilience) and swaps it atomically → never a mixed state (old
   regex + new thresholds). A request sees either all of the old or all of the new `Reloadable`;
   in-flight connections/requests complete with their own snapshot and are not interrupted.
+- **Injected modules (core 0.3 `.module_factory`)**: extra modules injected by an embedder are
+  **rebuilt on every reload** by the `ModuleFactory` (a closure stored in `StaticState`,
+  process-lifetime) — before 0.3 the reload dropped them by passing `Vec::new()`. They run at bind
+  and on every swap, so they **survive a SIGHUP** and are re-`init`'d via `Pipeline::new`. The
+  factory is **fallible as a unit**: if a rebuild fails (e.g. an SDL/descriptor went invalid on
+  disk), the reload **aborts** and the last-good `Reloadable` — which still holds the working
+  modules — is kept: `Box<dyn WafModule>` is not cloneable, so the whole-abort is what preserves
+  them. A **static** set via `.modules()`/`.add_module()` stays boot-only (does not survive).
 
 **Runtime state (NOT reset) vs config (rebuilt):**
 

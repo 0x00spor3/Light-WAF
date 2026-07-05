@@ -25,7 +25,11 @@ pub const ENV_CONFIG: &str = "WAF_CONFIG";
 
 /// Why loading the configuration failed. Each variant maps to a distinct
 /// operator diagnosis (file vs syntax vs semantics).
+///
+/// `#[non_exhaustive]` (since 0.3, when `ModuleFactory` was added): new failure kinds can be
+/// added without a breaking change — external code matching this enum must carry a `_` arm.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum LoadError {
     /// The file does not exist — distinct from a present-but-wrong file.
     NotFound(PathBuf),
@@ -40,6 +44,10 @@ pub enum LoadError {
     /// A removed config key is still present — a clear migration error, never a
     /// silent no-op. Carries the offending key and the migration hint.
     RemovedKey { path: PathBuf, key: &'static str, hint: &'static str },
+    /// The config itself validated, but rebuilding the injected (embedder) modules failed
+    /// on reload (core 0.3 `ModuleFactory`) — e.g. an enterprise schema file became invalid
+    /// on disk. The reload is aborted and the last-good modules kept; carries the message.
+    ModuleFactory(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -59,6 +67,8 @@ impl std::fmt::Display for LoadError {
                 write!(f, "invalid config in {}: {source}", path.display()),
             Self::RemovedKey { path, key, hint } =>
                 write!(f, "invalid config in {}: `{key}` has been removed — {hint}", path.display()),
+            Self::ModuleFactory(msg) =>
+                write!(f, "config validated but rebuilding injected modules failed on reload: {msg}"),
         }
     }
 }

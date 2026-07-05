@@ -79,9 +79,40 @@ Scale, governance, compliance, and team operability.
 - Automated compliance reports, long-term retention.
 
 ### 2.4 Threat intelligence and curated content
-- **Premium reputation/signature feed** by subscription.
-- **Curated premium CRS/ModSecurity rules** (the *parser* stays OPEN, §1.7).
-- WASM plugin **marketplace/signing** (the *runtime* stays OPEN, §1.7).
+- **Premium reputation/signature feed** by subscription. *(Reputation feed IMPLEMENTED
+  2026-07-02: `waf-threatintel` populates the `rep:<ip>` keyspace via the `ReputationWriter`
+  write seam on the shared Redis store — file/HTTP sources, single-writer, TTL-based snapshot;
+  the datapath read stays enterprise-only, out of the frozen core ABI.)*
+- **Curated premium CRS/ModSecurity rules** (the *parser* stays OPEN, §1.7). *(IMPLEMENTED
+  2026-07-02: `waf-crs-curated` ships the tuned premium `SecRule` CONTENT (CVE/app/evasion
+  signatures), embedded and injected as a `WafModule` via the OPEN CRS engine, gated by
+  `[enterprise.crs_curated]`. Premium-additive — it never re-implements the OPEN baseline; a compat
+  gate proves it loads cleanly under the shipped parser subset.)*
+- **Managed GraphQL/gRPC schema-enforcement** (validating against the app's real `.graphql` schema /
+  `.proto` descriptor = schema management/governance, §3.1). *(IMPLEMENTED 2026-07-03: `waf-modules-premium`
+  validates each GraphQL operation against the app's SDL via `apollo-compiler`, and each unary gRPC message
+  against the app's compiled `FileDescriptorSet` via `prost-reflect` — both `structural()` `Phase::Body`
+  `WafModule`s, gated by `[enterprise.schema_enforcement]` / `[enterprise.grpc_schema_enforcement]`, default
+  off. Premium-additive `Decision::Scores` under the reserved `schema-graphql-*` / `schema-grpc-*` id namespaces;
+  extraction mirrors the OPEN Phase-11 / gRPC modules and the OPEN structural caps run first, bounding the
+  validator's input. gRPC v1 is unary; protobuf unknown-field flagging is opt-in [forward-compat]; streaming /
+  grpc-web / `.proto`-source input are follow-ons.)*
+- **Premium native signature modules** (§4-A): high-curation `WafModule`s for logic a single regex
+  can't express — deliberately NOT the OPEN `scanner` (UA-tool matching) or curated content (§6).
+  *(Client-integrity / bot detection IMPLEMENTED 2026-07-03: `waf-modules-premium` scores a
+  browser-impersonation request — a modern-browser UA with no `sec-fetch-*` headers — as an additive
+  `Decision::Scores` under the reserved `bot-*` id namespace, `Phase::Headers` `structural()`,
+  `[enterprise.bot_detection]`, default off. Behavioral/rate-based scanner detection and TLS/JA
+  fingerprinting are follow-ons.)*
+- WASM plugin **marketplace/signing** (the *runtime* stays OPEN, §1.7). *(Signing IMPLEMENTED
+  2026-07-03: `waf-marketplace` verifies a detached **minisign/ed25519** signature over the `.wasm`
+  against configured `trusted_keys` before delegating to the OPEN `WasmModule::from_bytes`, gated by
+  `[enterprise.wasm]`, default off.* **Posture divergence, operator-visible**: the OPEN loader SKIPS a
+  broken UNSIGNED plugin (a missing plugin only degrades coverage); a SIGNED plugin whose signature does
+  not verify is **boot-fatal / fail-closed**, because it is indistinguishable from tampering. *Coexistence
+  limit: leaving only the signed path is a convention, not enforcement — an attacker who can write the
+  config could add an unsigned plugin under the OPEN `[modules.wasm]`; the `[enterprise.wasm].exclusive`
+  flag turns that into a boot-time refusal. Full marketplace / PKI / cosign are follow-ons.)*
 
 ### 2.5 Integration and support
 - Enterprise SIEM connectors, SLA support, guided hardening.
@@ -173,10 +204,18 @@ The impl is **injected without forking** through the stable embedding builder
 let proxy = Proxy::builder(&config)
     .state_store(Arc::new(RedisStore::connect(&url)?)) // ENTERPRISE impl of StateStore
     .cert_source(Arc::new(AcmeCertSource::new(..)))     // ENTERPRISE impl of TlsCertSource
-    .modules(premium_modules)                          // extra WafModule set
+    .module_factory(move || Ok(build_premium_modules())) // extra WafModule set (survives reload)
     .build()
     .await?;
 ```
+
+`.modules(..)`/`.add_module(..)` inject a *static* extra set built once — they are
+convenient for tests but are **dropped on a config reload**. `.module_factory(F)` (core 0.3)
+takes a `Fn() -> Result<Vec<Box<dyn WafModule>>>` that the core re-runs on every reload (and
+at bind), so injected modules **survive a SIGHUP** and are re-`init`'d — this is the seam an
+embedder uses for premium modules. It is fallible as a UNIT: a failed rebuild aborts that
+reload and keeps the last-good modules (never an unprotected window), exactly like a rejected
+config.
 
 ---
 
@@ -190,6 +229,13 @@ for existing impls (like `WafModule::structural()`). `TlsCertSource` used this i
 0.2**: it gained `resolver()` and `client_verifier()` (both defaulting to `None`), enabling
 enterprise ACME/mTLS (§3.2) without touching `FileCertSource` or any external impl. This is
 the only sanctioned way to extend a frozen ABI trait — additive, defaulted, minor-version.
+
+**Additive builder evolution (allowed).** A new `ProxyBuilder` method with a default (the
+seam is `None` when unset) is likewise non-breaking. **Core 0.3** added `.module_factory(F)`
+this way: injected modules are rebuilt on every config reload instead of being dropped, so
+they survive a SIGHUP. `WafModule` itself is unchanged; this is a builder seam, not a trait
+change — additive, minor-version. The `ModuleFactory` type alias becomes part of the frozen
+public surface.
 
 **Config evolution (A4, 2026-06-24).** `Config` is `#[non_exhaustive]`: adding a future
 top-level section (as `tls` was added) is **non-breaking** — external code cannot use a
