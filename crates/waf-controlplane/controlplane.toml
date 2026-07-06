@@ -1,0 +1,126 @@
+# Light WAF control-plane — sample config (§7). A SEPARATE service, never on the WAF data port.
+# Secrets (database_url, api_token) are best supplied via env (WAF_CP_DATABASE_URL / WAF_CP_API_TOKEN),
+# which override the file — so this file can be committed safely.
+
+[controlplane]
+# HTTP listen address for the read/ingest API (served in Phase 3).
+listen = "127.0.0.1:9600"
+
+# Postgres connection string. Prefer the WAF_CP_DATABASE_URL env var over putting it here.
+# database_url = "postgres://waf:waf@localhost:5432/waf_cp"
+
+# Bearer token required on the ingest + read API (v1 = single static token; RBAC/SSO = §8).
+# Prefer the WAF_CP_API_TOKEN env var.
+# api_token = "change-me"
+
+# Delete telemetry older than this many days (0 = keep forever).
+retention_days = 30
+
+# Seconds between /metrics scrapes (Phase 2).
+scrape_interval_seconds = 15
+
+# Serve the built web UI (SPA) from this directory — a DEVELOPMENT OVERRIDE. Production embeds the UI
+# into the single binary (UI-3, `embed-ui` feature); leave this unset there. When set, the static
+# assets are public and unmatched non-API paths fall back to index.html for client-side routing.
+# ui_dir = "crates/waf-controlplane/ui/dist"
+
+# WAF nodes whose Prometheus /metrics the scraper polls (Phase 2). The `name` labels stored rollups
+# and ingested events (node identity is set here / by the log shipper, never by the core = zero-core).
+# [[controlplane.nodes]]
+# name = "edge-1"
+# metrics_url = "http://10.0.0.1:9090/metrics"
+
+# Alerting (v2). The evaluator queries stored decision_events on an interval and fires when a rule's
+# (per-group) count crosses its threshold. Default OFF.
+# [controlplane.alerting]
+# enabled = true
+# eval_interval_seconds = 30
+# webhook_url = "https://hooks.slack.com/services/..."   # or env WAF_CP_ALERT_WEBHOOK
+
+# One alert rule: >= 20 blocks from a single client IP within 60s (per-IP burst = attack signature).
+# [[controlplane.alerts]]
+# name = "block-burst-per-ip"
+# decision = "blocked"        # optional filter
+# group_by = "client_ip"      # none | client_ip | rule_id
+# window_seconds = 60
+# threshold = 20
+# severity = "critical"
+# cooldown_seconds = 300      # don't re-fire the same (rule, ip) within 5 min
+
+# Governance (§8): RBAC + local user accounts + server-side sessions + a signed audit log. Default
+# OFF (with governance off the control plane keeps the single static bearer token, no sessions). When
+# ON, /api is gated by a session cookie (humans, RBAC per role) OR the bearer (a machine/admin
+# principal); the user-management + audit endpoints are mounted. Requires two env secrets:
+#   WAF_CP_AUDIT_KEY                = 64 hex chars (Ed25519 seed); MUST persist across restarts so the
+#                                    audit chain stays verifiable under a stable public key.
+#   WAF_CP_BOOTSTRAP_ADMIN_PASSWORD = initial password for `bootstrap_admin` (used once, if no users).
+# [controlplane.governance]
+# enabled = true
+# session_ttl_hours = 12
+# cookie_secure = true        # set false only for local http dev
+# bootstrap_admin = "admin"   # created if there are zero users at boot
+# Login brute-force throttle (v2): N failed logins for a username within the window → lock out.
+# login_max_failures = 5
+# login_window_seconds = 60
+# login_lockout_seconds = 300
+
+# SSO via OpenID Connect (v2). The IdP is discovered from issuer_url; login goes through the browser
+# (GET /api/auth/oidc/login → IdP → /api/auth/oidc/callback → session cookie). The client secret comes
+# from WAF_CP_OIDC_CLIENT_SECRET. A role is mapped from the `role_claim` (e.g. IdP groups); a user that
+# matches no mapping is denied unless `default_role` is set.
+# [controlplane.governance.oidc]
+# issuer_url = "https://idp.example.com/realms/waf"
+# client_id = "waf-cp"
+# redirect_url = "https://cp.example.com/api/auth/oidc/callback"
+# role_claim = "groups"
+# default_role = "viewer"     # optional; omit to DENY users that match no role_map entry
+# [[controlplane.governance.oidc.role_map]]
+# claim = "waf-admins"
+# role = "admin"
+
+
+
+
+#[controlplane]
+#listen = "127.0.0.1:9613"
+#retention_days = 30
+#scrape_interval_seconds = 3600
+#ui_dir = "E:/Progetti/WAF/enterprise/crates/waf-controlplane/ui/dist"
+#
+#[[controlplane.alerts]]
+#name = "sqli-burst-per-ip"
+#decision = "blocked"
+#rule_id = "sqli-union-select"
+#group_by = "client_ip"
+#window_seconds = 60
+#threshold = 20
+#severity = "critical"
+#cooldown_seconds = 300
+#
+#[[controlplane.alerts]]
+#name = "any-block-spike"
+#group_by = "none"
+#window_seconds = 300
+#threshold = 500
+#severity = "warning"
+
+
+#[controlplane]
+#listen = "127.0.0.1:9622"
+#retention_days = 30
+#scrape_interval_seconds = 3600
+#
+#[controlplane.governance]
+#enabled = true
+#cookie_secure = false
+#bootstrap_admin = "admin"
+#
+#[controlplane.governance.oidc]
+#issuer_url = "http://localhost:8080/realms/waf"
+#client_id = "waf-cp"
+#redirect_url = "http://localhost:9622/api/auth/oidc/callback"
+#role_claim = "groups"
+#
+#[[controlplane.governance.oidc.role_map]]
+#claim = "waf-admins"
+#role = "admin"

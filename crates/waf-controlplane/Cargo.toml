@@ -1,0 +1,69 @@
+[package]
+name = "waf-controlplane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Control plane for Light WAF — dashboard/API over the OPEN telemetry (§7, enterprise, BSL 1.1)"
+
+[features]
+# Embed the built web UI (`ui/dist`) into the binary for a single-binary production deploy. Requires
+# `npm run build` in `ui/` first (the folder must exist at compile time). OFF by default, so a plain
+# `cargo build`/CI needs no Node toolchain and no `dist/`.
+embed-ui = ["dep:rust-embed", "dep:mime_guess"]
+
+# DELIBERATELY does NOT depend on `waf-core`: the control plane is a SEPARATE service that consumes
+# the OPEN telemetry *contract* (the decision-log JSON schema + the Prometheus metrics ABI), not the
+# datapath crate. Its DTOs mirror the frozen log schema, so it can ingest logs from a core it does
+# not share a build with. Decoupling is the point (ARCHITECTURE_ENTERPRISE §7).
+[dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+serde = { workspace = true }
+serde_json = "1"
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = "2"
+# Async Postgres, pure-Rust driver (no libpq/C). Runtime queries (no compile-time `query!` macro),
+# so `cargo build` needs NO database; only the env-gated integration tests need a live Postgres.
+# `migrate` runs the embedded `migrations/` at startup; `json` maps the JSONB contributions column;
+# `time` maps TIMESTAMPTZ. No TLS backend in v1 (local/loopback Postgres); production TLS = follow-on.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "postgres",
+    "migrate",
+    "json",
+    "time",
+    "macros",
+] }
+time = { version = "0.3", features = ["serde-well-known"] }
+# HTTP server for the ingest endpoint + read API + the static web UI.
+axum = "0.8"
+# Serve the built SPA (dev override via ui_dir); `fs` = ServeDir/ServeFile.
+tower-http = { version = "0.6", features = ["fs"] }
+# Single-binary production UI: embed `ui/dist` into the binary (behind the `embed-ui` feature, so a
+# plain `cargo build` needs no frontend). `mime_guess` sets the Content-Type of embedded assets.
+rust-embed = { version = "8", optional = true }
+mime_guess = { version = "2", optional = true }
+# HTTP client for the /metrics scraper. `rustls-no-provider` so it does NOT pull its own crypto
+# provider (no aws-lc-rs/cmake) — main installs the ring provider, mirroring the other enterprise
+# crates; loopback/internal /metrics is plain http, TLS only if a node uses https.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+# Install the process-level ring crypto provider in main (for the scrape client above).
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# Governance (§8): RBAC + local auth + signed audit log. A sibling library; it owns its tables on the
+# same Postgres (applied via `apply_schema`) and never touches the datapath.
+waf-governance = { path = "../waf-governance" }
+# OIDC SSO (§8 v2): Authorization Code + PKCE, discovery + JWKS id_token verification. Uses its own
+# reqwest for the IdP calls (discovery/token/JWKS); the ring provider installed in main covers TLS.
+openidconnect = { version = "3", features = ["reqwest"] }
+# Decode the (already-verified) id_token payload to read the configurable role claim.
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# e2e bite-test only: spin a REAL WAF node in-process, drive a blocked request, capture its
+# decision-log and feed it through the control plane (proves the whole telemetry→ingest→drill-down
+# loop against a real datapath). The control plane itself never depends on the core.
+waf-proxy = { workspace = true }
+waf-core = { workspace = true }

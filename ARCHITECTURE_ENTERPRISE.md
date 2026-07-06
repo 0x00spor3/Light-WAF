@@ -320,9 +320,104 @@ da config (la **sorgente governa solo la provenienza** del cert); **no silent do
 
 ## 7. Control plane — `BOUNDARY.md` §2.2
 
+> **v1 IMPLEMENTATA (2026-07-05)** — crate `waf-controlplane` (BSL). **Osservabilità read-only**:
+> ingestione + retention + drill-down + API-dashboard. Rule-management (write-path → push SIGHUP)
+> **deferito dopo §8** (RBAC/audit). Servizio **axum** + **Postgres**; **DECOUPLED da `waf-core`**
+> (DTO propri sul contratto JSON del decision-log → non linka il datapath). Auth v1 = bearer token
+> statico (RBAC/SSO = §8). Runbook `scripts/controlplane/`. Bite-test e2e con un nodo WAF reale.
+>
+> **v2 ALERTING IMPLEMENTATA (2026-07-05)** — regole in config (`[[controlplane.alerts]]`) valutate
+> da un **evaluator** in background: quando il conteggio (per-gruppo `client_ip`/`rule_id`) di
+> `decision_events` negati in finestra supera la soglia (fuori cooldown) → riga `alerts` + **webhook**
+> generico (POST JSON) + `GET /api/alerts`. Modello fired-record + cooldown DB-based. Zero-datapath
+> (legge solo lo store del control plane). e2e col webhook-receiver provato. Migrazione `0003_alerts`.
+>
+> **DASHBOARD WEB IMPLEMENTATA (2026-07-06)** — SPA **React + Vite + TypeScript** (+ **Recharts**) in
+> `crates/waf-controlplane/ui/`, consumatrice dell'API read (same-origin, **no CORS**). Viste
+> **Overview** (card volumi + bar-chart, area-chart eventi-nel-tempo con range-selector, latenza
+> p50/95/99 per-nodo, stato cluster) · **Events** (filtri → tabella → **drill-down** `/events/:id` col
+> breakdown per-modulo) · **Alerts** (alert scattati + regole). Endpoint di supporto: `GET
+> /api/decisions/series` (bucket whitelist {60,300,3600} + window cappata 7g, aggregazione in SQL) e
+> `GET /api/version` (drift-check UI↔API). **Due modi di serving**: `[controlplane].ui_dir` = override
+> dev (`ServeDir`); **single-binary** di produzione via `rust-embed` dietro feature **`embed-ui`**
+> (`ui/dist` embeddato nel binario; un `cargo build` normale NON richiede il frontend). Asset UI
+> **pubblici**, solo `/api` dietro il bearer. Auth = token in `sessionStorage` (trade-off XSS
+> dichiarato → §8/SSO migra a cookie HttpOnly). Supply-chain: lockfile committato + `npm audit` in CI
+> + deps dirette minime (no UI-kit). Zero-datapath (la UI è solo un altro consumatore dell'API).
+
 Servizio separato dal datapath (mai sulla porta dati). Consuma la **telemetria baseline
 OPEN** (logging JSON strutturato + metriche Prometheus, esposte dal core) e la persiste a
 lungo termine.
+
+**Postura di isolamento / prestazioni (il control plane NON tassa il datapath).** È fuori dal
+percorso della richiesta per costruzione: il binario `waf` non dipende nemmeno da `waf-controlplane`.
+Due flussi, entrambi a costo ~zero sul path caldo:
+- **Metriche = PULL**: uno scraper fa `GET /metrics` sul listener **dedicato/loopback** del WAF
+  (default 15s). `render()` legge solo contatori atomici (`relaxed`, nessun lock condiviso con
+  `handle()`). Lo scrape gira su un task di background, non ruba tempo al serving.
+- **Decision-log = PUSH fuori processo**: il WAF scrive i log JSON come già faceva; un **log shipper
+  esterno** li inoltra a `POST /ingest/events`. Il WAF non conosce il control plane. La correlazione
+  `→ request`+`request blocked` e il parsing NDJSON avvengono NEL control plane.
+- **Unica modifica lato-WAF (core 0.4)**: `score_contributions` serializzato nel decision-log **solo
+  su richiesta negata** (Block/Reject) → il traffico benigno paga **zero**.
+Contrasto: il `StateStore` Redis (§3) è on-datapath (per-richiesta); il control plane è puramente
+osservazionale a valle. Verifica empirica nel runbook §D (bench con/senza scrape).
+
+**Architettura v1 (fasi):** Phase-0 arricchimento OPEN core 0.4 (`score_contributions` nel
+decision-log). Phase-1 store Postgres (`decision_events`+`metric_rollups`+`latency_buckets`).
+Phase-2 ingestione (scraper `/metrics` → rollups; `POST /ingest/events` NDJSON → parse+correlazione
+→ `decision_events`). Phase-3 API read (`/api/cluster/status`·`/decisions/volume`·`/latency`
+[p50/95/99]·`/events` ricerca·`/events/{request_id}` drill-down; bearer middleware). Phase-4 bite-test
+e2e (nodo WAF reale → drill-down) + runbook. **v2 = alerting** (config-rules + evaluator + webhook +
+`GET /api/alerts`, migr `0003_alerts`; **FATTA**). **UI = dashboard web FATTA** (SPA React/Vite +
+serving `ui_dir`/`embed-ui`). **Follow-on**: alerting metric/latency-based + stato firing/resolved,
+connettori Slack/email nativi, rule-management (v3, post-§8), OpenAPI, CRUD regole via API,
+auth via cookie HttpOnly/SSO (§8), integrazione Prometheus/Grafana esterni.
+
+### 7.1 Due flussi di dati (le metriche NON sono l'unica sorgente)
+
+Il control plane ha **due input separati**, con due modelli e due store — NON deriva solo dalle metriche:
+
+| Flusso | Modello | Sorgente | Alimenta |
+|---|---|---|---|
+| **Metriche** | **PULL** — scraper `GET /metrics` | endpoint Prometheus del core (B1) | dashboard aggregate: volumi/decisione, latenze (`metric_rollups`, `latency_buckets`) |
+| **Decision-log** | **PUSH** — `POST /ingest/events` | il file/stdout JSON del WAF, via **log shipper esterno** | **drill-down per-richiesta** (`decision_events`) |
+
+- Il **drill-down NON viene da `/metrics`**: le metriche sono aggregate e, per il **vincolo di cardinalità**
+  (mai `path`/`ip`/`request_id` come label), non portano dettaglio per-richiesta. Il dettaglio viene dal
+  **decision-log JSON**.
+- Il control plane **non legge il file di log**: lo legge un **log shipper** (Vector / Fluent-bit / lo script
+  di riferimento `forward_logs.sh`) che fa `tail -F` e inoltra ogni riga NDJSON a `POST /ingest/events`. Il WAF
+  resta ignaro (out-of-process, zero-datapath). `ingest.rs` correla `→ request` + `request blocked` per
+  `request_id` e scrive `decision_events`.
+
+```text
+WAF ──scrive──> node.jsonl ──tail-F──> [log shipper] ──POST /ingest/events?node=X──┐
+WAF ──espone──> /metrics ─────────────────────────────GET (scraper, 15s)──────────┤──> control plane ──> Postgres
+```
+
+### 7.2 Un solo control plane su WAF multi-nodo
+
+Funziona perché **entrambi i flussi sono per-nodo** e ogni dato porta l'identità del nodo (colonna `node`):
+
+- **Metriche**: la config elenca **tutti i nodi** — `[[controlplane.nodes]]` con il loro `metrics_url`; lo
+  scraper cicla su ognuno e salva rollup taggati `node`. `GET /api/decisions/volume` **somma tra i nodi**
+  (ultimo snapshot per `(node,decision)` → SUM per decisione); `GET /api/cluster/status` li elenca;
+  `GET /api/latency` è per-nodo.
+- **Decision-log**: ogni nodo ha il suo shipper che fa `POST /ingest/events?node=<nome>` → `decision_events.node`
+  distingue la provenienza (l'identità la mette il **shipper**, mai il core → zero-core). Ricerca/drill-down
+  coprono tutto il cluster.
+
+```text
+edge-1 ─/metrics─┐        edge-1 ─shipper─┐
+edge-2 ─/metrics─┼─> [1 control plane] <─┼─ edge-2 ─shipper   →  1 Postgres (colonna `node` ovunque)
+edge-3 ─/metrics─┘        edge-3 ─shipper─┘
+```
+
+**Nota deployment**: il listener `/metrics` del core è **loopback di default** (info-leak se pubblico). Perché
+un control plane su un altro host lo scrapi, il nodo deve esporlo su un'**interfaccia privata/di management**
+raggiungibile dal control plane (rete privata / tunnel), mai su Internet. È una scelta di rete, non un limite
+architetturale. Uno **shipper per nodo** (o uno centrale che legge i log di tutti) fornisce il flusso push.
 
 - **Dashboard web**: stato cluster, volumi per decisione (`allowed|blocked|rate_limited|
   bad_request|upstream_error|internal_error`), latenze (dagli histogram Prometheus del
@@ -343,11 +438,51 @@ lungo termine.
 
 ## 8. Governance e compliance — `BOUNDARY.md` §2.3
 
-- **RBAC**: ruoli/permessi sul control plane (read-only / operatore / admin).
-- **SSO**: SAML / OIDC.
+> **v1 IMPLEMENTATA (2026-07-06)** — crate `waf-governance` (BSL), **libreria** del control plane
+> (zero-core, zero-datapath; opera sullo stesso Postgres, `apply_schema` proprio). **RBAC** con 3 ruoli
+> fissi (`Viewer` read-only / `Operator` [tier write riservato] / `Admin`) + matrice `Permission` pura.
+> **Auth locale**: account con password **argon2id** + **sessioni server-side** (cookie **HttpOnly +
+> SameSite=Strict + Secure**). Con governance ON, `/api/*` accetta **una sessione (umano, RBAC per
+> ruolo) OPPURE il bearer statico** (principale macchina/admin, `actor="api-token"`); `/ingest` resta
+> col bearer; governance OFF (default) = comportamento attuale (solo bearer, backward-compat). **Audit
+> log firmato**: catena **SHA-256 + Ed25519** (via `ring`) tamper-evident — ogni azione (login/logout,
+> user create/disable/role-change, bootstrap) è un record che concatena l'hash del precedente + firma;
+> `GET /api/audit` + `GET /api/audit/verify` (ricontrolla continuità + hash + firme). Endpoint
+> `POST /api/login`·`/logout`·`GET /api/me`·`/api/users`(CRUD admin)·`/api/audit`(+verify). Bootstrap
+> admin da config + env; secret (audit key, bootstrap pw) da env. Migrazione via `apply_schema` (tabelle
+> `gov_users`/`gov_sessions`/`gov_audit_log`). e2e HTTP provato (login→RBAC 403/200→audit verify→tamper→
+> fail). **Follow-on**: SSO **OIDC** (SAML deferito), **UI governance** (la UI migra l'auth a cookie
+> HttpOnly), report di compliance automatici, e sblocca il **rule-management §7 (v3 write-path)**.
+>
+> **v2 IMPLEMENTATA (2026-07-06)** — **SSO OIDC** + **hardening auth**. *OIDC* (crate `openidconnect`,
+> Authorization Code + **PKCE**): `[controlplane.governance.oidc]` (issuer/discovery + client + redirect +
+> `role_claim`/`role_map`/`default_role`; secret da env). `GET /api/auth/oidc/login`→302 IdP (flow-state PKCE/
+> nonce in `gov_oidc_flows`) → `/api/auth/oidc/callback` verifica l'id_token (firma **JWKS** + nonce + aud +
+> exp), mappa il claim ruoli → ruolo (highest-priv; unmapped→deny salvo `default_role`), **provisiona l'utente
+> federato** (`auth_source=oidc`, no password locale; NON dirotta un account local) e apre la sessione. Provato
+> **live end-to-end** (Keycloak reale + browser headless: group `waf-admins`→`admin`). *Hardening*: **service-token
+> nominali** revocabili role-bound (`gov_tokens`, solo hash memorizzato, plaintext una volta; bearer-resolution
+> token-nominale→static-admin) · **gestione sessioni** (list/revoke own + admin revoke-all + auto-revoca su
+> disable/cambio-pwd) · **password** self-change (revoca le altre sessioni) + admin reset · **throttle login**
+> brute-force (in-memory per-processo → 429). Audit esteso (login.sso, token.*, session.*, password.*). Migrazione
+> in-place backward-compat (ALTER + `gov_tokens`/`gov_oidc_flows`).
+>
+> **UI GOVERNANCE IMPLEMENTATA (2026-07-06)** — la SPA del control plane (§7) copre ora la governance.
+> **Auto-detect** dell'auth via `GET /api/auth/config`: governance-ON → login user/password (+ bottone
+> **"Sign in with SSO"** se OIDC) su **cookie HttpOnly** (niente token in sessionStorage → **chiude il
+> trade-off XSS**); governance-OFF → il gate a token esistente (backward-compat). Viste role-gated:
+> **Users** (admin: CRUD+ruolo+disable+reset-pwd), **Tokens** (admin: crea[plaintext una volta]/revoca),
+> **Audit** (admin: tabella + Verify-chain), **Account** (tutti: cambio password + proprie sessioni).
+> Provata **live nei 3 modi** (session via single-binary embeddato, OIDC via Keycloak, token-mode). CSRF
+> = SameSite=Strict (token esplicito=follow-on). **Follow-on residui**: SAML, report di compliance,
+> throttle cluster-wide, MFA, CSRF-token esplicito, rule-management §7 (v3).
+
+- **RBAC**: ruoli/permessi sul control plane (read-only / operatore / admin). **[FATTO v1]**
+- **SSO**: SAML / OIDC. **[OIDC FATTO v2; SAML deferito]**
 - **Audit log firmati**: ogni azione operatore (edit regole, cambio soglie, reload,
-  override fail-mode) → record firmato (catena verificabile) per SOC2 / PCI-DSS.
-- **Report di compliance automatici** + retention a lungo termine.
+  override fail-mode) → record firmato (catena verificabile) per SOC2 / PCI-DSS. **[FATTO v1:
+  hash-chain + Ed25519; le azioni di rule-management si aggiungeranno quando arriva il write-path]**
+- **Report di compliance automatici** + retention a lungo termine. **[follow-on]**
 
 L'audit enterprise è **distinto** dal decision-log OPEN: il core logga i **verdetti** (per
 richiesta); l'enterprise logga le **azioni umane/amministrative** sul control plane.
