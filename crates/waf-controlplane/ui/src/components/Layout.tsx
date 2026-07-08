@@ -13,6 +13,9 @@ export function Layout() {
   const [apiVersion, setApiVersion] = useState<string | null>(null);
   const session = mode === "session";
   const admin = session && role === "admin";
+  // Rule management requires ManageRules (operator+). Token mode = the static bearer (admin-equivalent)
+  // can manage too; the backend enforces RBAC either way — nav gating is only cosmetic.
+  const canRules = mode === "token" || (session && (role === "admin" || role === "operator"));
 
   useEffect(() => {
     api
@@ -35,9 +38,11 @@ export function Layout() {
           </NavLink>
           <NavLink to="/events">Events</NavLink>
           <NavLink to="/alerts">Alerts</NavLink>
+          {canRules && <NavLink to="/rules">Rules</NavLink>}
           {admin && <NavLink to="/users">Users</NavLink>}
           {admin && <NavLink to="/tokens">Tokens</NavLink>}
           {admin && <NavLink to="/audit">Audit</NavLink>}
+          {admin && <NavLink to="/compliance">Compliance</NavLink>}
           {session && <NavLink to="/account">Account</NavLink>}
         </nav>
         <span className="spacer" />

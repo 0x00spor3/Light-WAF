@@ -1,0 +1,39 @@
+[package]
+name = "waf-node-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Per-node rule-management agent for Light WAF — pulls the current ruleset from the control plane, pre-validates it, writes the managed .conf and reloads the WAF (§7 write-path v3, enterprise, BSL 1.1)"
+
+# The agent links `waf-detection` (OPEN) ONLY to PRE-VALIDATE a ruleset with the real seclang parser
+# before it ever touches the WAF — it does NOT sit on the datapath. It writes a file the core already
+# loads (`[modules.crs].files`) and triggers the core's existing SIGHUP reload (validate-then-swap).
+# Zero-core: nothing here changes the core; the write path is a file + a reload command.
+[dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }
+serde = { workspace = true }
+serde_json = "1"
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# The OPEN CRS/seclang engine — used purely to parse+compile a candidate ruleset and reject it before
+# writing (the first of the two fail-safe levels; the WAF's validate-then-swap is the second).
+waf-detection = { workspace = true }
+# HTTP client to the control plane. `rustls-no-provider` so it pulls no crypto provider (main installs
+# the ring provider, mirroring the other enterprise crates); talks plain http to a loopback/internal
+# control plane, TLS only if the control plane URL is https.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+# Install the process-level ring crypto provider in main (for the reqwest client above).
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# e2e bite-test only: run a REAL WAF node (config file + managed .conf) in-process, publish a rule via
+# the REAL control-plane API, run the agent's pull+validate+write, reload IN-PROCESS (simulating the
+# SIGHUP the reload_command sends), and prove a request flips 200 → 403 + the node reports convergence.
+waf-proxy = { workspace = true }
+waf-core = { workspace = true }
+waf-controlplane = { path = "../waf-controlplane" }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+axum = "0.8"

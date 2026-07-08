@@ -146,6 +146,101 @@ export interface AlertRule {
   cooldown_seconds: number;
 }
 
+// ── Rule management DTOs (§7 write-path) ──────────────────────────────────────────────────────
+
+export interface RuleVersionMeta {
+  id: number;
+  author: string;
+  note: string;
+  created_at: string;
+  current: boolean;
+}
+
+export interface RuleVersion {
+  id: number;
+  content: string;
+  author: string;
+  note: string;
+  created_at: string;
+}
+
+export interface CurrentRule {
+  version: number | null;
+  content: string | null;
+}
+
+export interface NodeRuleStatus {
+  node: string;
+  applied_version: number | null;
+  status: string;
+  detail: string;
+  reported_at: string;
+}
+
+// ── Compliance report DTOs (§8) ───────────────────────────────────────────────────────────────
+
+export interface DecisionCount {
+  decision: string;
+  count: number;
+}
+
+export interface RuleCount {
+  rule_id: string;
+  count: number;
+}
+
+export interface ComplianceReport {
+  report_version: number;
+  period: { from: string; to: string };
+  generated_at: string;
+  generated_by: string;
+  sections: {
+    access_control: {
+      total_users: number;
+      admins: number;
+      disabled_accounts: number;
+      active_sessions: number;
+      auth_sources: { local: number; oidc: number; other: number };
+      users: GovUser[];
+      service_tokens: ServiceTokenInfo[];
+      controls: string[];
+    };
+    audit_integrity: {
+      chain_ok: boolean;
+      verified_through_seq: number;
+      chain_head_hash: string;
+      total_records: number;
+      break_reason: string | null;
+      events_in_period: {
+        total_in_period: number;
+        logins_success: number;
+        logins_failed: number;
+        throttled: number;
+        admin_actions: number;
+        rule_changes: number;
+      };
+      sample: AuditRecord[];
+      controls: string[];
+    };
+    waf_effectiveness: {
+      denied_in_period: DecisionCount[];
+      top_rules: RuleCount[];
+      nodes_covered: string[];
+      cumulative_totals: DecisionCount[];
+      caveat: string;
+      controls: string[];
+    };
+    alerts_incidents: {
+      total: number;
+      fired_alerts: Alert[];
+      controls: string[];
+    };
+  };
+  content_hash: string;
+  signature: string;
+  public_key: string;
+}
+
 // ── Governance DTOs (§8) ────────────────────────────────────────────────────────────────────────
 
 export type Role = "viewer" | "operator" | "admin";
@@ -245,6 +340,15 @@ export const api = {
   alerts: (limit = 100) => apiFetch<Alert[]>(`/api/alerts?limit=${limit}`),
   alertRules: () => apiFetch<AlertRule[]>("/api/alerts/rules"),
 
+  // ── Rule management (§7 write-path) ──
+  ruleVersions: () => apiFetch<RuleVersionMeta[]>("/api/rules/versions"),
+  ruleVersion: (id: number) => apiFetch<RuleVersion>(`/api/rules/versions/${id}`),
+  ruleCurrent: () => apiFetch<CurrentRule>("/api/rules/current"),
+  publishRule: (content: string, note: string) =>
+    apiSend<{ id: number }>("POST", "/api/rules/versions", { content, note }),
+  rollbackRule: (version: number) => apiSend<string>("POST", "/api/rules/rollback", { version }),
+  ruleNodes: () => apiFetch<NodeRuleStatus[]>("/api/rules/nodes"),
+
   // ── Governance (§8) ──
   /** Public — tells the UI which login flow to use. */
   authConfig: () => apiFetch<AuthConfigInfo>("/api/auth/config"),
@@ -268,6 +372,13 @@ export const api = {
 
   audit: (limit = 100) => apiFetch<AuditRecord[]>(`/api/audit?limit=${limit}`),
   verifyAudit: () => apiFetch<VerifyResult>("/api/audit/verify"),
+
+  complianceReport: (from: string, to: string) =>
+    apiFetch<ComplianceReport>(
+      `/api/compliance/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
+  verifyCompliance: (bundle: ComplianceReport) =>
+    apiSend<{ ok: boolean }>("POST", "/api/compliance/verify", bundle),
 
   sessions: () => apiFetch<SessionInfo[]>("/api/sessions"),
   revokeSession: (id: string) => apiSend<string>("DELETE", `/api/sessions/${encodeURIComponent(id)}`),

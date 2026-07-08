@@ -92,6 +92,7 @@ async fn governance_e2e_env_gated() {
         ui_dir: None,
         api_token: config.api_token.clone(),
         governance: Some(governance),
+        siem: None,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -191,6 +192,111 @@ async fn governance_e2e_env_gated() {
     assert_eq!(verify["ok"], true, "clean chain must verify; got {verify}");
     assert!(verify["count"].as_i64().unwrap() >= 4, "bootstrap + logins + user.create recorded");
 
+    // ── §7 rule management (write-path v3): RBAC + publish/current/versions/rollback + convergence ─
+    let admin_cookie = format!("waf_cp_session={admin_sid}");
+    let alice_cookie = format!("waf_cp_session={alice_sid}");
+
+    // A viewer cannot publish (ManageRules is operator-and-up).
+    let viewer_publish = client
+        .post(format!("{base}/api/rules/versions"))
+        .header("Cookie", &alice_cookie)
+        .json(&serde_json::json!({ "content": "SecRule ARGS \"@rx x\" \"id:9\"", "note": "nope" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(viewer_publish.status().as_u16(), 403, "viewer cannot publish rules → 403");
+
+    // Admin publishes v1 → it becomes current.
+    let pub1: serde_json::Value = client
+        .post(format!("{base}/api/rules/versions"))
+        .header("Cookie", &admin_cookie)
+        .json(&serde_json::json!({ "content": "SecRule ARGS \"@rx attack1\" \"id:100\"", "note": "v1" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let v1 = pub1["id"].as_i64().expect("v1 id");
+    let cur1: serde_json::Value = client
+        .get(format!("{base}/api/rules/current"))
+        .header("Cookie", &admin_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cur1["version"], v1, "current == v1 after first publish");
+    assert!(cur1["content"].as_str().unwrap().contains("attack1"));
+
+    // Admin publishes v2 → current moves to v2.
+    let pub2: serde_json::Value = client
+        .post(format!("{base}/api/rules/versions"))
+        .header("Cookie", &admin_cookie)
+        .json(&serde_json::json!({ "content": "SecRule ARGS \"@rx attack2\" \"id:101\"", "note": "v2" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let v2 = pub2["id"].as_i64().expect("v2 id");
+    let cur2: serde_json::Value =
+        client.get(format!("{base}/api/rules/current")).header("Cookie", &admin_cookie).send().await.unwrap().json().await.unwrap();
+    assert_eq!(cur2["version"], v2, "current == v2 after second publish");
+
+    // The versions list flags exactly the current one.
+    let versions: serde_json::Value =
+        client.get(format!("{base}/api/rules/versions")).header("Cookie", &admin_cookie).send().await.unwrap().json().await.unwrap();
+    let arr = versions.as_array().unwrap();
+    assert!(arr.iter().any(|m| m["id"] == v2 && m["current"] == true), "v2 flagged current");
+    assert!(arr.iter().any(|m| m["id"] == v1 && m["current"] == false), "v1 not current");
+
+    // Rollback re-points current to v1; a bogus version 404s.
+    let rb = client
+        .post(format!("{base}/api/rules/rollback"))
+        .header("Cookie", &admin_cookie)
+        .json(&serde_json::json!({ "version": v1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rb.status().as_u16(), 200, "admin rollback → 200");
+    let cur3: serde_json::Value =
+        client.get(format!("{base}/api/rules/current")).header("Cookie", &admin_cookie).send().await.unwrap().json().await.unwrap();
+    assert_eq!(cur3["version"], v1, "current == v1 after rollback");
+    let rb_bad = client
+        .post(format!("{base}/api/rules/rollback"))
+        .header("Cookie", &admin_cookie)
+        .json(&serde_json::json!({ "version": -1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rb_bad.status().as_u16(), 404, "rollback to unknown version → 404");
+
+    // Agent-facing routes are ReadObservability: a viewer CAN read current, and report status.
+    let viewer_current =
+        client.get(format!("{base}/api/rules/current")).header("Cookie", &alice_cookie).send().await.unwrap();
+    assert_eq!(viewer_current.status().as_u16(), 200, "viewer reads current (ReadObs) → 200");
+
+    // A node reports it applied v1 → convergence view reflects it.
+    let report = client
+        .post(format!("{base}/api/rules/status"))
+        .header("Cookie", &admin_cookie)
+        .json(&serde_json::json!({ "node": "edge-e2e", "version": v1, "status": "applied", "detail": "" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(report.status().as_u16(), 200, "node status report → 200");
+    let nodes: serde_json::Value =
+        client.get(format!("{base}/api/rules/nodes")).header("Cookie", &admin_cookie).send().await.unwrap().json().await.unwrap();
+    assert!(
+        nodes.as_array().unwrap().iter().any(|n| n["node"] == "edge-e2e"
+            && n["applied_version"] == v1
+            && n["status"] == "applied"),
+        "convergence view shows edge-e2e applied v1; got {nodes}",
+    );
+
     // ── v2: service tokens (role-bound + revoke) ────────────────────────────────────────────────
     let created_tok: serde_json::Value = client
         .post(format!("{base}/api/tokens"))
@@ -264,6 +370,63 @@ async fn governance_e2e_env_gated() {
         assert_eq!(login(&client, &base, "ghost", "x").await.status().as_u16(), 401);
     }
     assert_eq!(login(&client, &base, "ghost", "x").await.status().as_u16(), 429, "locked out after 3 failures");
+
+    // ── §8 compliance report: generate (admin) → self-verify → tamper fails → RBAC ───────────────
+    let report: serde_json::Value = client
+        .get(format!("{base}/api/compliance/report"))
+        .header("Cookie", format!("waf_cp_session={admin_sid}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // Shape: a signed bundle with the four sections + the SOC2/PCI control annotations.
+    assert_eq!(report["report_version"], 1);
+    assert!(report["signature"].as_str().is_some(), "bundle is signed");
+    assert!(report["sections"]["access_control"]["total_users"].as_i64().unwrap() >= 1);
+    assert!(report["sections"]["access_control"]["controls"].as_array().unwrap().iter().any(|c| c == "PCI 8.1"));
+    // The whole audit chain is still intact here (the tamper below happens AFTER) → attested ok.
+    assert_eq!(report["sections"]["audit_integrity"]["chain_ok"], true, "chain intact at report time");
+    // The generation itself is audited.
+    assert!(report["sections"]["audit_integrity"]["events_in_period"]["total_in_period"].as_i64().unwrap() >= 1);
+
+    // The verify endpoint accepts the freshly generated bundle.
+    let verified: serde_json::Value = client
+        .post(format!("{base}/api/compliance/verify"))
+        .header("Cookie", format!("waf_cp_session={admin_sid}"))
+        .json(&report)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(verified["ok"], true, "a freshly signed bundle must verify");
+
+    // Tampering any body field breaks verification (the signature covers the content hash).
+    let mut tampered = report.clone();
+    tampered["generated_by"] = serde_json::json!("attacker");
+    let verified2: serde_json::Value = client
+        .post(format!("{base}/api/compliance/verify"))
+        .header("Cookie", format!("waf_cp_session={admin_sid}"))
+        .json(&tampered)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(verified2["ok"], false, "a mutated bundle must fail verification");
+
+    // RBAC: a viewer cannot generate a compliance report (ViewAudit is admin-only).
+    let viewer_report = client
+        .get(format!("{base}/api/compliance/report"))
+        .header("Cookie", format!("waf_cp_session={alice_sid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(viewer_report.status().as_u16(), 403, "viewer on compliance report → 403");
 
     // Tamper with a stored record directly, then re-verify → must be detected.
     sqlx::query("UPDATE gov_audit_log SET details = '{\"tampered\":true}' WHERE seq = 1")

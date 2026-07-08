@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 use waf_controlplane::gov_api::setup_governance;
 use waf_controlplane::scraper::run_scraper;
-use waf_controlplane::{app, run_evaluator, AppState, ControlPlaneConfig, Ingestor, Store};
+use waf_controlplane::{app, run_evaluator, AppState, ControlPlaneConfig, Ingestor, SiemForwarder, Store};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -64,6 +64,18 @@ async fn run() -> waf_controlplane::Result<()> {
         ));
     }
 
+    // SIEM export forwarder (§9), only when enabled. Grab the shared status handle for the API, then
+    // spawn the background flush loop (zero-datapath: it reads the stores; the WAF is unaware).
+    let siem = if config.siem.enabled {
+        info!(destinations = config.siem.destinations.len(), "siem export enabled; starting forwarder");
+        let forwarder = SiemForwarder::new(store.clone(), config.siem.clone());
+        let handle = forwarder.status();
+        tokio::spawn(forwarder.run());
+        Some((config.siem.clone(), handle))
+    } else {
+        None
+    };
+
     // HTTP surface.
     if config.api_token.is_none() {
         warn!("no [controlplane].api_token (nor WAF_CP_API_TOKEN) — the ingest endpoint is UNAUTHENTICATED (dev only)");
@@ -75,6 +87,7 @@ async fn run() -> waf_controlplane::Result<()> {
         ui_dir: config.ui_dir.clone(),
         api_token: config.api_token.clone(),
         governance,
+        siem,
     });
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
     info!(listen = %config.listen, nodes = config.nodes.len(), "control plane HTTP listening (ingest + health)");

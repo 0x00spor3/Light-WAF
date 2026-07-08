@@ -22,6 +22,9 @@ pub const ENV_AUDIT_KEY: &str = "WAF_CP_AUDIT_KEY";
 pub const ENV_BOOTSTRAP_ADMIN_PASSWORD: &str = "WAF_CP_BOOTSTRAP_ADMIN_PASSWORD";
 /// Env var holding the OIDC client secret (preferred over `[controlplane.governance.oidc].client_secret`).
 pub const ENV_OIDC_CLIENT_SECRET: &str = "WAF_CP_OIDC_CLIENT_SECRET";
+/// Prefix for the per-SIEM-destination auth header env var: `WAF_CP_SIEM_AUTH_<NAME>` (name
+/// upper-cased, non-alphanumerics → `_`) overrides `[[controlplane.siem.destinations]].auth_header`.
+pub const ENV_SIEM_AUTH_PREFIX: &str = "WAF_CP_SIEM_AUTH_";
 
 fn default_listen() -> String {
     "127.0.0.1:9600".to_string()
@@ -163,6 +166,100 @@ pub struct OidcConfig {
     pub default_role: Option<Role>,
 }
 
+/// A SIEM event stream (§9). The cursor for each is keyed by `(destination, this)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiemStream {
+    /// Denied WAF verdicts (`decision_events`, cursor = `id`).
+    Decisions,
+    /// Signed governance audit actions (`gov_audit_log`, cursor = `seq`).
+    Audit,
+    /// Fired alerts (`alerts`, cursor = `id`).
+    Alerts,
+}
+
+impl SiemStream {
+    /// The stable string form (stored in `siem_cursors.stream`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SiemStream::Decisions => "decisions",
+            SiemStream::Audit => "audit",
+            SiemStream::Alerts => "alerts",
+        }
+    }
+}
+
+/// The wire format a destination expects (§9). v1 ships only ECS-like NDJSON; CEF/LEEF/syslog and
+/// vendor adapters are follow-on variants over the SAME normalized event (they never touch the forwarder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiemFormat {
+    /// Versioned, ECS-like JSON, one event per line (`application/x-ndjson`).
+    #[default]
+    Ecs,
+}
+
+fn default_siem_streams() -> Vec<SiemStream> {
+    vec![SiemStream::Decisions, SiemStream::Audit, SiemStream::Alerts]
+}
+
+/// One SIEM sink (`[[controlplane.siem.destinations]]`). The cursor per stream is tracked separately,
+/// so several destinations each export at their own pace.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SiemDestination {
+    /// Unique destination name (used as the cursor key + the auth env var suffix).
+    pub name: String,
+    /// The HTTP endpoint that ingests events (e.g. a Splunk HEC / Elastic / collector URL).
+    pub endpoint: String,
+    /// Full `Authorization` (or vendor) header VALUE, e.g. `Splunk <token>`. Prefer the
+    /// `WAF_CP_SIEM_AUTH_<NAME>` env var over the file.
+    #[serde(default)]
+    pub auth_header: Option<String>,
+    #[serde(default)]
+    pub format: SiemFormat,
+    /// Which streams to export to this destination.
+    #[serde(default = "default_siem_streams")]
+    pub streams: Vec<SiemStream>,
+}
+
+fn default_flush_interval() -> u64 {
+    10
+}
+fn default_batch_size() -> i64 {
+    500
+}
+
+/// `[controlplane.siem]` — the SIEM export forwarder (§9). Default OFF. The forwarder polls new stored
+/// events and PUSHes batches (NDJSON) to each destination; the WAF is unaware (zero-datapath).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SiemConfig {
+    pub enabled: bool,
+    /// Seconds between flush cycles (temporal batching — not event-per-event).
+    pub flush_interval_seconds: u64,
+    /// Max events per (destination, stream) batch.
+    pub batch_size: i64,
+    pub destinations: Vec<SiemDestination>,
+}
+
+impl Default for SiemConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            flush_interval_seconds: default_flush_interval(),
+            batch_size: default_batch_size(),
+            destinations: Vec::new(),
+        }
+    }
+}
+
+/// Normalize a destination name into an env-var-safe suffix: upper-case, non-alphanumerics → `_`.
+fn env_key(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .collect()
+}
+
 /// `[controlplane.governance]` — RBAC + local auth + signed audit (§8). Default OFF (backward-compat:
 /// with governance off the control plane keeps the single static bearer token and no sessions).
 #[derive(Debug, Clone, Deserialize)]
@@ -228,6 +325,8 @@ pub struct ControlPlaneConfig {
     pub ui_dir: Option<String>,
     /// Governance: RBAC + local auth + signed audit (§8). Default OFF.
     pub governance: GovernanceConfig,
+    /// SIEM export forwarder (§9). Default OFF.
+    pub siem: SiemConfig,
 }
 
 impl Default for ControlPlaneConfig {
@@ -243,6 +342,7 @@ impl Default for ControlPlaneConfig {
             alerts: Vec::new(),
             ui_dir: None,
             governance: GovernanceConfig::default(),
+            siem: SiemConfig::default(),
         }
     }
 }
@@ -292,6 +392,15 @@ impl ControlPlaneConfig {
                 }
             }
         }
+        // Per-destination SIEM auth header: WAF_CP_SIEM_AUTH_<NAME> (name upper-cased, non-alnum → _).
+        for dest in &mut self.siem.destinations {
+            let key = format!("{ENV_SIEM_AUTH_PREFIX}{}", env_key(&dest.name));
+            if let Ok(v) = std::env::var(&key) {
+                if !v.is_empty() {
+                    dest.auth_header = Some(v);
+                }
+            }
+        }
         self
     }
 
@@ -333,6 +442,35 @@ impl ControlPlaneConfig {
             }
             if a.threshold <= 0 {
                 return Err(Error::Config(format!("alert rule {:?}: threshold must be > 0", a.name)));
+            }
+        }
+        if self.siem.enabled {
+            if self.siem.batch_size <= 0 {
+                return Err(Error::Config("siem.batch_size must be > 0".into()));
+            }
+            if self.siem.flush_interval_seconds == 0 {
+                return Err(Error::Config("siem.flush_interval_seconds must be > 0".into()));
+            }
+            if self.siem.destinations.is_empty() {
+                return Err(Error::Config("siem enabled but no [[controlplane.siem.destinations]]".into()));
+            }
+            let mut seen_dest = std::collections::HashSet::new();
+            for d in &self.siem.destinations {
+                if d.name.trim().is_empty() {
+                    return Err(Error::Config("a [[controlplane.siem.destinations]] has an empty name".into()));
+                }
+                if !seen_dest.insert(&d.name) {
+                    return Err(Error::Config(format!("duplicate siem destination name {:?}", d.name)));
+                }
+                if !d.endpoint.starts_with("http://") && !d.endpoint.starts_with("https://") {
+                    return Err(Error::Config(format!(
+                        "siem destination {:?} endpoint must be http(s)://…, got {:?}",
+                        d.name, d.endpoint
+                    )));
+                }
+                if d.streams.is_empty() {
+                    return Err(Error::Config(format!("siem destination {:?} has no streams", d.name)));
+                }
             }
         }
         Ok(())
@@ -491,6 +629,66 @@ threshold = 5
 "#;
         let cfg = ControlPlaneConfig::from_toml_str(toml).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn siem_defaults_off_and_parses() {
+        // Absent → off.
+        let cfg = ControlPlaneConfig::from_toml_str("[controlplane]\n").unwrap();
+        assert!(!cfg.siem.enabled);
+        assert_eq!(cfg.siem.flush_interval_seconds, 10);
+        assert_eq!(cfg.siem.batch_size, 500);
+        assert!(cfg.siem.destinations.is_empty());
+
+        let toml = r#"
+[controlplane]
+[controlplane.siem]
+enabled = true
+flush_interval_seconds = 5
+batch_size = 200
+
+[[controlplane.siem.destinations]]
+name = "splunk"
+endpoint = "https://splunk:8088/services/collector/event"
+auth_header = "Splunk abc"
+streams = ["decisions", "audit"]
+
+[[controlplane.siem.destinations]]
+name = "elastic"
+endpoint = "http://elastic:9200/waf/_doc"
+"#;
+        let cfg = ControlPlaneConfig::from_toml_str(toml).unwrap();
+        assert!(cfg.siem.enabled);
+        assert_eq!(cfg.siem.batch_size, 200);
+        assert_eq!(cfg.siem.destinations.len(), 2);
+        assert_eq!(cfg.siem.destinations[0].name, "splunk");
+        assert_eq!(cfg.siem.destinations[0].format, SiemFormat::Ecs);
+        assert_eq!(cfg.siem.destinations[0].streams, vec![SiemStream::Decisions, SiemStream::Audit]);
+        // Second destination defaults to all three streams.
+        assert_eq!(cfg.siem.destinations[1].streams, default_siem_streams());
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn siem_validation_rejects_bad_config() {
+        // Enabled but no destinations.
+        let bad = "[controlplane]\n[controlplane.siem]\nenabled = true\n";
+        assert!(ControlPlaneConfig::from_toml_str(bad).unwrap().validate().is_err());
+        // Non-http endpoint.
+        let bad_ep = "[controlplane]\n[controlplane.siem]\nenabled=true\n[[controlplane.siem.destinations]]\nname=\"s\"\nendpoint=\"splunk:8088\"\n";
+        assert!(ControlPlaneConfig::from_toml_str(bad_ep).unwrap().validate().is_err());
+        // Duplicate destination name.
+        let dup = "[controlplane]\n[controlplane.siem]\nenabled=true\n[[controlplane.siem.destinations]]\nname=\"s\"\nendpoint=\"http://a\"\n[[controlplane.siem.destinations]]\nname=\"s\"\nendpoint=\"http://b\"\n";
+        assert!(ControlPlaneConfig::from_toml_str(dup).unwrap().validate().is_err());
+        // Unknown stream → deserialize error.
+        let bad_stream = "[controlplane]\n[[controlplane.siem.destinations]]\nname=\"s\"\nendpoint=\"http://a\"\nstreams=[\"bogus\"]\n";
+        assert!(ControlPlaneConfig::from_toml_str(bad_stream).is_err());
+    }
+
+    #[test]
+    fn env_key_normalizes() {
+        assert_eq!(env_key("splunk-prod"), "SPLUNK_PROD");
+        assert_eq!(env_key("Elastic.1"), "ELASTIC_1");
     }
 
     #[test]

@@ -8,9 +8,11 @@ import { Overview } from "./routes/Overview";
 import { Events } from "./routes/Events";
 import { EventDetail } from "./routes/EventDetail";
 import { Alerts } from "./routes/Alerts";
+import { Rules } from "./routes/Rules";
 import { Users } from "./routes/Users";
 import { Tokens } from "./routes/Tokens";
 import { Audit } from "./routes/Audit";
+import { Compliance } from "./routes/Compliance";
 import { Account } from "./routes/Account";
 
 export function App() {
@@ -23,9 +25,11 @@ export function App() {
             <Route path="events" element={<Events />} />
             <Route path="events/:id" element={<EventDetail />} />
             <Route path="alerts" element={<Alerts />} />
+            <Route path="rules" element={<Rules />} />
             <Route path="users" element={<Users />} />
             <Route path="tokens" element={<Tokens />} />
             <Route path="audit" element={<Audit />} />
+            <Route path="compliance" element={<Compliance />} />
             <Route path="account" element={<Account />} />
             <Route path="*" element={<Overview />} />
           </Route>

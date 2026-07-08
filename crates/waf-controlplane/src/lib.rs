@@ -13,6 +13,7 @@
 //! §8 governance (RBAC/audit); alerting is a fast-follow. This crate (Phase 1) provides the config,
 //! the data model and the Postgres store; ingestion (Phase 2) and the axum API (Phase 3) build on it.
 
+pub mod compliance;
 pub mod config;
 pub mod error;
 pub mod evaluator;
@@ -21,8 +22,11 @@ pub mod ingest;
 pub mod model;
 pub mod oidc;
 pub mod prometheus;
+pub mod rule_api;
 pub mod scraper;
 pub mod server;
+pub mod siem;
+pub mod siem_forward;
 pub mod store;
 
 pub use config::ControlPlaneConfig;
@@ -30,6 +34,7 @@ pub use error::{Error, Result};
 pub use evaluator::{evaluate_once, run_evaluator};
 pub use gov_api::Governance;
 pub use ingest::Ingestor;
+pub use siem_forward::{SiemForwarder, SiemStatusHandle};
 pub use model::{Alert, Contribution, DecisionEvent, MetricRollup};
 pub use server::{app, AppState};
 pub use store::Store;

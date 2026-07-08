@@ -8,10 +8,12 @@ dashboards and **blocked-request drill-down**.
   the Prometheus `/metrics` ABI), not the datapath crate — it deliberately does **not** depend on
   `waf-core`. Its DTOs mirror the frozen decision-log schema (see the core's `score_contributions`
   shape test), so it can ingest logs from a core it does not share a build with.
-- **v1 = read-only observability.** Rule management (a write path → SIGHUP push) is deferred behind
-  §8 governance (RBAC/audit); alerting is a fast-follow.
+- **v1 = read-only observability**, plus the **§7 write path (rule management, v3)**: the control
+  plane versions one managed SecRule `.conf` and a per-node agent (`waf-node-agent`) pushes it to the
+  WAF, which hot-reloads on SIGHUP (validate-then-swap). Still zero-core — the agent only writes a file
+  the core already loads (`[modules.crs].files`). Gated by §8 governance (RBAC `ManageRules` + audit).
 
-## Status: v1 read API + v2 alerting + web dashboard complete
+## Status: v1 read API + v2 alerting + web dashboard + §7 rule-management write path complete
 
 Implemented: config, data model + Postgres store (Phase 1); ingestion — a `/metrics` scraper and a
 decision-log ingest endpoint with request/decision correlation (Phase 2); the read API (Phase 3);
@@ -39,6 +41,19 @@ follow-on.)
 | `GET /api/events/{request_id}` | Full drill-down: the reconstructed verdict + per-rule breakdown. |
 | `GET /api/alerts?limit=` | Recent fired alerts (v2), newest first. |
 | `GET /api/alerts/rules` | The configured alert rules (v2). |
+| `GET /api/siem/status` | SIEM export status (§9): per (destination, stream) cursor / head / **lag** / last delivery. |
+
+Rule management (§7 write path) — publish/rollback require `ManageRules` (operator+, audited); the
+agent-facing routes require only `ReadObservability`. Available in both governance-on and -off mode:
+
+| Method + path | Purpose |
+|---|---|
+| `GET/POST /api/rules/versions` | List versions / publish a new one (becomes current). |
+| `GET /api/rules/versions/{id}` | One version (full managed `.conf` content). |
+| `POST /api/rules/rollback` | Re-point the live pointer to an existing version. |
+| `GET /api/rules/current` | The current version `{version, content}` (agent poll). |
+| `POST /api/rules/status` | An agent reports its applied version + outcome. |
+| `GET /api/rules/nodes` | Per-node convergence (applied version + last outcome). |
 
 When **governance** (§8) is enabled, `/api/*` is gated by a session cookie (a human, RBAC per role) or
 the bearer (a machine/admin principal), and these endpoints are added:
@@ -51,6 +66,8 @@ the bearer (a machine/admin principal), and these endpoints are added:
 | `GET/POST /api/users`, `PATCH/DELETE /api/users/{id}` | User management (admin). |
 | `GET /api/audit?limit=` | The signed audit log, newest first (admin). |
 | `GET /api/audit/verify` | Verify the audit hash chain + signatures (admin). |
+| `GET /api/compliance/report?from=&to=` | A signed SOC2/PCI evidence bundle for the period (admin). |
+| `POST /api/compliance/verify` | Re-verify a posted compliance bundle's signature (admin). |
 
 Governance **v2** adds SSO + hardening:
 
@@ -91,8 +108,24 @@ Static assets are public; only `/api/*` (+ `/ingest`) sit behind the auth layer.
 **Auth in the UI (§8):** the SPA auto-detects the mode via `GET /api/auth/config`. With governance ON it
 logs in with username/password (+ a "Sign in with SSO" button when OIDC is configured) backed by an
 **HttpOnly session cookie** — no token in `sessionStorage` — and exposes the role-gated governance views
-(Users / Tokens / Audit / Account). With governance OFF it falls back to the bearer-token prompt
-(backward-compat). See RUNBOOK §H.
+(Users / Tokens / Audit / **Compliance** / Account). With governance OFF it falls back to the bearer-token
+prompt (backward-compat). See RUNBOOK §H. The **Rules** view (§7 write path — publish / rollback / per-node
+convergence, shown to operator+/admin) is documented in RUNBOOK §I; the per-node agent is the
+`waf-node-agent` crate. The **Compliance** view (admin — a signed SOC2/PCI evidence bundle with
+print-to-PDF) is documented in RUNBOOK §K.
+
+**E2E tests:** a committed Playwright suite (`ui/tests/e2e/`) drives the SPA in a real browser against
+the real backend — two binaries (token mode + session mode) on a Postgres — covering auth (both modes),
+RBAC, every view, and the key write flows (publish rule, compliance generate/verify, audit verify).
+Run with `npm run e2e` (needs `WAF_CP_DATABASE_URL` + a fresh Postgres). See RUNBOOK §M.
+
+## SIEM export (§9)
+
+A background forwarder PUSHes the stored events (denied verdicts + the signed audit log + alerts) to
+configured SIEM sinks, normalized into a versioned, ECS-like NDJSON event. Delivery is **at-least-once**
+(a `(destination, stream)` cursor advances only on a whole-batch 2xx ack; the SIEM dedups on the stable
+`event.id`); backpressure is bounded by Postgres retention, and the lag is exposed by `GET /api/siem/status`.
+Configure under `[controlplane.siem]` (default off), secrets via `WAF_CP_SIEM_AUTH_<NAME>`. See RUNBOOK §L.
 
 ## Storage
 

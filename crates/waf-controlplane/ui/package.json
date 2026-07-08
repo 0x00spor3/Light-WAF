@@ -8,7 +8,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "e2e:server": "cargo build --release -p waf-controlplane --features embed-ui --manifest-path ../../../Cargo.toml",
+    "e2e": "npm run build && npm run e2e:server && playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:report": "playwright show-report"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -17,6 +21,7 @@
     "recharts": "^2.13.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",

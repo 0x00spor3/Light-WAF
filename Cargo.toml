@@ -21,6 +21,7 @@ members = [
     "crates/waf-marketplace",
     "crates/waf-controlplane",
     "crates/waf-governance",
+    "crates/waf-node-agent",
     "crates/waf-enterprise",
 ]
 

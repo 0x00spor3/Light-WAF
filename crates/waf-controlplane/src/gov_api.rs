@@ -29,6 +29,7 @@ use waf_governance::password::{hash_password, verify_password};
 use waf_governance::rbac::{Permission, Role};
 use waf_governance::{generate_session_id, generate_token, hash_token, store as gov_store, LoginThrottle};
 
+use crate::compliance::{build_report, sign_report, verify_report_value, ReportInputs};
 use crate::config::{ControlPlaneConfig, ENV_AUDIT_KEY, ENV_BOOTSTRAP_ADMIN_PASSWORD};
 use crate::error::{Error as CpError, Result as CpResult};
 use crate::server::{check_bearer, read_api, AppState};
@@ -78,6 +79,27 @@ impl<S: Send + Sync> FromRequestParts<S> for Principal {
             .get::<Principal>()
             .cloned()
             .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "missing principal").into_response())
+    }
+}
+
+/// A non-rejecting principal extractor: `Some` when the auth middleware ran and stashed a principal
+/// (governance ON), `None` under the plain static bearer (governance OFF — the bearer already gated
+/// the route, and is treated as the `api-token` admin). Lets a handler serve both wirings.
+#[derive(Debug, Clone)]
+pub(crate) struct MaybePrincipal(pub Option<Principal>);
+
+impl MaybePrincipal {
+    /// The acting identity for audit/attribution: the principal's actor, or `api-token` (the static
+    /// bearer / machine principal used when governance is off).
+    pub(crate) fn actor(&self) -> &str {
+        self.0.as_ref().map(|p| p.actor.as_str()).unwrap_or("api-token")
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for MaybePrincipal {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(MaybePrincipal(parts.extensions.get::<Principal>().cloned()))
     }
 }
 
@@ -187,12 +209,15 @@ async fn require_audit(State(s): State<Arc<AppState>>, req: Request, next: Next)
 async fn require_tokens(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     require(s, Permission::ManageTokens, req, next).await
 }
+pub(crate) async fn require_rules(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    require(s, Permission::ManageRules, req, next).await
+}
 
 // ── Audit helper ────────────────────────────────────────────────────────────────────────────────
 
 /// Append an audit record (best-effort: a failure is logged, never fails the primary action — in
 /// practice the append only fails if Postgres is down, in which case the action failed too).
-async fn audit(state: &AppState, actor: &str, action: &str, target: Option<String>, details: serde_json::Value) {
+pub(crate) async fn audit(state: &AppState, actor: &str, action: &str, target: Option<String>, details: serde_json::Value) {
     if let Some(gov) = &state.governance {
         let entry = NewAudit::new(actor, action, target, &details);
         if let Err(e) = gov_store::append_audit(state.store.pool(), &gov.signer, &entry).await {
@@ -419,6 +444,91 @@ async fn verify_audit(State(state): State<Arc<AppState>>) -> Response {
         }))
         .into_response(),
     }
+}
+
+// ── Compliance reports (§8) ─────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ReportQuery {
+    /// Period bounds as RFC3339; default = the last 90 days.
+    from: Option<String>,
+    to: Option<String>,
+}
+
+fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+}
+
+/// Generate a signed compliance-evidence bundle for `[from, to]` (admin / `ViewAudit`). Assembles the
+/// access-control snapshot, the audit-chain integrity attestation + period timeline, WAF effectiveness
+/// and fired alerts — each annotated with the SOC2/PCI controls it supports — then signs it.
+async fn compliance_report(
+    State(state): State<Arc<AppState>>,
+    principal: Principal,
+    Query(q): Query<ReportQuery>,
+) -> Response {
+    let gov = state.governance.as_ref().expect("mounted only when governance is on");
+    let now = OffsetDateTime::now_utc();
+    let to = match q.to.as_deref() {
+        Some(s) => match parse_rfc3339(s) {
+            Some(t) => t,
+            None => return (StatusCode::BAD_REQUEST, "invalid 'to' (want RFC3339)").into_response(),
+        },
+        None => now,
+    };
+    let from = match q.from.as_deref() {
+        Some(s) => match parse_rfc3339(s) {
+            Some(t) => t,
+            None => return (StatusCode::BAD_REQUEST, "invalid 'from' (want RFC3339)").into_response(),
+        },
+        None => now - Duration::days(90),
+    };
+    if from > to {
+        return (StatusCode::BAD_REQUEST, "'from' must be <= 'to'").into_response();
+    }
+
+    let pool = state.store.pool();
+    macro_rules! q {
+        ($e:expr) => {
+            match $e.await {
+                Ok(v) => v,
+                Err(e) => return err500(e),
+            }
+        };
+    }
+    let inputs = ReportInputs {
+        period_from: from,
+        period_to: to,
+        generated_at: now,
+        generated_by: principal.actor.clone(),
+        audit_public_key: gov.signer.public_key_hex().to_string(),
+        users: q!(gov_store::list_users(pool)),
+        service_tokens: q!(gov_store::list_tokens(pool)),
+        active_sessions: q!(gov_store::count_active_sessions(pool)),
+        full_audit_chain: q!(gov_store::all_audit_ordered(pool)),
+        audit_in_period: q!(gov_store::audit_between(pool, from, to)),
+        denied_counts: q!(state.store.decision_counts_between(from, to)),
+        top_rules: q!(state.store.top_rules_between(from, to, 20)),
+        nodes_covered: q!(state.store.nodes_between(from, to)),
+        cumulative_totals: q!(state.store.decision_totals()),
+        alerts: q!(state.store.alerts_between(from, to)),
+    };
+    let signed = sign_report(build_report(&inputs), &gov.signer);
+    audit(
+        &state,
+        &principal.actor,
+        "compliance.report.generated",
+        None,
+        json!({ "from": signed.body.period.from, "to": signed.body.period.to }),
+    )
+    .await;
+    Json(signed).into_response()
+}
+
+/// Verify a posted compliance bundle: recompute its content hash and check the signature (the public
+/// key is carried in the bundle). No secrets involved; gated with the audit permission for consistency.
+async fn compliance_verify(Json(bundle): Json<serde_json::Value>) -> Response {
+    Json(json!({ "ok": verify_report_value(&bundle) })).into_response()
 }
 
 // ── Service tokens (v2) ─────────────────────────────────────────────────────────────────────────
@@ -774,7 +884,16 @@ pub fn governed_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let audit_routes = Router::new()
         .route("/api/audit", get(list_audit))
         .route("/api/audit/verify", get(verify_audit))
+        .route("/api/compliance/report", get(compliance_report))
+        .route("/api/compliance/verify", post(compliance_verify))
         .route_layer(from_fn_with_state(state.clone(), require_audit));
+
+    // Rule management (§7 write-path, v3): version/publish/rollback require ManageRules (+ audit);
+    // the agent-facing current/report/convergence routes only require ReadObservability.
+    let rules_manage = crate::rule_api::manage_routes()
+        .route_layer(from_fn_with_state(state.clone(), require_rules));
+    let rules_agent = crate::rule_api::agent_routes()
+        .route_layer(from_fn_with_state(state.clone(), require_read));
 
     Router::new()
         .route("/api/login", post(login))
@@ -784,6 +903,8 @@ pub fn governed_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(users)
         .merge(tokens)
         .merge(audit_routes)
+        .merge(rules_manage)
+        .merge(rules_agent)
 }
 
 #[cfg(test)]

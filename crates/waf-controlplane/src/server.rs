@@ -43,6 +43,9 @@ pub struct AppState {
     /// When `Some`, governance (§8) is enabled: the read API is gated by session/RBAC instead of the
     /// plain bearer, and the user-management + audit endpoints are mounted.
     pub governance: Option<crate::gov_api::Governance>,
+    /// When `Some`, the SIEM forwarder (§9) is enabled: `(config, live status handle)` for
+    /// `GET /api/siem/status`. `None` when SIEM export is off.
+    pub siem: Option<(crate::config::SiemConfig, crate::siem_forward::SiemStatusHandle)>,
 }
 
 /// The read-observability API routes (no auth layer attached). Shared by the plain-bearer path and,
@@ -57,6 +60,7 @@ pub(crate) fn read_api() -> Router<Arc<AppState>> {
         .route("/api/events/{request_id}", get(get_event))
         .route("/api/alerts", get(list_alerts))
         .route("/api/alerts/rules", get(alert_rules))
+        .route("/api/siem/status", get(siem_status))
 }
 
 /// Build the router. `/healthz` + `/api/version` (+ the static UI, if `ui_dir` is set) are public.
@@ -69,7 +73,12 @@ pub fn app(state: Arc<AppState>) -> Router {
     let api = if state.governance.is_some() {
         crate::gov_api::governed_router(&state)
     } else {
-        read_api().route_layer(from_fn_with_state(state.clone(), require_bearer))
+        // Governance off: the static bearer gates everything (and is the admin-equivalent, so it may
+        // manage rules too — the §7 write path is available without governance, same as the read API).
+        read_api()
+            .merge(crate::rule_api::manage_routes())
+            .merge(crate::rule_api::agent_routes())
+            .route_layer(from_fn_with_state(state.clone(), require_bearer))
     };
     #[cfg_attr(not(feature = "embed-ui"), allow(unused_mut))]
     let mut router = Router::new()
@@ -369,6 +378,58 @@ async fn list_alerts(State(s): State<Arc<AppState>>, Query(q): Query<AlertQuery>
 /// The configured alert rules (so an operator can see what is active).
 async fn alert_rules(State(s): State<Arc<AppState>>) -> Response {
     Json(s.alert_rules.clone()).into_response()
+}
+
+#[derive(Serialize)]
+struct SiemStreamStatus {
+    destination: String,
+    stream: String,
+    cursor: i64,
+    head: i64,
+    /// `head - cursor` — the export backlog for this (destination, stream). The key operational signal.
+    lag: i64,
+    last_delivered: u64,
+    last_success_at: Option<String>,
+    last_error: Option<String>,
+    last_error_at: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SiemStatusResponse {
+    enabled: bool,
+    streams: Vec<SiemStreamStatus>,
+}
+
+fn opt_rfc3339(ts: Option<time::OffsetDateTime>) -> Option<String> {
+    ts.map(|t| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default())
+}
+
+/// The SIEM forwarder status (§9): per (destination, stream) cursor + head + lag + last success/error.
+/// The auth headers are never exposed. `{enabled:false}` when SIEM export is off.
+async fn siem_status(State(s): State<Arc<AppState>>) -> Response {
+    let Some((config, status)) = &s.siem else {
+        return Json(SiemStatusResponse { enabled: false, streams: Vec::new() }).into_response();
+    };
+    let mut out = Vec::new();
+    for dest in &config.destinations {
+        for &stream in &dest.streams {
+            let cursor = s.store.siem_get_cursor(&dest.name, stream.as_str()).await.unwrap_or(0);
+            let head = crate::siem_forward::stream_head(&s.store, stream).await.unwrap_or(cursor);
+            let live = status.lock().unwrap().get(&(dest.name.clone(), stream.as_str().to_string())).cloned();
+            out.push(SiemStreamStatus {
+                destination: dest.name.clone(),
+                stream: stream.as_str().to_string(),
+                cursor,
+                head,
+                lag: (head - cursor).max(0),
+                last_delivered: live.as_ref().map(|l| l.last_delivered).unwrap_or(0),
+                last_success_at: opt_rfc3339(live.as_ref().and_then(|l| l.last_success_at)),
+                last_error: live.as_ref().and_then(|l| l.last_error.clone()),
+                last_error_at: opt_rfc3339(live.as_ref().and_then(|l| l.last_error_at)),
+            });
+        }
+    }
+    Json(SiemStatusResponse { enabled: true, streams: out }).into_response()
 }
 
 #[cfg(test)]

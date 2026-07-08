@@ -65,3 +65,41 @@ pub struct Alert {
     pub threshold: i64,
     pub summary: String,
 }
+
+/// An immutable published ruleset version (§7 write-path, v3). `content` is the raw managed SecRule
+/// `.conf` text; each publish appends one row and `rule_current` selects the live one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleVersion {
+    pub id: i64,
+    pub content: String,
+    pub author: String,
+    pub note: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+/// Version metadata without the (possibly large) `content`, plus whether it is the current/live one
+/// — the shape returned by the versions list (`GET /api/rules/versions`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleVersionMeta {
+    pub id: i64,
+    pub author: String,
+    pub note: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// Whether this version is the current (live) one.
+    pub current: bool,
+}
+
+/// The version a node reports it has applied and the outcome of its last apply — the per-node
+/// convergence view (`GET /api/rules/nodes`). `applied_version` is `None` until the node reports one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeRuleStatus {
+    pub node: String,
+    pub applied_version: Option<i64>,
+    /// Free-form agent-reported outcome, e.g. `"applied"` | `"rejected"` | `"error"`.
+    pub status: String,
+    pub detail: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub reported_at: OffsetDateTime,
+}

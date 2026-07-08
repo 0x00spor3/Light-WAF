@@ -1,0 +1,4 @@
+# E2E — token mode (governance OFF). The api_token comes from WAF_CP_API_TOKEN (set by the harness).
+[controlplane]
+listen = "127.0.0.1:9701"
+retention_days = 30

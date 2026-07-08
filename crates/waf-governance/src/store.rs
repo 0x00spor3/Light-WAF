@@ -424,6 +424,52 @@ pub async fn all_audit_ordered(pool: &PgPool) -> Result<Vec<AuditRecord>> {
     Ok(rows.into_iter().map(row_to_audit).collect())
 }
 
+/// Audit records with `ts` within `[from, to]`, ascending `seq` — the period timeline for a
+/// compliance report (integrity is verified over the WHOLE chain; the summary counts this slice).
+pub async fn audit_between(
+    pool: &PgPool,
+    from: OffsetDateTime,
+    to: OffsetDateTime,
+) -> Result<Vec<AuditRecord>> {
+    let rows: Vec<AuditRow> = sqlx::query_as(&format!(
+        "SELECT {AUDIT_COLS} FROM gov_audit_log WHERE ts >= $1 AND ts <= $2 ORDER BY seq ASC"
+    ))
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(row_to_audit).collect())
+}
+
+/// Audit records with `seq > after`, ascending, capped at `limit` — one SIEM export batch (§9). The
+/// cursor is the `seq`.
+pub async fn audit_since(pool: &PgPool, after: i64, limit: i64) -> Result<Vec<AuditRecord>> {
+    let rows: Vec<AuditRow> = sqlx::query_as(&format!(
+        "SELECT {AUDIT_COLS} FROM gov_audit_log WHERE seq > $1 ORDER BY seq LIMIT $2"
+    ))
+    .bind(after)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(row_to_audit).collect())
+}
+
+/// The highest audit `seq` (0 if empty) — for the SIEM export lag.
+pub async fn audit_max_seq(pool: &PgPool) -> Result<i64> {
+    let (m,): (i64,) =
+        sqlx::query_as("SELECT COALESCE(max(seq), 0) FROM gov_audit_log").fetch_one(pool).await?;
+    Ok(m)
+}
+
+/// Count of non-expired sessions (access-control evidence).
+pub async fn count_active_sessions(pool: &PgPool) -> Result<i64> {
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*)::bigint FROM gov_sessions WHERE expires_at > now()")
+            .fetch_one(pool)
+            .await?;
+    Ok(n)
+}
+
 // ── Env-gated integration tests (need a live Postgres; set WAF_CP_DATABASE_URL) ─────────────────
 #[cfg(test)]
 mod tests {
@@ -491,6 +537,9 @@ mod tests {
         let sid = uniq("sess");
         let expires = OffsetDateTime::now_utc() + time::Duration::hours(1);
         create_session(&pool, &sid, id, expires).await.expect("create session");
+        // count_active_sessions (compliance §8): a global count → race-tolerant (>= our one live
+        // session). The `expires_at > now()` predicate itself is asserted via get_session_with_user below.
+        assert!(count_active_sessions(&pool).await.expect("count") >= 1);
 
         let (session, user) = get_session_with_user(&pool, &sid).await.expect("get").expect("present");
         assert_eq!(session.user_id, id);
@@ -499,7 +548,7 @@ mod tests {
         assert!(delete_session(&pool, &sid).await.expect("delete"));
         assert!(get_session_with_user(&pool, &sid).await.expect("get2").is_none());
 
-        // An already-expired session resolves to None.
+        // An already-expired session resolves to None (same `expires_at > now()` predicate the count uses).
         let sid2 = uniq("sess-exp");
         let past = OffsetDateTime::now_utc() - time::Duration::hours(1);
         create_session(&pool, &sid2, id, past).await.unwrap();
@@ -532,6 +581,24 @@ mod tests {
         assert_eq!(all.len(), 4);
         assert_eq!(all[0].prev_hash, GENESIS_PREV);
         verify_chain(&all, signer.public_key_hex()).expect("chain must verify");
+
+        // audit_between (compliance §8): a wide window captures all 4; a past-only window is empty.
+        let wide = audit_between(
+            &pool,
+            OffsetDateTime::now_utc() - time::Duration::minutes(5),
+            OffsetDateTime::now_utc() + time::Duration::minutes(5),
+        )
+        .await
+        .expect("between");
+        assert_eq!(wide.len(), 4);
+        let past = audit_between(
+            &pool,
+            OffsetDateTime::now_utc() - time::Duration::hours(2),
+            OffsetDateTime::now_utc() - time::Duration::hours(1),
+        )
+        .await
+        .expect("between past");
+        assert!(past.is_empty());
 
         // recent_audit is newest-first.
         let recent = recent_audit(&pool, 2).await.expect("recent");

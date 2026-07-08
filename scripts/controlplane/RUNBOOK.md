@@ -368,3 +368,337 @@ export WAF_CP_AUDIT_KEY=... WAF_CP_BOOTSTRAP_ADMIN_PASSWORD=...   # governance s
 Verified end-to-end with a headless browser in all three modes (session via the embedded single-binary,
 OIDC via Keycloak, and token-mode backward-compat). Follow-on: an explicit CSRF token (in addition to
 the SameSite=Strict cookie), auto-refresh, and E2E Playwright.
+
+## I. Rule management (§7 write-path, v3)
+
+The write path: the control plane versions **one managed SecRule `.conf`**; a per-node **agent**
+(`waf-node-agent`) pulls the current version, **pre-validates** it with the OPEN seclang parser, writes
+it atomically, and runs a `reload_command` (a SIGHUP) so the WAF hot-reloads it (**validate-then-swap**).
+**Zero-core**: the agent writes a file the core already loads (`[modules.crs].files`) and triggers the
+core's existing reload — nothing in the datapath changes. Publish/rollback are gated by
+`Permission::ManageRules` (operator+) and **audited** (`rule.publish` / `rule.rollback`); the
+agent-facing routes only need `ReadObservability`.
+
+**Two fail-safe levels**: (1) the agent refuses to touch the WAF if the ruleset does not parse into the
+supported subset; (2) the WAF's own reload does validate-then-swap (a bad file keeps the last-good rules).
+
+### 1. Point the WAF at a managed file
+
+In the WAF's own `config.toml`, enable the CRS module on a file the agent owns:
+
+```toml
+[modules.crs]
+enabled = true
+files = ["/etc/waf/managed.conf"]   # the agent overwrites THIS file
+```
+Create it empty (`# managed by waf-node-agent`) so the WAF boots with zero imported rules. On `SIGHUP`
+the WAF re-reads it (`kill -HUP $(cat /run/waf.pid)`), validate-then-swap.
+
+### 2. Run the agent on each node
+
+`node-agent.toml`:
+```toml
+[agent]
+control_plane_url = "http://127.0.0.1:9600"
+node_name = "edge-1"
+managed_file = "/etc/waf/managed.conf"           # SAME path as [modules.crs].files above
+reload_command = "kill -HUP $(cat /run/waf.pid)" # or "systemctl reload waf"
+poll_interval_seconds = 15
+```
+```sh
+export WAF_AGENT_TOKEN='svc-token'    # a §8 service token (any role; rules are not secret)
+cargo run -p waf-node-agent -- node-agent.toml
+```
+Each cycle: `GET /api/rules/current` → if the version is new, pre-validate → **valid**: write the file +
+run `reload_command` + `POST /api/rules/status {applied}`; **invalid**: `POST {rejected, detail}` and
+leave the WAF untouched.
+
+### 3. Publish / roll back (API)
+
+```sh
+B=http://127.0.0.1:9600
+T='Authorization: Bearer svc-token'     # or an operator/admin session cookie
+# Publish a new version (becomes current). Content = the full managed .conf text.
+curl -s -H "$T" -H 'content-type: application/json' -X POST $B/api/rules/versions \
+  -d '{"content":"SecRule ARGS \"@rx (?i)attacktoken\" \"id:9001,phase:2,severity:CRITICAL,block\"","note":"block token"}'
+curl -s -H "$T" $B/api/rules/versions          # history (each flagged current or not)
+curl -s -H "$T" $B/api/rules/versions/<id>     # one version, full content
+curl -s -H "$T" -H 'content-type: application/json' -X POST $B/api/rules/rollback -d '{"version":<id>}'
+curl -s -H "$T" $B/api/rules/nodes             # per-node convergence (applied version + last outcome)
+```
+Within `poll_interval_seconds` the agent applies it; the attack token then returns **403** on that node.
+A **rollback** re-points `current` to an older version; the agents converge on the next poll.
+
+### 4. UI (dashboard)
+
+The **Rules** view (nav shown to operator+/admin, or in token mode) has three panels: **Publish**
+(a SecRule editor + note), **Versions** (history with the *current* badge, "Load into editor", and
+"Roll back to this"), and **Node convergence** (each node's applied version + last outcome). RBAC is
+enforced by the backend regardless of the (cosmetic) nav gating.
+
+### 5. Automated bite-tests
+
+```sh
+cargo test -p waf-node-agent                   # unit: validate (valid/invalid/empty), atomic write
+export WAF_CP_DATABASE_URL=postgres://postgres:pw@localhost:5433/postgres
+cargo test -p waf-node-agent --test e2e        # env-gated: publish → agent validate+write → reload
+# e2e.rs: a REAL Proxy (blocking + CRS on a managed .conf) + the REAL control-plane API → publish a
+# blocking rule → the agent's poll_once pulls+validates+writes → reload_from IN-PROCESS (simulating the
+# SIGHUP the reload_command sends) → the SAME request flips 200 → 403 + the node reports convergence.
+# Then an INVALID version (missing id) is published → the agent REJECTS it (level-1 fail-safe) and the
+# WAF is left untouched (still 403 by the previous version).
+cargo test -p waf-controlplane --test governance   # HTTP e2e also covers rule RBAC (viewer 403 on publish)
+```
+
+Notes: SIGHUP is Unix; the in-process `reload_from` exercises the same reload path cross-platform. The
+manage API stores content **verbatim** (a server-side dry-run that links the parser is a declared
+follow-on) — the agent's pre-validation is the enforcing gate before the WAF is touched. Follow-on:
+canary/staged rollout, version diff/preview, multiple named rulesets, ruleset signing, WebSocket for
+live convergence.
+
+## J. SAML SSO via an IdP broker (Keycloak / Dex)
+
+**The control plane does NOT implement native SAML** (frozen decision 2026-07-07 — `BOUNDARY.md` §2.3 /
+`ARCHITECTURE_ENTERPRISE.md` §8). Native SAML means verifying **XML-DSig** (C14N canonicalization +
+XML-Signature-Wrapping), the bug class that has broken mature SAML libraries for years; a hand-rolled
+validator would be false security, and the one mature crate (`samael`) pulls `xmlsec`/`libxml2` (C, a CVE
+history) — betraying the pure-Rust/no-C posture in the *trust* crate. So the control plane speaks **only
+OIDC** (§G), and a **SAML customer IdP is federated behind an OIDC broker**. The XML-DSig risk is owned by
+a project whose job that is (Keycloak / Dex), not by us.
+
+```text
+customer SAML IdP ──SAML──> [ Keycloak / Dex broker ] ──OIDC (Auth Code + PKCE)──> waf-controlplane
+        (ADFS, Shibboleth, an old Okta SAML app, …)      (the broker verifies XML-DSig)   (§G, unchanged)
+```
+
+### With Keycloak (already used for OIDC in §G)
+
+The control plane's OIDC config (§G) is **unchanged** — it still points at the Keycloak realm. You only
+add the customer's SAML IdP to that realm:
+
+1. Keycloak admin → realm `waf` → **Identity Providers → Add provider → SAML v2.0**.
+2. Set the IdP's **Service Provider Entity ID** + **Single Sign-On Service URL** from the customer's SAML
+   metadata (paste their metadata URL/XML; Keycloak imports the signing certificate).
+3. Add an **Attribute Importer** mapper: the SAML assertion attribute carrying groups/roles (e.g.
+   `http://schemas.xmlsoap.org/claims/Group` or `memberOf`) → a Keycloak **group** or user attribute.
+4. Ensure that group/attribute flows into the OIDC **`groups`** claim Keycloak issues to `waf-cp` (the
+   `role_claim` the control plane maps — §G `role_map`, e.g. `waf-admins → admin`). No control-plane change.
+5. In the UI the existing **"Sign in with SSO"** button now lands on Keycloak, which offers the SAML IdP;
+   after the SAML round-trip Keycloak issues the OIDC id_token and the control plane provisions the user
+   (`auth_source = oidc`) and maps the role — exactly as in §G.
+
+### With Dex (lightweight alternative)
+
+Dex config: add a `connectors: [{ type: saml, ... }]` block (IdP SSO URL + CA/cert + a `groupsAttr`), and
+register the control plane as a `staticClients` OIDC client (the `redirect_url` = `…/api/auth/oidc/callback`).
+Point `[controlplane.governance.oidc].issuer_url` at Dex. Same OIDC path as §G.
+
+Cost to us: this page. If real paying-customer demand is blocked by the broker path, native SAML is
+reconsidered as a follow-on — and ONLY toward `samael`, never a pure-Rust hand-roll.
+
+## K. Compliance reports (SOC2 / PCI-DSS, §8)
+
+A period-scoped, **signed** evidence bundle assembled from data the system already holds — access
+control (governance), the tamper-evident audit log, and the WAF telemetry — with each section
+annotated with the SOC2 / PCI-DSS controls it supports. **Read-only, zero-core/zero-datapath**
+(it only aggregates existing stores) and **admin-only** (`ViewAudit`). Available only with
+**governance enabled** (it reuses the audit signer + chain). SAML is out of scope by design (§J);
+native SAML would not affect this.
+
+### Generate + verify (API)
+
+```sh
+B=http://127.0.0.1:9600
+# Admin session cookie (see §F) or an admin bearer.
+COOKIE='Cookie: waf_cp_session=<sid>'
+# Default period = the last 90 days; override with RFC3339 from/to.
+curl -s -H "$COOKIE" "$B/api/compliance/report" > report.json
+curl -s -H "$COOKIE" "$B/api/compliance/report?from=2026-04-01T00:00:00Z&to=2026-07-01T00:00:00Z" > q2.json
+
+# Re-verify a bundle (recomputes the content hash + checks the Ed25519 signature; the public key is
+# carried inside the bundle, so an auditor can also verify it offline with the documented method).
+curl -s -H "$COOKIE" -H 'content-type: application/json' -X POST "$B/api/compliance/verify" \
+  --data-binary @report.json                      # → {"ok":true}
+```
+
+### What's in the bundle
+
+```jsonc
+{
+  "report_version": 1,
+  "period": { "from": "…", "to": "…" }, "generated_at": "…", "generated_by": "admin",
+  "sections": {
+    "access_control":   { "total_users", "admins", "disabled_accounts", "active_sessions",
+                          "auth_sources", "users[]", "service_tokens[]",
+                          "controls": ["SOC2 CC6.1","PCI 8.1", …] },     // SOC2 CC6 · PCI 7/8
+    "audit_integrity":  { "chain_ok", "verified_through_seq", "chain_head_hash", "total_records",
+                          "break_reason", "events_in_period{…}", "sample[]",
+                          "controls": ["SOC2 CC7.2","PCI 10.5", …] },    // SOC2 CC7 · PCI 10
+    "waf_effectiveness":{ "denied_in_period[]", "top_rules[]", "nodes_covered[]",
+                          "cumulative_totals[]", "caveat",
+                          "controls": ["PCI 6.4.2", …] },                // PCI 6.4.2/11 · SOC2 CC7.1
+    "alerts_incidents": { "total", "fired_alerts[]", "controls": ["PCI 10.6", …] }
+  },
+  "content_hash": "<sha256 hex>", "signature": "<ed25519 hex>", "public_key": "<hex>"
+}
+```
+
+Reading it:
+- **`audit_integrity.chain_ok`** attests the WHOLE signed audit chain verified (continuity + every
+  hash + every signature); `verified_through_seq` is how far it holds. This is the SOC2/PCI evidence
+  that the operator-action log is tamper-evident.
+- The bundle is itself **signed**: `content_hash` = SHA-256 of the canonical body, `signature` =
+  Ed25519 over it (the audit key). Any later edit to the body fails `POST /api/compliance/verify`.
+- **CAVEAT (stated in `waf_effectiveness.caveat`)**: **denied** counts are period-accurate (each
+  denied request is a timestamped row); **allowed / total** volumes are *cumulative counter snapshots*,
+  NOT scoped to the period (Prometheus counters are cumulative; only denied events have per-event
+  rows). Period-accurate allowed volume is a declared follow-on.
+
+### UI
+
+The **Compliance** view (admin nav) picks a from/to range → **Generate** → renders the audit-integrity
+banner, the four sections (with their SOC2/PCI control chips), and the signature footer, with
+**Verify signature** and **Print** (browser print-to-PDF; a native PDF is a follow-on) buttons.
+
+### Automated bite-test
+
+```sh
+export WAF_CP_DATABASE_URL=postgres://postgres:pw@localhost:5433/postgres
+cargo test -p waf-controlplane --lib compliance      # pure: build + sign + verify + tamper + broken-chain
+cargo test -p waf-controlplane --test governance     # HTTP e2e: generate → verify ok → tamper → fail + RBAC 403
+```
+
+Follow-on: a native PDF, an immutable archive of generated reports (evidence history) + listing, a
+dedicated `auditor` role, separate per-framework reports, scheduled/emailed reports.
+
+## L. SIEM export (§9)
+
+A background **forwarder** PUSHes the stored events (denied WAF verdicts + the signed audit log + fired
+alerts) to configured SIEM sinks, normalized into a **versioned, ECS-like** event (NDJSON over HTTP).
+**Read-only, zero-datapath** (it reads the control-plane stores; the WAF is unaware). The raw OPEN logs
+are already shippable via a log shipper (§C) — the SIEM connector adds *normalization + correlation + the
+signed audit stream + delivery reliability*.
+
+**At-least-once**: a `(destination, stream)` cursor advances ONLY after the whole batch is acked (HTTP
+2xx); on any failure it stays put and the batch is retransmitted next cycle. The SIEM dedups on the stable
+`event.id` (`waf-decision-<id>` / `waf-audit-<seq>` / `waf-alert-<id>`). The buffer is Postgres itself
+(bounded by `retention_days`) — no in-memory queue; a sink that is down just lets the **lag** grow, which
+is the key operational signal (`GET /api/siem/status`).
+
+### Configure
+
+```toml
+[controlplane.siem]
+enabled = true
+flush_interval_seconds = 10        # temporal batching, not event-per-event
+batch_size = 500
+
+[[controlplane.siem.destinations]]
+name = "splunk"
+endpoint = "https://splunk:8088/services/collector/event"
+# The Authorization header VALUE. Prefer the env var WAF_CP_SIEM_AUTH_SPLUNK over the file.
+# auth_header = "Splunk <hec-token>"     # Elastic: "ApiKey <key>"
+format = "ecs"                      # v1: ecs (NDJSON). cef/leef/syslog = follow-on
+streams = ["decisions", "audit", "alerts"]
+
+[[controlplane.siem.destinations]]
+name = "elastic"
+endpoint = "https://elastic:9200/waf-events/_doc"
+streams = ["decisions"]            # each destination exports its own subset
+```
+
+```sh
+export WAF_CP_SIEM_AUTH_SPLUNK='Splunk 00000000-0000-0000-0000-000000000000'   # secret out of the file
+cargo run -p waf-controlplane -- controlplane.toml       # boot logs "siem export enabled; starting forwarder"
+```
+
+### Event shape (ECS-like, versioned)
+
+```jsonc
+{ "version": 1, "@timestamp": "…",
+  "event": { "kind": "alert", "category": ["network","intrusion_detection"],
+             "action": "blocked", "outcome": "failure", "id": "waf-decision-1234" },
+  "source": { "ip": "203.0.113.7" },
+  "http": { "request": { "method": "GET" } }, "url": { "path": "/x" },
+  "rule": { "id": "sqli-union" },
+  "observer": { "vendor": "Light WAF", "product": "waf", "version": "0.1.0" },
+  "waf": { "node": "edge-1", "score": { "total": 6 },
+           "contributions": [ { "module": "sqli", "rule_id": "sqli-union", "severity": "critical", "points": 6 } ] } }
+```
+ECS field names where the mapping is obvious; the WAF domain lives under `waf.*`. The schema carries its
+own `version` — we promise OUR schema, not conformance to an external one. Audit events add
+`waf.audit.{seq,hash,signature}`; alert events add `waf.alert.{rule,group,value,threshold,severity}`.
+
+### Test against a mock sink + read the status
+
+```sh
+# A trivial NDJSON receiver (nc / a tiny server); or point at a real HEC/Elastic endpoint.
+B=http://127.0.0.1:9600
+T='Authorization: Bearer <api_token>'   # or an operator session
+curl -s -H "$T" "$B/api/siem/status" | jq   # per (destination, stream): cursor, head, LAG, last_success/error
+```
+`lag` climbing and a `last_error` on a destination means the sink is unreachable — the forwarder keeps
+retrying from the cursor, so nothing is lost until it exceeds retention.
+
+### Automated bite-test
+
+```sh
+export WAF_CP_DATABASE_URL=postgres://postgres:pw@localhost:5433/postgres
+cargo test -p waf-controlplane --lib siem            # pure: event mapping + NDJSON framing
+cargo test -p waf-controlplane --test siem           # e2e: at-least-once (fail → cursor held) + 3 streams + status API
+```
+
+Follow-on: CEF/LEEF/syslog formatters (+ syslog transport) and vendor adapters (Splunk HEC envelope,
+Elastic `_bulk`) as variants over the SAME event; a control-plane-native Prometheus `/metrics`
+(`siem_forwarder_lag`); TLS client certs to the sink; a per-event dead-letter queue; export filters;
+OTLP; a SIEM status UI.
+
+## M. Web UI end-to-end (Playwright)
+
+A committed Playwright suite (`crates/waf-controlplane/ui/tests/e2e/`) drives the SPA in a real browser
+against the **real backend** — two `waf-controlplane` binaries (built with `embed-ui`), one in **token
+mode** (governance off) and one in **session mode** (governance on), both on the same Postgres. It
+replaces the ad-hoc puppeteer smokes with a maintainable, repeatable suite.
+
+### Run it
+
+```sh
+# 1. A throwaway Postgres (a FRESH DB is assumed so the session binary bootstraps `admin`).
+docker run -d --name waf-e2e-pg -p 5432:5432 -e POSTGRES_PASSWORD=pw postgres:16
+export WAF_CP_DATABASE_URL=postgres://postgres:pw@localhost:5432/postgres
+
+cd crates/waf-controlplane/ui
+npm ci                       # install (incl. @playwright/test)
+npx playwright install chromium
+npm run e2e                  # = npm run build (embeds the UI) + build the release binary + playwright test
+```
+
+`npm run e2e` chains: `npm run build` (produces `ui/dist`, embedded into the binary) → `npm run
+e2e:server` (`cargo build --release --features embed-ui`) → `playwright test`. Playwright's `webServer`
+launches the two binaries (ports 9701 token / 9702 session); `global-setup` seeds a viewer (`alice`) and
+a few denied events via the API. Reports: `npm run e2e:report` (HTML); interactive mode: `npm run e2e:ui`.
+
+### What it covers
+
+Two Playwright **projects** (token / session), one browser (Chromium):
+- **Smoke** — the SPA is served and `/api/version` + `/api/auth/config` respond (both modes).
+- **Auth** — the token gate rejects a bad token and admits the real one; session login rejects a wrong
+  password, admits the admin (with the right role + admin nav), logs out; no SSO button without OIDC.
+- **RBAC** — a viewer (`alice`) sees no admin nav AND the backend returns **403** on a direct admin route.
+- **Views** — every view renders (Overview / Events / Alerts / Rules / Users / Tokens / Audit /
+  Compliance / Account); the **Events drill-down** reconstructs a verdict + score breakdown.
+- **Flows** — publish a rule → a new **current** version; generate a **compliance** report → sections +
+  the audit-integrity banner → **Verify signature**; verify the **audit chain**; mint a service token
+  (the plaintext is revealed once).
+
+### Notes
+
+- **Env-gated**: without `WAF_CP_DATABASE_URL` the harness fails fast with a clear message (mirrors the
+  Rust bite-tests). Use a FRESH/throwaway DB (the session binary only bootstraps `admin` when there are
+  zero users; the audit chain accumulates across runs otherwise).
+- Non-secret test fixtures (`e2e-token`, admin password) live in `playwright.config.ts` — a throwaway DB.
+- Selectors are accessible/text-based (roles, placeholders, panel headings); no production code change.
+
+Follow-on: a GitHub Actions **CI job** (Postgres service + browsers + the two binaries), **OIDC/Keycloak**
+E2E, Firefox/WebKit, visual-regression snapshots, exhaustive per-view interactions, an API-mock lane for
+fast feedback.

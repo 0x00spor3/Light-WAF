@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 
 use crate::config::AlertRule;
 use crate::error::Result;
-use crate::model::{Alert, Contribution, DecisionEvent, MetricRollup};
+use crate::model::{Alert, Contribution, DecisionEvent, MetricRollup, NodeRuleStatus, RuleVersion, RuleVersionMeta};
 use crate::prometheus::LatencyBucket;
 
 /// Optional filters for [`Store::search_events`]. A `None` field matches everything.
@@ -59,6 +59,44 @@ impl From<EventRow> for DecisionEvent {
             score: r.score,
             contributions: r.contributions.0,
         }
+    }
+}
+
+/// Same as [`EventRow`] plus the row `id` — for the SIEM export (the cursor is the id).
+#[derive(sqlx::FromRow)]
+struct DecisionIdRow {
+    id: i64,
+    request_id: String,
+    ts: OffsetDateTime,
+    node: String,
+    method: Option<String>,
+    path: Option<String>,
+    client_ip: Option<String>,
+    decision: String,
+    rule_id: Option<String>,
+    reason: Option<String>,
+    score: i32,
+    contributions: Json<Vec<Contribution>>,
+}
+
+impl From<DecisionIdRow> for (i64, DecisionEvent) {
+    fn from(r: DecisionIdRow) -> Self {
+        (
+            r.id,
+            DecisionEvent {
+                request_id: r.request_id,
+                ts: r.ts,
+                node: r.node,
+                method: r.method,
+                path: r.path,
+                client_ip: r.client_ip,
+                decision: r.decision,
+                rule_id: r.rule_id,
+                reason: r.reason,
+                score: r.score,
+                contributions: r.contributions.0,
+            },
+        )
     }
 }
 
@@ -325,6 +363,305 @@ impl Store {
         Ok(())
     }
 
+    // ── Rule management (§7 write-path, v3) ────────────────────────────────────────────────────
+
+    /// Publish a new immutable ruleset version AND make it current, atomically (insert + re-point in
+    /// one transaction). Returns the new version id.
+    pub async fn publish_rule_version(&self, content: &str, author: &str, note: &str) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT INTO rule_versions (content, author, note) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(content)
+        .bind(author)
+        .bind(note)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO rule_current (singleton, version_id) VALUES (true, $1) \
+             ON CONFLICT (singleton) DO UPDATE SET version_id = EXCLUDED.version_id",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// Re-point `rule_current` to an existing version (rollback). Returns `false` (no change) if the
+    /// version id does not exist.
+    pub async fn set_current_rule_version(&self, version_id: i64) -> Result<bool> {
+        let exists: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM rule_versions WHERE id = $1")
+                .bind(version_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        if exists.is_none() {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO rule_current (singleton, version_id) VALUES (true, $1) \
+             ON CONFLICT (singleton) DO UPDATE SET version_id = EXCLUDED.version_id",
+        )
+        .bind(version_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(true)
+    }
+
+    /// The current (live) ruleset version, or `None` if nothing has been published yet.
+    pub async fn current_rule_version(&self) -> Result<Option<RuleVersion>> {
+        let row = sqlx::query_as::<_, (i64, String, String, String, OffsetDateTime)>(
+            "SELECT v.id, v.content, v.author, v.note, v.created_at \
+             FROM rule_current c JOIN rule_versions v ON v.id = c.version_id WHERE c.singleton = true",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(id, content, author, note, created_at)| RuleVersion {
+            id,
+            content,
+            author,
+            note,
+            created_at,
+        }))
+    }
+
+    /// A single version by id (full content), or `None` if unknown.
+    pub async fn get_rule_version(&self, id: i64) -> Result<Option<RuleVersion>> {
+        let row = sqlx::query_as::<_, (i64, String, String, String, OffsetDateTime)>(
+            "SELECT id, content, author, note, created_at FROM rule_versions WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(id, content, author, note, created_at)| RuleVersion {
+            id,
+            content,
+            author,
+            note,
+            created_at,
+        }))
+    }
+
+    /// The `limit` most recent versions (metadata only, newest first), each flagged whether it is the
+    /// current/live one.
+    pub async fn list_rule_versions(&self, limit: i64) -> Result<Vec<RuleVersionMeta>> {
+        let rows = sqlx::query_as::<_, (i64, String, String, OffsetDateTime, bool)>(
+            "SELECT v.id, v.author, v.note, v.created_at, COALESCE(c.version_id = v.id, false) AS current \
+             FROM rule_versions v LEFT JOIN rule_current c ON c.singleton = true \
+             ORDER BY v.id DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, author, note, created_at, current)| RuleVersionMeta {
+                id,
+                author,
+                note,
+                created_at,
+                current,
+            })
+            .collect())
+    }
+
+    /// Record (upsert) a node's applied-version + apply outcome (convergence report from the agent).
+    pub async fn record_node_rule_status(
+        &self,
+        node: &str,
+        applied_version: Option<i64>,
+        status: &str,
+        detail: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO node_rule_status (node, applied_version, status, detail, reported_at) \
+             VALUES ($1, $2, $3, $4, now()) \
+             ON CONFLICT (node) DO UPDATE SET \
+               applied_version = EXCLUDED.applied_version, \
+               status = EXCLUDED.status, \
+               detail = EXCLUDED.detail, \
+               reported_at = now()",
+        )
+        .bind(node)
+        .bind(applied_version)
+        .bind(status)
+        .bind(detail)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Every node's last-reported rule status (convergence view), ordered by node.
+    pub async fn list_node_rule_status(&self) -> Result<Vec<NodeRuleStatus>> {
+        let rows = sqlx::query_as::<_, (String, Option<i64>, String, String, OffsetDateTime)>(
+            "SELECT node, applied_version, status, detail, reported_at FROM node_rule_status ORDER BY node",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(node, applied_version, status, detail, reported_at)| NodeRuleStatus {
+                node,
+                applied_version,
+                status,
+                detail,
+                reported_at,
+            })
+            .collect())
+    }
+
+    // ── Compliance report period queries (§8) ──────────────────────────────────────────────────
+
+    /// Denied-event counts by decision within `[from, to]` (period-accurate — every denied event has
+    /// its own timestamped row). Allowed/total traffic is NOT here (only denied events are stored);
+    /// the report reads cumulative counters for that, with a stated caveat.
+    pub async fn decision_counts_between(
+        &self,
+        from: OffsetDateTime,
+        to: OffsetDateTime,
+    ) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            "SELECT decision, COUNT(*)::bigint FROM decision_events \
+             WHERE ts >= $1 AND ts <= $2 GROUP BY decision ORDER BY decision",
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// The top `limit` `rule_id`s by denied-event count within `[from, to]` (most-triggered rules).
+    pub async fn top_rules_between(
+        &self,
+        from: OffsetDateTime,
+        to: OffsetDateTime,
+        limit: i64,
+    ) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            "SELECT rule_id, COUNT(*)::bigint AS n FROM decision_events \
+             WHERE ts >= $1 AND ts <= $2 AND rule_id IS NOT NULL \
+             GROUP BY rule_id ORDER BY n DESC, rule_id LIMIT $3",
+        )
+        .bind(from)
+        .bind(to)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Distinct nodes that reported metrics within `[from, to]` (coverage in the period).
+    pub async fn nodes_between(&self, from: OffsetDateTime, to: OffsetDateTime) -> Result<Vec<String>> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT DISTINCT node FROM metric_rollups WHERE ts >= $1 AND ts <= $2 ORDER BY node",
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(n,)| n).collect())
+    }
+
+    /// Fired alerts within `[from, to]`, newest first (incident evidence).
+    pub async fn alerts_between(&self, from: OffsetDateTime, to: OffsetDateTime) -> Result<Vec<Alert>> {
+        let rows = sqlx::query_as::<_, (String, String, OffsetDateTime, String, i64, i64, String)>(
+            "SELECT rule_name, group_key, fired_at, severity, value, threshold, summary \
+             FROM alerts WHERE fired_at >= $1 AND fired_at <= $2 ORDER BY fired_at DESC",
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(rule_name, group_key, fired_at, severity, value, threshold, summary)| Alert {
+                rule_name,
+                group_key,
+                fired_at,
+                severity,
+                value,
+                threshold,
+                summary,
+            })
+            .collect())
+    }
+
+    // ── SIEM export (§9): cursors + since-queries + stream heads ────────────────────────────────
+
+    /// The last exported id/seq for `(destination, stream)` — `0` (nothing exported) if absent.
+    pub async fn siem_get_cursor(&self, destination: &str, stream: &str) -> Result<i64> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT last_id FROM siem_cursors WHERE destination = $1 AND stream = $2")
+                .bind(destination)
+                .bind(stream)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(v,)| v).unwrap_or(0))
+    }
+
+    /// Advance (upsert) the cursor for `(destination, stream)` — called ONLY after a whole batch is
+    /// acked (at-least-once).
+    pub async fn siem_set_cursor(&self, destination: &str, stream: &str, last_id: i64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO siem_cursors (destination, stream, last_id, updated_at) VALUES ($1, $2, $3, now()) \
+             ON CONFLICT (destination, stream) DO UPDATE SET last_id = EXCLUDED.last_id, updated_at = now()",
+        )
+        .bind(destination)
+        .bind(stream)
+        .bind(last_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Denied events with `id > after`, ascending, capped at `limit` — one export batch (with their ids).
+    pub async fn fetch_decisions_since(&self, after: i64, limit: i64) -> Result<Vec<(i64, DecisionEvent)>> {
+        let rows: Vec<DecisionIdRow> = sqlx::query_as::<_, DecisionIdRow>(
+            "SELECT id, request_id, ts, node, method, path, client_ip, decision, rule_id, reason, score, contributions \
+             FROM decision_events WHERE id > $1 ORDER BY id LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// The highest `decision_events.id` (0 if empty) — for the export lag.
+    pub async fn decisions_max_id(&self) -> Result<i64> {
+        let (m,): (i64,) = sqlx::query_as("SELECT COALESCE(max(id), 0) FROM decision_events")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(m)
+    }
+
+    /// Fired alerts with `id > after`, ascending, capped at `limit` (with their ids).
+    pub async fn fetch_alerts_since(&self, after: i64, limit: i64) -> Result<Vec<(i64, Alert)>> {
+        let rows = sqlx::query_as::<_, (i64, String, String, OffsetDateTime, String, i64, i64, String)>(
+            "SELECT id, rule_name, group_key, fired_at, severity, value, threshold, summary \
+             FROM alerts WHERE id > $1 ORDER BY id LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, rule_name, group_key, fired_at, severity, value, threshold, summary)| {
+                (id, Alert { rule_name, group_key, fired_at, severity, value, threshold, summary })
+            })
+            .collect())
+    }
+
+    /// The highest `alerts.id` (0 if empty).
+    pub async fn alerts_max_id(&self) -> Result<i64> {
+        let (m,): (i64,) =
+            sqlx::query_as("SELECT COALESCE(max(id), 0) FROM alerts").fetch_one(&self.pool).await?;
+        Ok(m)
+    }
+
     /// Delete telemetry older than `days` (retention). `0` keeps everything. Returns rows removed.
     pub async fn prune_older_than_days(&self, days: u32) -> Result<u64> {
         if days == 0 {
@@ -523,5 +860,110 @@ mod tests {
             .expect("insert alert");
         assert!(store.last_alert_fired(&uniq, "9.9.9.9").await.expect("last").is_some());
         assert!(store.recent_alerts(100).await.expect("recent").iter().any(|a| a.rule_name == uniq));
+    }
+
+    #[tokio::test]
+    async fn rule_versions_env_gated() {
+        let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+            eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+            return;
+        };
+        let store = Store::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+
+        // Publish v1 → it becomes current.
+        let v1 = store.publish_rule_version("SecRule ARGS \"@rx v1\" \"id:1\"", "alice", "first").await.expect("publish v1");
+        let cur = store.current_rule_version().await.expect("current").expect("some");
+        assert_eq!(cur.id, v1);
+        assert!(cur.content.contains("v1"));
+
+        // Publish v2 → current moves to v2 (v1 stays immutable).
+        let v2 = store.publish_rule_version("SecRule ARGS \"@rx v2\" \"id:2\"", "alice", "second").await.expect("publish v2");
+        assert_eq!(store.current_rule_version().await.expect("current").unwrap().id, v2);
+        assert!(store.get_rule_version(v1).await.expect("get v1").unwrap().content.contains("v1"));
+
+        // Listing flags exactly the current version; both appear, newest first.
+        let list = store.list_rule_versions(100).await.expect("list");
+        let m1 = list.iter().find(|m| m.id == v1).expect("v1 listed");
+        let m2 = list.iter().find(|m| m.id == v2).expect("v2 listed");
+        assert!(!m1.current, "v1 not current after v2 publish");
+        assert!(m2.current, "v2 is current");
+
+        // Rollback = re-point current to v1; a non-existent version does nothing.
+        assert!(store.set_current_rule_version(v1).await.expect("rollback"));
+        assert_eq!(store.current_rule_version().await.expect("current").unwrap().id, v1);
+        assert!(!store.set_current_rule_version(-1).await.expect("rollback to missing"));
+
+        // Node convergence: upsert reports; the latest wins per node.
+        let node = format!("rule-node-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        store.record_node_rule_status(&node, Some(v1), "applied", "").await.expect("status 1");
+        store.record_node_rule_status(&node, Some(v2), "rejected", "parse error").await.expect("status 2");
+        let statuses = store.list_node_rule_status().await.expect("list statuses");
+        let s = statuses.iter().find(|s| s.node == node).expect("node status present");
+        assert_eq!(s.applied_version, Some(v2));
+        assert_eq!(s.status, "rejected");
+        assert_eq!(s.detail, "parse error");
+    }
+
+    #[tokio::test]
+    async fn compliance_period_queries_env_gated() {
+        let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+            eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+            return;
+        };
+        let store = Store::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+        let from = OffsetDateTime::now_utc() - time::Duration::minutes(5);
+
+        // A unique rule id fires twice, another once → deterministic top-rules within the window.
+        let hot = format!("hot-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        let cold = format!("cold-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        for (rid, n) in [(&hot, 2), (&cold, 1)] {
+            for i in 0..n {
+                let mut ev = sample_event(&format!("cp-{rid}-{i}"));
+                ev.rule_id = Some(rid.clone());
+                store.insert_decision_event(&ev).await.expect("insert");
+            }
+        }
+        let to = OffsetDateTime::now_utc() + time::Duration::minutes(5);
+
+        // Denied counts in-period include our blocked events; a past-only window is empty.
+        let counts = store.decision_counts_between(from, to).await.expect("counts");
+        assert!(counts.iter().find(|(d, _)| d == "blocked").map(|(_, n)| *n).unwrap_or(0) >= 3);
+        let empty = store
+            .decision_counts_between(from - time::Duration::hours(2), from - time::Duration::hours(1))
+            .await
+            .expect("empty");
+        assert!(empty.iter().all(|(_, n)| *n == 0) || empty.is_empty());
+
+        // Top rules: hot (2) ranks above cold (1).
+        let top = store.top_rules_between(from, to, 50).await.expect("top");
+        let hp = top.iter().position(|(r, _)| *r == hot).expect("hot present");
+        let cp = top.iter().position(|(r, _)| *r == cold).expect("cold present");
+        assert!(hp < cp, "hot rule must rank above cold: {top:?}");
+        assert_eq!(top.iter().find(|(r, _)| *r == hot).map(|(_, n)| *n), Some(2));
+
+        // nodes_between + alerts_between round-trip within the window.
+        let node = format!("cnode-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        store
+            .insert_metric_rollup(&MetricRollup { ts: OffsetDateTime::now_utc(), node: node.clone(), decision: "blocked".into(), count: 1 })
+            .await
+            .expect("rollup");
+        assert!(store.nodes_between(from, to).await.expect("nodes").contains(&node));
+
+        let arule = format!("arule-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        store
+            .insert_alert(&Alert {
+                rule_name: arule.clone(),
+                group_key: "1.2.3.4".into(),
+                fired_at: OffsetDateTime::now_utc(),
+                severity: "critical".into(),
+                value: 5,
+                threshold: 3,
+                summary: "burst".into(),
+            })
+            .await
+            .expect("alert");
+        assert!(store.alerts_between(from, to).await.expect("alerts").iter().any(|a| a.rule_name == arule));
     }
 }

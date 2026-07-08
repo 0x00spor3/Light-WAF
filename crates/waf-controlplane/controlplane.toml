@@ -78,6 +78,21 @@ scrape_interval_seconds = 15
 # claim = "waf-admins"
 # role = "admin"
 
+# SIEM export (§9). A background forwarder PUSHes stored events (denied verdicts + signed audit + alerts)
+# to SIEM sinks as versioned, ECS-like NDJSON. At-least-once (a per-(destination,stream) cursor advances
+# only on a whole-batch 2xx ack); the lag is exposed via GET /api/siem/status. Default OFF. The auth
+# header is best supplied via env WAF_CP_SIEM_AUTH_<NAME> (name upper-cased, non-alnum → _).
+# [controlplane.siem]
+# enabled = true
+# flush_interval_seconds = 10       # temporal batching, not event-per-event
+# batch_size = 500
+# [[controlplane.siem.destinations]]
+# name = "splunk"
+# endpoint = "https://splunk:8088/services/collector/event"
+# auth_header = "Splunk <hec-token>"      # or env WAF_CP_SIEM_AUTH_SPLUNK; Elastic: "ApiKey <key>"
+# format = "ecs"                          # v1: ecs (NDJSON). cef/leef/syslog = follow-on
+# streams = ["decisions", "audit", "alerts"]
+
 
 
 

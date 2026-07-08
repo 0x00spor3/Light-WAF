@@ -48,6 +48,12 @@ pub fn compute_hash(
     hex::encode(ctx.finish().as_ref())
 }
 
+/// Hex SHA-256 of an arbitrary byte blob — the digest used to sign a derived artifact (e.g. a
+/// compliance report bundle) with [`AuditSigner::sign_hash`], reusing the audit trust anchor.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+}
+
 /// Holds the Ed25519 signing key (secret in memory; public key exported for verifiers).
 pub struct AuditSigner {
     key_pair: Ed25519KeyPair,

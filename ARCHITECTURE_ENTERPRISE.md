@@ -344,6 +344,28 @@ da config (la **sorgente governa solo la provenienza** del cert); **no silent do
 > **pubblici**, solo `/api` dietro il bearer. Auth = token in `sessionStorage` (trade-off XSS
 > dichiarato → §8/SSO migra a cookie HttpOnly). Supply-chain: lockfile committato + `npm audit` in CI
 > + deps dirette minime (no UI-kit). Zero-datapath (la UI è solo un altro consumatore dell'API).
+> **E2E Playwright (2026-07-07)**: suite committata (`ui/tests/e2e/`) che guida la SPA in browser reale
+> contro il **backend reale** (2 binari embed-ui token/session + Postgres); copre auth 2-modi, RBAC, ogni
+> vista + flussi (publish rule, compliance generate/verify, audit verify). `npm run e2e`, runbook §M. CI=follow-on.
+>
+> **WRITE-PATH (RULE-MANAGEMENT v3) IMPLEMENTATO (2026-07-07)** — l'ultimo pezzo di §7, sbloccato da §8.
+> Il control plane versiona **UN file SecRule `.conf` gestito** e lo **pusha** ai nodi, che ricaricano a
+> caldo. **Zero-core** (verificato): il WAF carica il file via `[modules.crs].files` e su **SIGHUP**
+> `reload_from` lo ricarica con **validate-then-swap** (regole invalide → tiene last-good). **Backend**
+> (migr `0004_rules`): `rule_versions` immutabile + `rule_current` singleton (rollback = re-point) +
+> `node_rule_status` (convergenza). API: **manage** (`ManageRules` operator+ + audit `rule.publish`/
+> `rule.rollback`) `POST/GET /api/rules/versions`·`GET /versions/{id}`·`POST /rollback`; **agent**
+> (`ReadObservability`) `GET /api/rules/current`·`POST /api/rules/status`·`GET /api/rules/nodes`.
+> L'estrattore `MaybePrincipal` fa servire le stesse route a governance-ON (RBAC) e OFF (bearer statico =
+> `api-token`). **Agente per-nodo** = NUOVO crate `waf-node-agent` (binario, linka `waf-detection` OPEN
+> **solo per pre-validare**, NON sul datapath): polla `current` → **pre-valida** (parser seclang) → valido:
+> **write-atomico** (temp+rename) + `reload_command` (SIGHUP, configurabile → portabile) + report `applied`;
+> invalido: report `rejected`, **WAF intatto**. **Due livelli fail-safe** (agente pre-valida + WAF
+> validate-then-swap). **UI**: vista **Rules** (Publish editor · Versions con badge current/rollback ·
+> Node-convergence), nav role-gated operator+. Provato e2e (Proxy REALE: publish → agente valida+scrive →
+> `reload_from` in-process = SIGHUP → richiesta 200→**403** + convergenza; reject-path: v2 invalido → WAF
+> intatto) + smoke browser. Runbook §I. **Follow-on**: dry-run server-side, canary/staged rollout, diff
+> versioni, ruleset multipli nominali, firma ruleset, WebSocket convergenza live, reload su Windows.
 
 Servizio separato dal datapath (mai sulla porta dati). Consuma la **telemetria baseline
 OPEN** (logging JSON strutturato + metriche Prometheus, esposte dal core) e la persiste a
@@ -370,9 +392,10 @@ Phase-2 ingestione (scraper `/metrics` → rollups; `POST /ingest/events` NDJSON
 [p50/95/99]·`/events` ricerca·`/events/{request_id}` drill-down; bearer middleware). Phase-4 bite-test
 e2e (nodo WAF reale → drill-down) + runbook. **v2 = alerting** (config-rules + evaluator + webhook +
 `GET /api/alerts`, migr `0003_alerts`; **FATTA**). **UI = dashboard web FATTA** (SPA React/Vite +
-serving `ui_dir`/`embed-ui`). **Follow-on**: alerting metric/latency-based + stato firing/resolved,
-connettori Slack/email nativi, rule-management (v3, post-§8), OpenAPI, CRUD regole via API,
-auth via cookie HttpOnly/SSO (§8), integrazione Prometheus/Grafana esterni.
+serving `ui_dir`/`embed-ui`). **Write-path rule-management (v3) = FATTO** (crate `waf-node-agent`,
+migr `0004_rules`, vista Rules; vedi callout sopra). **Follow-on**: alerting metric/latency-based +
+stato firing/resolved, connettori Slack/email nativi, OpenAPI, dry-run server-side + canary rollout per
+il write-path, integrazione Prometheus/Grafana esterni.
 
 ### 7.1 Due flussi di dati (le metriche NON sono l'unica sorgente)
 
@@ -474,15 +497,47 @@ architetturale. Uno **shipper per nodo** (o uno centrale che legge i log di tutt
 > **Users** (admin: CRUD+ruolo+disable+reset-pwd), **Tokens** (admin: crea[plaintext una volta]/revoca),
 > **Audit** (admin: tabella + Verify-chain), **Account** (tutti: cambio password + proprie sessioni).
 > Provata **live nei 3 modi** (session via single-binary embeddato, OIDC via Keycloak, token-mode). CSRF
-> = SameSite=Strict (token esplicito=follow-on). **Follow-on residui**: SAML, report di compliance,
-> throttle cluster-wide, MFA, CSRF-token esplicito, rule-management §7 (v3).
+> = SameSite=Strict (token esplicito=follow-on). **Follow-on residui**: throttle cluster-wide, MFA,
+> CSRF-token esplicito.
+>
+> **REPORT DI COMPLIANCE IMPLEMENTATI (2026-07-07)** — evidenza **SOC2/PCI** period-scoped **firmata**,
+> aggregata da ciò che il sistema già ha (accessi governance + audit-log firmato + telemetria WAF).
+> **Read-only, zero-core/zero-datapath**, **admin** (`ViewAudit`), montata **solo con governance ON**
+> (riusa il signer audit). `GET /api/compliance/report?from=&to=` (default 90g) → bundle con **4 sezioni**
+> ognuna annotata coi **controlli SOC2/PCI**: access-control (utenti/ruoli/token/sessioni · CC6/PCI 7-8) ·
+> audit-integrity (`verify_chain` sull'INTERA catena → `chain_ok`/`verified_through_seq` + timeline eventi
+> del periodo · CC7/PCI 10) · WAF-effectiveness (denied+top-rules+nodi · PCI 6.4.2/11) · alert (CC7.2/PCI
+> 10.6). Il **bundle è firmato**: `content_hash`=SHA256 del corpo canonico (via `serde_json::Value`→chiavi
+> ordinate = firma order-independent, sopravvive al round-trip JSON), `signature`=Ed25519 (chiave audit);
+> `POST /api/compliance/verify` ricontrolla. **CAVEAT**: denied period-accurate (righe per-evento),
+> allowed/totali cumulativi (counter Prometheus, non per-periodo). Vista UI **Compliance** (date-range →
+> Generate → banner integrità + sezioni + chip controlli + firma + **Print**/Verify). Provata e2e
+> (genera→verify ok→tamper→fail + RBAC viewer 403) + smoke browser. Runbook §K. **Follow-on**: PDF nativo,
+> archivio report immutabile, ruolo `auditor` dedicato, report per-framework separati, schedulati/emailati.
+>
+> **SAML — DECISIONE CONGELATA (2026-07-07): nativo NON supportato, coperto via IdP broker.** L'SSO
+> moderno è **OIDC** (FATTO v2, live Keycloak). Il **SAML nativo è deliberatamente fuori scope**: la
+> verifica XML-DSig (canonicalizzazione **C14N** + **XML-Signature-Wrapping**) è la classe di bug che ha
+> bucato per anni le librerie SAML mature di *ogni* ecosistema; un validatore hand-rolled sarebbe **falsa
+> sicurezza** — stessa disciplina di §4-B (apollo-compiler), applicata al contrario: lì si scelse la
+> libreria matura perché il controllo era critico; qui la libreria matura **pure-Rust non esiste**, quindi
+> non si entra nel territorio. L'unica opzione matura (`samael` → `xmlsec`/`libxml2`, storico CVE)
+> tradirebbe la postura pure-Rust/no-C **proprio nel crate di trust**. Gli IdP enterprise rilevanti (Okta,
+> Entra ID, Ping, OneLogin, Keycloak, Google Workspace) parlano OIDC nativamente; il residuo "solo SAML"
+> si copre con un **IdP broker** (Keycloak/Dex): l'IdP SAML del cliente federato *dietro* il broker, il
+> control plane parla **solo OIDC** — il rischio XML-DSig lo gestisce chi lo fa di mestiere. Costo per
+> noi: una **pagina di runbook** (§J). **Nativo = follow-on demand-driven**: si rivaluta SOLO su domanda
+> reale di clienti paganti bloccati dal broker-path, e SOLO verso `samael` (**MAI** un hand-roll pure-Rust).
 
 - **RBAC**: ruoli/permessi sul control plane (read-only / operatore / admin). **[FATTO v1]**
-- **SSO**: SAML / OIDC. **[OIDC FATTO v2; SAML deferito]**
+- **SSO**: OIDC nativo · SAML via IdP broker. **[OIDC FATTO v2; SAML nativo fuori scope per scelta
+  (2026-07-07) → broker Keycloak/Dex, runbook §J; nativo = follow-on demand-driven]**
 - **Audit log firmati**: ogni azione operatore (edit regole, cambio soglie, reload,
   override fail-mode) → record firmato (catena verificabile) per SOC2 / PCI-DSS. **[FATTO v1:
   hash-chain + Ed25519; le azioni di rule-management si aggiungeranno quando arriva il write-path]**
-- **Report di compliance automatici** + retention a lungo termine. **[follow-on]**
+- **Report di compliance automatici** + retention a lungo termine. **[FATTO 2026-07-07: bundle SOC2/PCI
+  period-scoped FIRMATO (Ed25519) con integrità audit + accessi + efficacia WAF, `GET /api/compliance/report`
+  + vista UI; vedi callout sopra. Retention lunga già garantita da `retention_days`. Follow-on: PDF, archivio]**
 
 L'audit enterprise è **distinto** dal decision-log OPEN: il core logga i **verdetti** (per
 richiesta); l'enterprise logga le **azioni umane/amministrative** sul control plane.
@@ -491,9 +546,26 @@ richiesta); l'enterprise logga le **azioni umane/amministrative** sul control pl
 
 ## 9. Integrazione e supporto — `BOUNDARY.md` §2.5
 
+> **CONNETTORI SIEM IMPLEMENTATI (2026-07-07)** — un **forwarder** in background nel control plane
+> **PUSH**-a gli eventi memorizzati (verdetti WAF negati `decision_events` + **audit firmato** `gov_audit_log`
+> + alert) verso sink SIEM HTTP, normalizzati in un evento **versionato ECS-like NDJSON** (`"version":1`,
+> nomi ECS dove ovvio + namespace `waf.*`). **Read-only, zero-core/zero-datapath** (legge gli store; il WAF
+> ignora il SIEM). Il valore vs il log-shipper OPEN (§7) = **normalizzazione + correlazione + stream audit
+> firmato + affidabilità**. **At-least-once**: cursore per-`(destinazione,stream)` che avanza SOLO su ack
+> 2xx dell'intero batch (fail → non avanza, ritrasmette; il SIEM deduplica su `event.id` stabile
+> `waf-<stream>-<id>`). **Backpressure = Postgres** (bound = `retention_days`, niente code in-memory); il
+> **lag** (`head-cursore`) è il segnale operativo chiave, esposto da `GET /api/siem/status` + log.
+> **Formatter astratto dal giorno uno** (`SiemFormatter`; v1 = `EcsNdjsonFormatter`) → CEF/LEEF/syslog +
+> adapter vendor = varianti future SENZA toccare il forwarder. Config `[controlplane.siem]` (destinazioni
+> {endpoint, auth_header [env `WAF_CP_SIEM_AUTH_<NAME>`], format, streams} + batch + flush), default OFF.
+> Migr `0005_siem` (`siem_cursors`). Provato e2e (at-least-once: fail→cursore fermo→recover→ri-consegna;
+> 3 stream normalizzati + status API). Runbook §L. **Follow-on**: CEF/LEEF/syslog + vendor adapter,
+> `/metrics` CP-nativo (`siem_forwarder_lag`), TLS client-cert, DLQ, filtri, OTLP, UI SIEM.
+
 - **Connettori SIEM**: export degli eventi (decision-log OPEN + audit enterprise) verso
-  Splunk/Elastic/QRadar/… Si appoggia al logging strutturato OPEN come sorgente.
-- **SLA support** e **guided hardening** (servizio).
+  Splunk/Elastic/QRadar/… Si appoggia al logging strutturato OPEN come sorgente. **[FATTO 2026-07-07:
+  forwarder PUSH → NDJSON ECS-like, at-least-once, 3 stream, `GET /api/siem/status`; vedi callout sopra]**
+- **SLA support** e **guided hardening** (servizio). **[non-software]**
 
 ---
 
