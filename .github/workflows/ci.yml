@@ -1,0 +1,64 @@
+name: CI
+
+# Enterprise workspace (separate from the core repo). Clippy + the full test suite, with a Postgres
+# and a Redis service so the ENV-GATED integration tests (control-plane / governance / node-agent /
+# SIEM on WAF_CP_DATABASE_URL, state-redis / threat-intel on WAF_REDIS_URL) run for real instead of
+# skipping. Fixture-gated tests (WASM/gRPC signing, ACME pebble) stay skipped — their vars are unset.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: clippy + test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      WAF_CP_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      WAF_REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
