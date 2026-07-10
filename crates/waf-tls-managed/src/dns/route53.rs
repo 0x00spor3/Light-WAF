@@ -10,7 +10,7 @@
 //! to `_acme-challenge.example.com` (apex **and** wildcard) must UPSERT the FULL set of values
 //! — a naive single-value UPSERT would replace the first. This provider therefore tracks the
 //! values it has published per name in memory and **read-modify-writes** the rrset on every
-//! add/remove. [`TxtHandle`](super::TxtHandle) is value-based here (`provider_ref` empty).
+//! add/remove. [`TxtHandle`] is value-based here (`provider_ref` empty).
 //!
 //! Credentials come from the caller (the wiring layer reads the standard `AWS_ACCESS_KEY_ID` /
 //! `AWS_SECRET_ACCESS_KEY` env vars), never the config file. `zone_id` is the hosted-zone id.

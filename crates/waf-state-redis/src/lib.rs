@@ -89,7 +89,7 @@ const DEFAULT_POOL_SIZE: u32 = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Tunables for [`RedisStore`] (wired from `[enterprise]` in the config file).
-/// Defaults: a pool of [`DEFAULT_POOL_SIZE`] and **fail-open** on runtime Redis
+/// Defaults: a pool of `DEFAULT_POOL_SIZE` and **fail-open** on runtime Redis
 /// errors (a down limiter must not block legitimate traffic).
 #[derive(Clone, Copy, Debug)]
 pub struct RedisStoreOptions {
@@ -305,8 +305,8 @@ pub trait ReputationStore: Send + Sync {
 
 /// Write side of cluster-wide IP-reputation — the seam the threat-intel **feed** (§6) consumes to
 /// populate the same `rep:<ip>` keyspace the [`ReputationStore`] reads. Deliberately a separate
-/// trait from the read: the datapath never writes, and keeping it here (next to [`rep_key`] and
-/// [`Reputation::as_wire`]) means the key + value encoding live in ONE crate, shared by both sides.
+/// trait from the read: the datapath never writes, and keeping it here (next to `rep_key` and
+/// `Reputation::as_wire`) means the key + value encoding live in ONE crate, shared by both sides.
 pub trait ReputationWriter: Send + Sync {
     /// Publish a snapshot of `(ip, verdict)` entries, each `SET rep:<ip> <verdict> EX <ttl>`.
     /// `Unknown` entries are skipped (no key written). Returns the number of keys written.

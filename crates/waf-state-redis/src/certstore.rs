@@ -39,7 +39,7 @@ use crate::{pool_to_redis_err, RedisStore};
 
 /// A managed TLS certificate as the driver sees it: the issued chain, OUR private key, and the
 /// cert's expiry. `key_pem` is the PLAINTEXT key — the type deliberately does NOT derive
-/// `Serialize`, so it can never be persisted in the clear by accident (the on-wire [`StoredBlob`]
+/// `Serialize`, so it can never be persisted in the clear by accident (the on-wire `StoredBlob`
 /// carries the encrypted key instead).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedCert {
