@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1
+# ─────────────────────────────────────────────────────────────────────────────
+# waf-node-agent — per-node rule-management agent (§7 write-path v3, BSL 1.1).
+#
+# It polls the control plane, pre-validates the current ruleset, writes the managed
+# .conf and runs a reload command. It has NO inbound port (it is a client).
+#
+# Build context = the detached `enterprise/` workspace:
+#
+#   docker build -f Dockerfile.node-agent -t waf-node-agent:latest .
+#
+#   docker run --rm \
+#     -v "$PWD/node-agent.toml:/etc/waf/node-agent.toml:ro" \
+#     -e WAF_AGENT_TOKEN=svc-... \
+#     waf-node-agent:latest
+#
+# NOTE: `managed_file` (the .conf it writes) and `reload_command` (how it tells the
+# WAF to reload) must be reachable from the container — typically the agent shares a
+# volume with the WAF and the reload is a signal/command against that shared node.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM rust:1-bookworm AS build
+
+# The agent uses rustls+ring only (no aws-lc-rs), so the base toolchain
+# (build-essential/perl) plus ca-certificates for the crates.io fetch is enough.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --locked -p waf-node-agent \
+    && cp /build/target/release/waf-node-agent /usr/local/bin/waf-node-agent
+
+# ── Runtime stage ────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+# ca-certificates: only needed if the control-plane URL is https. `sh` (dash) is
+# present in the base and is what the agent uses to run `reload_command`.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin waf \
+    && mkdir -p /etc/waf /app \
+    && chown -R waf:waf /etc/waf /app
+
+COPY --from=build /usr/local/bin/waf-node-agent /usr/local/bin/waf-node-agent
+
+USER waf
+WORKDIR /app
+
+# Config path is argv[1] (default `node-agent.toml`); mount yours at this path.
+ENTRYPOINT ["waf-node-agent"]
+CMD ["/etc/waf/node-agent.toml"]

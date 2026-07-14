@@ -49,6 +49,7 @@ async fn scrape_node(client: &reqwest::Client, store: &Store, node: &NodeConfig)
     let counts = parse_requests_total(&text);
     let buckets = parse_latency_buckets(&text);
     let ts = OffsetDateTime::now_utc();
+    // Raw snapshot (long-term time-series history) …
     for c in &counts {
         store
             .insert_metric_rollup(&MetricRollup {
@@ -61,6 +62,12 @@ async fn scrape_node(client: &reqwest::Client, store: &Store, node: &NodeConfig)
     }
     if !buckets.is_empty() {
         store.insert_latency_buckets(&node.name, ts, &buckets).await?;
+    }
+    // … plus the reset-aware running totals that drive the dashboard's cumulative volumes + lifetime
+    // latency (these survive WAF restarts, when the Prometheus counters reset to zero).
+    store.accumulate_metric_totals(&node.name, &counts, ts).await?;
+    if !buckets.is_empty() {
+        store.accumulate_latency_totals(&node.name, &buckets, ts).await?;
     }
     Ok(counts.len() + buckets.len())
 }

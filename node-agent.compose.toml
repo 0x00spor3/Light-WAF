@@ -1,0 +1,14 @@
+# Node-agent config tailored for docker-compose (see docker-compose.node.yml).
+# The service token comes from WAF_AGENT_TOKEN (env), not this file.
+[agent]
+# Reach the control plane. On Docker Desktop `host.docker.internal` is the host; the compose
+# also maps it via extra_hosts so this resolves on Linux too. Point it at your control plane
+# (e.g. the published port of docker-compose.controlplane.yml, or a central control-plane host).
+control_plane_url = "http://host.docker.internal:9600"
+node_name = "edge-1"
+# MUST equal the WAF's [modules.crs].files entry — a volume both containers share.
+managed_file = "/etc/waf/rules/managed.conf"
+# The agent shares the WAF's PID namespace (pid: "service:waf"), so PID 1 in that namespace IS
+# the waf-enterprise process — SIGHUP triggers its config reload (validate-then-swap).
+reload_command = "kill -HUP 1"
+poll_interval_seconds = 15

@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 use crate::config::AlertRule;
 use crate::error::Result;
 use crate::model::{Alert, Contribution, DecisionEvent, MetricRollup, NodeRuleStatus, RuleVersion, RuleVersionMeta};
-use crate::prometheus::LatencyBucket;
+use crate::prometheus::{DecisionCount, LatencyBucket};
 
 /// Optional filters for [`Store::search_events`]. A `None` field matches everything.
 #[derive(Debug, Default, Clone)]
@@ -200,24 +200,23 @@ impl Store {
         Ok(rows)
     }
 
-    /// Scraped nodes and the timestamp of their most recent rollup (cluster status).
+    /// Scraped nodes and the timestamp they were last seen (cluster status), from the reset-aware
+    /// totals the scraper maintains (so a node stays listed across a WAF restart).
     pub async fn cluster_status(&self) -> Result<Vec<(String, OffsetDateTime)>> {
         let rows = sqlx::query_as::<_, (String, OffsetDateTime)>(
-            "SELECT node, max(ts) FROM metric_rollups GROUP BY node ORDER BY node",
+            "SELECT node, max(updated_at) FROM metric_totals GROUP BY node ORDER BY node",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
     }
 
-    /// Current per-decision totals: the latest counter snapshot per (node, decision), summed by
-    /// decision (dashboard volumes).
+    /// Cumulative per-decision totals (dashboard volumes). Reads the reset-aware running totals the
+    /// scraper accumulates, so the counts keep climbing across WAF restarts instead of dropping to
+    /// the post-restart counter snapshot.
     pub async fn decision_totals(&self) -> Result<Vec<(String, i64)>> {
         let rows = sqlx::query_as::<_, (String, i64)>(
-            "SELECT decision, SUM(count)::bigint FROM ( \
-               SELECT DISTINCT ON (node, decision) node, decision, count \
-               FROM metric_rollups ORDER BY node, decision, ts DESC \
-             ) latest GROUP BY decision ORDER BY decision",
+            "SELECT decision, SUM(cumulative)::bigint FROM metric_totals GROUP BY decision ORDER BY decision",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -226,23 +225,81 @@ impl Store {
 
     /// Nodes that have any latency samples.
     pub async fn latency_nodes(&self) -> Result<Vec<String>> {
-        let rows = sqlx::query_as::<_, (String,)>("SELECT DISTINCT node FROM latency_buckets ORDER BY node")
+        let rows = sqlx::query_as::<_, (String,)>("SELECT DISTINCT node FROM latency_totals ORDER BY node")
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(|(n,)| n).collect())
     }
 
-    /// The latest latency histogram snapshot for `node`, sorted by `le` (for quantile computation).
-    pub async fn latest_latency_buckets(&self, node: &str) -> Result<Vec<LatencyBucket>> {
+    /// The reset-aware LIFETIME latency histogram for `node`, sorted by `le` (for quantile
+    /// computation). Unlike the latest raw snapshot, this survives WAF restarts (percentiles then
+    /// reflect all observed traffic, not just since the last restart). Bucket monotonicity in `le`
+    /// is preserved: a reset is process-wide, so every bucket drops on the same scrape.
+    pub async fn lifetime_latency_buckets(&self, node: &str) -> Result<Vec<LatencyBucket>> {
         let rows = sqlx::query_as::<_, (f64, i64)>(
-            "SELECT le, count FROM latency_buckets \
-             WHERE node = $1 AND ts = (SELECT max(ts) FROM latency_buckets WHERE node = $1) \
-             ORDER BY le",
+            "SELECT le, cumulative FROM latency_totals WHERE node = $1 ORDER BY le",
         )
         .bind(node)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(le, count)| LatencyBucket { le, count }).collect())
+    }
+
+    /// Fold one scrape's per-decision counters into the reset-aware `metric_totals`. For each
+    /// (node, decision) the running total gains the delta since `last_raw`, or the raw value itself
+    /// when the counter went backwards (a WAF restart), then records the new raw value.
+    pub async fn accumulate_metric_totals(
+        &self,
+        node: &str,
+        counts: &[DecisionCount],
+        ts: OffsetDateTime,
+    ) -> Result<()> {
+        for c in counts {
+            sqlx::query(
+                "INSERT INTO metric_totals (node, decision, cumulative, last_raw, updated_at) \
+                 VALUES ($1, $2, $3, $3, $4) \
+                 ON CONFLICT (node, decision) DO UPDATE SET \
+                   cumulative = metric_totals.cumulative + \
+                     CASE WHEN $3 >= metric_totals.last_raw THEN $3 - metric_totals.last_raw ELSE $3 END, \
+                   last_raw = $3, \
+                   updated_at = $4",
+            )
+            .bind(node)
+            .bind(&c.decision)
+            .bind(c.count)
+            .bind(ts)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Fold one scrape's latency histogram into the reset-aware `latency_totals` (same delta/reset
+    /// rule as [`Store::accumulate_metric_totals`], keyed per bucket `le`).
+    pub async fn accumulate_latency_totals(
+        &self,
+        node: &str,
+        buckets: &[LatencyBucket],
+        ts: OffsetDateTime,
+    ) -> Result<()> {
+        for b in buckets {
+            sqlx::query(
+                "INSERT INTO latency_totals (node, le, cumulative, last_raw, updated_at) \
+                 VALUES ($1, $2, $3, $3, $4) \
+                 ON CONFLICT (node, le) DO UPDATE SET \
+                   cumulative = latency_totals.cumulative + \
+                     CASE WHEN $3 >= latency_totals.last_raw THEN $3 - latency_totals.last_raw ELSE $3 END, \
+                   last_raw = $3, \
+                   updated_at = $4",
+            )
+            .bind(node)
+            .bind(b.le)
+            .bind(b.count)
+            .bind(ts)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
     }
 
     /// Count denied events matching a rule's filters since `since`, grouped per the rule's
@@ -773,23 +830,27 @@ mod tests {
             .expect("search");
         assert!(hits.iter().any(|e| e.request_id == rid));
 
-        // Rollups → decision_totals + cluster_status see this node.
+        // Scrape accumulation → decision_totals + cluster_status see this node (reset-aware totals).
         store
-            .insert_metric_rollup(&MetricRollup { ts: OffsetDateTime::now_utc(), node: node.clone(), decision: "blocked".into(), count: 9 })
+            .accumulate_metric_totals(
+                &node,
+                &[DecisionCount { decision: "blocked".into(), count: 9 }],
+                OffsetDateTime::now_utc(),
+            )
             .await
-            .expect("rollup");
+            .expect("totals");
         assert!(store.cluster_status().await.expect("status").iter().any(|(n, _)| *n == node));
         assert!(store.decision_totals().await.expect("totals").iter().any(|(d, t)| d == "blocked" && *t >= 9));
 
-        // Latency buckets → latest snapshot round-trips and feeds the quantile.
+        // Latency buckets → lifetime histogram round-trips and feeds the quantile.
         let buckets = vec![
             LatencyBucket { le: 0.001, count: 5 },
             LatencyBucket { le: 0.01, count: 9 },
             LatencyBucket { le: f64::INFINITY, count: 10 },
         ];
-        store.insert_latency_buckets(&node, OffsetDateTime::now_utc(), &buckets).await.expect("latency");
+        store.accumulate_latency_totals(&node, &buckets, OffsetDateTime::now_utc()).await.expect("lat totals");
         assert!(store.latency_nodes().await.expect("nodes").contains(&node));
-        let got = store.latest_latency_buckets(&node).await.expect("latest");
+        let got = store.lifetime_latency_buckets(&node).await.expect("lifetime");
         assert_eq!(got.len(), 3);
         assert!(got.last().unwrap().le.is_infinite());
 
@@ -802,6 +863,45 @@ mod tests {
                 && *t >= since),
             "series must contain a recent blocked bucket, got {series:?}",
         );
+    }
+
+    // The reset-aware accumulation keeps climbing when the WAF counter restarts (the reason the
+    // dashboard's Overview volumes must not drop to the post-restart snapshot).
+    #[tokio::test]
+    async fn metric_totals_reset_aware_env_gated() {
+        let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+            eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+            return;
+        };
+        let store = Store::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+        let node = format!("reset-node-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        let now = OffsetDateTime::now_utc();
+
+        // Counter climbs 100 → 150, the WAF restarts (drops to 5), then climbs to 20.
+        for raw in [100_i64, 150, 5, 20] {
+            store
+                .accumulate_metric_totals(&node, &[DecisionCount { decision: "blocked".into(), count: raw }], now)
+                .await
+                .expect("acc");
+        }
+        // Reset-aware total = 150 + 5 + 15 = 170 (NOT the latest raw snapshot of 20).
+        let cum: (i64,) = sqlx::query_as("SELECT cumulative FROM metric_totals WHERE node = $1 AND decision = 'blocked'")
+            .bind(&node)
+            .fetch_one(store.pool())
+            .await
+            .expect("read cumulative");
+        assert_eq!(cum.0, 170, "reset-aware total = 150 + 5 + 15");
+
+        // Latency histogram accumulates per bucket and stays monotonic in `le` across a reset.
+        let h1 = vec![LatencyBucket { le: 0.01, count: 8 }, LatencyBucket { le: f64::INFINITY, count: 10 }];
+        let h2 = vec![LatencyBucket { le: 0.01, count: 3 }, LatencyBucket { le: f64::INFINITY, count: 4 }]; // reset
+        store.accumulate_latency_totals(&node, &h1, now).await.expect("l1");
+        store.accumulate_latency_totals(&node, &h2, now).await.expect("l2");
+        let life = store.lifetime_latency_buckets(&node).await.expect("life");
+        assert_eq!(life.iter().find(|b| (b.le - 0.01).abs() < 1e-9).unwrap().count, 11); // 8 + 3
+        assert_eq!(life.iter().find(|b| b.le.is_infinite()).unwrap().count, 14); // 10 + 4
+        assert!(life.windows(2).all(|w| w[0].count <= w[1].count), "buckets stay monotonic in le");
     }
 
     #[tokio::test]

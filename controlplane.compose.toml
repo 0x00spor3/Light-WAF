@@ -1,0 +1,58 @@
+# Control-plane config tailored for docker-compose (see docker-compose.controlplane.yml).
+# Secrets (WAF_CP_DATABASE_URL, WAF_CP_AUDIT_KEY, WAF_CP_OIDC_CLIENT_SECRET, …) come from the
+# environment, never this file.
+[controlplane]
+# Bind on ALL interfaces so the published port is reachable from outside the container
+# (the shipped sample uses 127.0.0.1, which a container would not expose).
+listen = "0.0.0.0:9600"
+retention_days = 30
+
+[[controlplane.nodes]]
+name        = "edge-1"
+metrics_url = "http://host.docker.internal:9090/metrics"
+
+# controlplane.toml
+[controlplane.alerting]
+enabled = true
+eval_interval_seconds = 5
+
+[[controlplane.alerts]]
+name = "block-burst-per-ip"
+decision = "blocked"
+group_by = "client_ip"      # none | client_ip | rule_id
+window_seconds = 60
+threshold = 20
+severity = "critical"
+cooldown_seconds = 300
+
+[[controlplane.alerts]]
+name = "block-burst-per-rule"
+decision = "blocked"
+group_by = "rule_id"      # none | client_ip | rule_id
+window_seconds = 60
+threshold = 20
+severity = "critical"
+cooldown_seconds = 300
+
+# Governance (§8): session login + RBAC + signed audit. Enabled so SSO can be used. The bootstrap
+# admin password + the audit signing key come from the environment (WAF_CP_BOOTSTRAP_ADMIN_PASSWORD /
+# WAF_CP_AUDIT_KEY). The dashboard then shows a username/password form + a "Sign in with SSO" button.
+[controlplane.governance]
+enabled = true
+bootstrap_admin = "admin"
+
+# SSO via the bundled Keycloak (realm "waf", client "waf-cp"). The issuer host must resolve to the
+# SAME Keycloak from BOTH the browser (host) and this container, or the token issuer won't match.
+# `keycloak.localtest.me` is a public name that resolves to 127.0.0.1 (so the browser reaches the
+# published port 8081), and the compose maps it to the host gateway for this container (see extra_hosts).
+# Keycloak (start-dev) derives the issuer from that host, so both sides agree. Secret = WAF_CP_OIDC_CLIENT_SECRET.
+[controlplane.governance.oidc]
+issuer_url = "http://keycloak.localtest.me:8081/realms/waf"
+client_id = "waf-cp"
+redirect_url = "http://localhost:9600/api/auth/oidc/callback"
+role_claim = "groups"
+# Users matching no role_map entry are DENIED (omit default_role). The seeded user `kim` is in
+# the `waf-admins` group → admin.
+[[controlplane.governance.oidc.role_map]]
+claim = "waf-admins"
+role = "admin"

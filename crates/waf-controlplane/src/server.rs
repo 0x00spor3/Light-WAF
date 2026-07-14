@@ -333,7 +333,7 @@ async fn latency(State(s): State<Arc<AppState>>) -> Response {
     };
     let mut out = Vec::new();
     for node in nodes {
-        let buckets = match s.store.latest_latency_buckets(&node).await {
+        let buckets = match s.store.lifetime_latency_buckets(&node).await {
             Ok(b) => b,
             Err(e) => return err500(e),
         };

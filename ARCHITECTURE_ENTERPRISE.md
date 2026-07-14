@@ -424,9 +424,15 @@ WAF ──espone──> /metrics ───────────────�
 Funziona perché **entrambi i flussi sono per-nodo** e ogni dato porta l'identità del nodo (colonna `node`):
 
 - **Metriche**: la config elenca **tutti i nodi** — `[[controlplane.nodes]]` con il loro `metrics_url`; lo
-  scraper cicla su ognuno e salva rollup taggati `node`. `GET /api/decisions/volume` **somma tra i nodi**
-  (ultimo snapshot per `(node,decision)` → SUM per decisione); `GET /api/cluster/status` li elenca;
-  `GET /api/latency` è per-nodo.
+  scraper cicla su ognuno e salva rollup taggati `node`. **Reset-aware totals**: `waf_requests_total` e i
+  bucket di latenza sono **counter Prometheus** (cumulativi dall'avvio del processo, si **azzerano al
+  restart** del WAF). Lo scraper mantiene quindi un totale persistente reset-aware in `metric_totals`/
+  `latency_totals` (delta dall'ultimo valore, o il valore grezzo quando rileva un reset), così i volumi
+  dell'Overview **continuano a salire attraverso i restart** invece di crollare all'ultimo snapshot. Lo
+  stato vive in Postgres → sopravvive sia al restart del WAF (rilevamento reset) sia del control plane
+  (lo stato viene riletto). `GET /api/decisions/volume` **somma i cumulativi tra i nodi** per decisione;
+  `GET /api/cluster/status` li elenca (last-seen da `metric_totals`); `GET /api/latency` è per-nodo
+  (percentili **lifetime**). I raw `metric_rollups`/`latency_buckets` restano come storico grezzo.
 - **Decision-log**: ogni nodo ha il suo shipper che fa `POST /ingest/events?node=<nome>` → `decision_events.node`
   distingue la provenienza (l'identità la mette il **shipper**, mai il core → zero-core). Ricerca/drill-down
   coprono tutto il cluster.

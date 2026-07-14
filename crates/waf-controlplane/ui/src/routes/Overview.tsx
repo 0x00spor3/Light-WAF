@@ -90,7 +90,7 @@ function VolumeSection() {
   return (
     <Panel
       title="Decision volumes"
-      subtitle="Latest counter snapshot across the cluster"
+      subtitle="Cumulative across the cluster (reset-aware — survives WAF restarts)"
       actions={<LiveIndicator at={lastUpdated} />}
     >
       {loading ? (
@@ -270,7 +270,7 @@ function LatencySection() {
   return (
     <Panel
       title="Latency by node"
-      subtitle="p50 / p95 / p99 (ms), latest snapshot"
+      subtitle="p50 / p95 / p99 (ms), lifetime (reset-aware)"
       actions={<LiveIndicator at={lastUpdated} />}
     >
       {loading ? (

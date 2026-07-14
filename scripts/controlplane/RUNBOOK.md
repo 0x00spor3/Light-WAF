@@ -690,6 +690,9 @@ Two Playwright **projects** (token / session), one browser (Chromium):
 - **Flows** — publish a rule → a new **current** version; generate a **compliance** report → sections +
   the audit-integrity banner → **Verify signature**; verify the **audit chain**; mint a service token
   (the plaintext is revealed once).
+- **Live (SSE)** — with the Events view open, a fresh event ingested via the API surfaces in the table
+  **without a manual reload**, well under the 20s poll fallback: end-to-end proof that the
+  "notify-then-pull" stream (`GET /api/stream` → silent refresh) drives the live dashboard.
 
 ### Notes
 

@@ -1,0 +1,79 @@
+# syntax=docker/dockerfile:1
+# ─────────────────────────────────────────────────────────────────────────────
+# waf-controlplane — dashboard/API over the OPEN telemetry (§7, BSL 1.1).
+#
+# Built as a SINGLE binary with the web UI embedded (`--features embed-ui`): a Node
+# stage produces `ui/dist`, which rust-embed bakes into the binary at compile time.
+#
+# Build context = the detached `enterprise/` workspace:
+#
+#   docker build -f Dockerfile.controlplane -t waf-controlplane:latest .
+#
+#   docker run --rm -p 9600:9600 \
+#     -v "$PWD/controlplane.toml:/etc/waf/controlplane.toml:ro" \
+#     -e WAF_CP_DATABASE_URL=postgres://waf:waf@postgres:5432/waf_cp \
+#     -e WAF_CP_API_TOKEN=... \
+#     waf-controlplane:latest
+#
+# IMPORTANT: in the config set `listen = "0.0.0.0:9600"` (the sample binds 127.0.0.1,
+# which is unreachable from outside the container). Postgres is required at startup.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── UI stage: build the SPA bundle (ui/dist) ─────────────────────────────────
+FROM node:22-bookworm-slim AS ui
+
+WORKDIR /ui
+# Install deps first (cached until the lockfile changes). `npm ci` includes the
+# devDeps that `npm run build` (tsc + vite) needs.
+COPY crates/waf-controlplane/ui/package.json crates/waf-controlplane/ui/package-lock.json ./
+RUN npm ci
+COPY crates/waf-controlplane/ui/ ./
+RUN npm run build   # → /ui/dist
+
+# ── Build stage: compile the control plane with the UI embedded ──────────────
+FROM rust:1-bookworm AS build
+
+# Control plane uses rustls+ring only (no aws-lc-rs / cmake): base toolchain +
+# ca-certificates for the crates.io fetch is enough.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+# rust-embed reads `ui/dist` (relative to the crate) at compile time — drop the
+# freshly built bundle where `#[folder = "ui/dist"]` expects it.
+COPY --from=ui /ui/dist crates/waf-controlplane/ui/dist
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --locked -p waf-controlplane --features embed-ui \
+    && cp /build/target/release/waf-controlplane /usr/local/bin/waf-controlplane
+
+# ── Runtime stage ────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+# ca-certificates: outbound TLS (OIDC IdP, https /metrics scrape, alert webhooks).
+# curl: only for the container HEALTHCHECK below.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin waf \
+    && mkdir -p /etc/waf /app \
+    && chown -R waf:waf /etc/waf /app
+
+COPY --from=build /usr/local/bin/waf-controlplane /usr/local/bin/waf-controlplane
+
+USER waf
+WORKDIR /app
+
+EXPOSE 9600
+
+# `/healthz` is public (no auth). Adjust the port if you change `listen`.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:9600/healthz || exit 1
+
+# Config path is argv[1] (or `controlplane.toml`); mount yours at this path. The
+# database URL is best provided via WAF_CP_DATABASE_URL rather than the file.
+ENTRYPOINT ["waf-controlplane"]
+CMD ["/etc/waf/controlplane.toml"]

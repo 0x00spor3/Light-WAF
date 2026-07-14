@@ -1,0 +1,107 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Data-plane node: waf-enterprise (the WAF) + waf-node-agent (rules) + vector (log shipping).
+#
+#   docker compose -f docker-compose.node.yml up --build
+#
+# The agent polls the control plane, pre-validates the current ruleset, writes it to a
+# volume the WAF also mounts, then signals the WAF to reload. The two share a PID
+# namespace so the reload (`kill -HUP 1`) reaches the WAF process across containers.
+# Vector tails the WAF's JSON decision-log and ships it to the control plane's /ingest/events
+# (so blocked requests show up in the dashboard). All of it talks to the control plane at
+# WAF_CP_URL (default: the host's published control plane via host.docker.internal:9600).
+#
+# This stack is runnable as-is: the WAF proxies to the bundled `echo` upstream and loads
+# ./config.compose.toml. Point node-agent.compose.toml `control_plane_url` at your control plane
+# (e.g. the one from docker-compose.controlplane.yml). To front your OWN app instead of echo,
+# swap the `echo` service and set [proxy].backend in the WAF config accordingly.
+# ─────────────────────────────────────────────────────────────────────────────
+name: waf-node
+
+services:
+  # A tiny upstream so the stack works out of the box: echoes the request (headers, method, path).
+  echo:
+    image: traefik/whoami
+    restart: unless-stopped
+
+  # Seed the shared rules volume with an (empty) managed file the WAF can load at boot, and
+  # hand ownership to the non-root uid the images run as (10001), so the agent can overwrite it.
+  init-rules:
+    image: debian:bookworm-slim
+    command:
+      [
+        "sh",
+        "-c",
+        "mkdir -p /etc/waf/rules && touch /etc/waf/rules/managed.conf && chown -R 10001:10001 /etc/waf/rules",
+      ]
+    volumes:
+      - managed-rules:/etc/waf/rules
+    restart: "no"
+
+  waf:
+    build:
+      context: .
+      dockerfile: Dockerfile.enterprise
+    image: waf-enterprise:latest
+    depends_on:
+      echo:
+        condition: service_started
+      init-rules:
+        condition: service_completed_successfully
+    # Optional enterprise secrets go in an `environment:` mapping, e.g.:
+    #   environment:
+    #     WAF_REDIS_URL: redis://redis:6379
+    #     CF_API_TOKEN: "..."
+    #     AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION: "..."
+    volumes:
+      - ./config.compose.toml:/etc/waf/config.toml:ro
+      - managed-rules:/etc/waf/rules
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.node-agent
+    image: waf-node-agent:latest
+    depends_on:
+      - waf
+    # Share the WAF's PID namespace so `reload_command = "kill -HUP 1"` signals the WAF process.
+    pid: "service:waf"
+    # Lets `host.docker.internal` (in node-agent.compose.toml) resolve on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # A control-plane service token. In the control plane's token mode this equals its
+      # WAF_CP_API_TOKEN. CHANGE IT for anything beyond local testing.
+      WAF_AGENT_TOKEN: ${WAF_AGENT_TOKEN:-changeme-shared-token}
+    volumes:
+      - ./node-agent.compose.toml:/etc/waf/node-agent.toml:ro
+      - managed-rules:/etc/waf/rules
+    restart: unless-stopped
+
+  # Log shipper: reads the WAF container's stdout (JSON decision-log) via the Docker API and POSTs
+  # the request/decision lines to the control plane's /ingest/events. Out-of-process, zero datapath.
+  vector:
+    image: timberio/vector:0.44.0-debian
+    depends_on:
+      - waf
+    command: ["--config", "/etc/vector/vector.toml"]
+    # Reach the control plane published on the host (same box as docker-compose.controlplane.yml).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      WAF_CP_URL: ${WAF_CP_URL:-http://host.docker.internal:9600}
+      # Must match the control plane's WAF_CP_API_TOKEN (ingest is bearer-gated even with governance on).
+      WAF_CP_INGEST_TOKEN: ${WAF_CP_API_TOKEN:-changeme-shared-token}
+      # Node identity for the ingested batch — match the agent's node_name so it's one node.
+      NODE_NAME: ${NODE_NAME:-edge-1}
+    volumes:
+      - ./vector.toml:/etc/vector/vector.toml:ro
+      # Read-only access to the Docker API so the docker_logs source can read the WAF's stdout.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+volumes:
+  managed-rules:
