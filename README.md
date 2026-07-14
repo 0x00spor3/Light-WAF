@@ -15,6 +15,14 @@ Lifting it out is a single move:
 mv enterprise/ ../light-waf-enterprise
 ```
 
+## Documentation
+
+- **[Operator Guide](docs/README.md)** — the functional/operational manual: concepts, getting started,
+  full WAF + control-plane configuration, rule management, governance, compliance, SIEM, and day-2 ops.
+- [`ARCHITECTURE_ENTERPRISE.md`](ARCHITECTURE_ENTERPRISE.md) / [`BOUNDARY.md`](../BOUNDARY.md) — design
+  rationale and the enterprise/core boundary.
+- [`scripts/*/RUNBOOK.md`](scripts) — per-feature copy-paste runbooks.
+
 ## Crates
 
 | Crate | What it is | Seam (core trait) |

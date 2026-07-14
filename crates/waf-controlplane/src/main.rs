@@ -11,7 +11,9 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 use waf_controlplane::gov_api::setup_governance;
 use waf_controlplane::scraper::run_scraper;
-use waf_controlplane::{app, run_evaluator, AppState, ControlPlaneConfig, Ingestor, SiemForwarder, Store};
+use waf_controlplane::{
+    app, run_evaluator, AppState, ControlPlaneConfig, EventBus, Ingestor, SiemForwarder, Store,
+};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -37,6 +39,9 @@ async fn run() -> waf_controlplane::Result<()> {
     // ring provider (mirrors the other enterprise crates) — needed only if a node's /metrics is https.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    // Demo builds gate startup on a signed, time-limited license (no-op otherwise).
+    demo_license::enforce();
+
     let path = std::env::args().nth(1).unwrap_or_else(|| "controlplane.toml".to_string());
     let config = ControlPlaneConfig::load(&path)?;
     config.validate()?;
@@ -50,6 +55,10 @@ async fn run() -> waf_controlplane::Result<()> {
     // disabled (the control plane then keeps the single static bearer, no sessions — backward-compat).
     let governance = setup_governance(&config, &store).await?;
 
+    // Live change bus for the dashboard SSE stream — shared by the ingest handler (events) and the
+    // alert evaluator (alerts), consumed by `GET /api/stream`.
+    let bus = EventBus::new();
+
     // Background /metrics scraper (no-op if no nodes configured).
     tokio::spawn(run_scraper(store.clone(), config.nodes.clone(), config.scrape_interval_seconds));
 
@@ -61,6 +70,7 @@ async fn run() -> waf_controlplane::Result<()> {
             config.alerts.clone(),
             config.alerting.webhook_url.clone(),
             config.alerting.eval_interval_seconds,
+            bus.clone(),
         ));
     }
 
@@ -88,9 +98,24 @@ async fn run() -> waf_controlplane::Result<()> {
         api_token: config.api_token.clone(),
         governance,
         siem,
+        bus,
     });
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
     info!(listen = %config.listen, nodes = config.nodes.len(), "control plane HTTP listening (ingest + health)");
     axum::serve(listener, app(state)).await?;
     Ok(())
+}
+
+/// Demo-license gate: on a `demo-license` build, verify the license at boot (terminate if invalid or
+/// expired) and spawn a watchdog that stops the process when it later expires. A plain build is a no-op.
+#[cfg(feature = "demo-license")]
+mod demo_license {
+    pub fn enforce() {
+        waf_license::enforce_boot();
+        tokio::spawn(waf_license::watchdog(std::time::Duration::from_secs(900)));
+    }
+}
+#[cfg(not(feature = "demo-license"))]
+mod demo_license {
+    pub fn enforce() {}
 }

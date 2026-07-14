@@ -23,6 +23,7 @@ members = [
     "crates/waf-governance",
     "crates/waf-node-agent",
     "crates/waf-enterprise",
+    "crates/waf-license",
 ]
 
 [workspace.package]

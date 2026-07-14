@@ -5,21 +5,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { useApi } from "../hooks/useApi";
 import { Empty, ErrorState, Loading, Panel } from "../components/ui";
-import { fmtTime } from "../theme";
-
-/// Color a node's last apply outcome (free-form status reported by the agent).
-function statusColor(status: string): string {
-  switch (status.toLowerCase()) {
-    case "applied":
-      return "#34d399";
-    case "rejected":
-      return "#ff8a3d";
-    case "error":
-      return "#ff5c5c";
-    default:
-      return "#9aa3b2";
-  }
-}
+import { fmtTime, statusColor } from "../theme";
 
 const PLACEHOLDER =
   'SecRule ARGS "@rx (?i)attackpattern" "id:9001,phase:2,severity:CRITICAL,block,msg:\'blocked\'"';
@@ -126,7 +112,7 @@ export function Rules() {
                 <td className="mono">
                   #{v.id}{" "}
                   {v.current && (
-                    <span className="badge" style={{ ["--c" as string]: "#34d399" }}>
+                    <span className="badge" style={{ ["--c" as string]: statusColor("current") }}>
                       current
                     </span>
                   )}

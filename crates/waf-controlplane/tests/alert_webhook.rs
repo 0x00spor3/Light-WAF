@@ -95,7 +95,8 @@ async fn alert_fires_and_delivers_webhook_env_gated() {
     };
 
     // One evaluation pass with the webhook configured.
-    evaluate_once(&store, std::slice::from_ref(&rule), Some(&webhook), Some(&client)).await;
+    let bus = waf_controlplane::EventBus::new();
+    evaluate_once(&store, std::slice::from_ref(&rule), Some(&webhook), Some(&client), &bus).await;
 
     // Give the async POST a moment to reach the receiver.
     for _ in 0..50 {

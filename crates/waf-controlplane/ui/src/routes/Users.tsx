@@ -5,7 +5,7 @@ import { useState } from "react";
 import { api, type Role } from "../api";
 import { useApi } from "../hooks/useApi";
 import { Empty, ErrorState, Loading, Panel } from "../components/ui";
-import { fmtTime } from "../theme";
+import { fmtTime, statusColor } from "../theme";
 
 const ROLES: Role[] = ["viewer", "operator", "admin"];
 
@@ -104,7 +104,11 @@ export function Users() {
                 </td>
                 <td className="muted">{u.auth_source}</td>
                 <td>
-                  {u.disabled ? <span className="badge" style={{ ["--c" as string]: "#ff5c5c" }}>disabled</span> : <span className="badge" style={{ ["--c" as string]: "#34d399" }}>active</span>}
+                  {u.disabled ? (
+                    <span className="badge" style={{ ["--c" as string]: statusColor("disabled") }}>disabled</span>
+                  ) : (
+                    <span className="badge" style={{ ["--c" as string]: statusColor("active") }}>active</span>
+                  )}
                 </td>
                 <td className="muted nowrap">{fmtTime(u.created_at)}</td>
                 <td className="actions">

@@ -71,6 +71,67 @@ async function apiSend<T>(method: string, path: string, body?: unknown): Promise
   );
 }
 
+// ── Live change stream (SSE) ──────────────────────────────────────────────────────────────────
+// A fetch-based SSE reader (not native EventSource) so it works in BOTH auth modes: it can send the
+// bearer header (token mode) and the session cookie (via credentials:include), without leaking a
+// token into the URL. Reconnects with backoff; returns an unsubscribe fn. `onNotice(kind)` fires
+// once per server notice (`kind` = "events" | "alerts").
+export function subscribeStream(onNotice: (kind: string) => void): () => void {
+  let closed = false;
+  let ctrl: AbortController | null = null;
+  let backoff = 1000;
+
+  async function connect(): Promise<void> {
+    if (closed) return;
+    ctrl = new AbortController();
+    try {
+      const res = await fetch("/api/stream", {
+        headers: { ...authHeaders(), Accept: "text/event-stream" },
+        credentials: "include",
+        signal: ctrl.signal,
+      });
+      if (res.status === 401) {
+        clearToken();
+        return; // the app will drop back to login; don't hammer-reconnect
+      }
+      if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+      backoff = 1000; // healthy connection → reset backoff
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let sep: number;
+        // SSE frames are separated by a blank line.
+        while ((sep = buf.indexOf("\n\n")) !== -1) {
+          const frame = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          if (frame.startsWith(":")) continue; // keep-alive comment
+          let event: string | null = null;
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+          }
+          if (event) onNotice(event);
+        }
+      }
+    } catch {
+      /* fall through to reconnect */
+    }
+    if (!closed) {
+      setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 15000);
+    }
+  }
+  void connect();
+
+  return () => {
+    closed = true;
+    ctrl?.abort();
+  };
+}
+
 // ── DTOs (mirror the Rust model / server response shapes) ─────────────────────────────────────
 
 export interface VersionInfo {

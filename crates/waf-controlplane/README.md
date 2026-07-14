@@ -42,6 +42,7 @@ follow-on.)
 | `GET /api/alerts?limit=` | Recent fired alerts (v2), newest first. |
 | `GET /api/alerts/rules` | The configured alert rules (v2). |
 | `GET /api/siem/status` | SIEM export status (§9): per (destination, stream) cursor / head / **lag** / last delivery. |
+| `GET /api/stream` | Live change stream (SSE): emits `event: events` / `event: alerts` notices so the dashboard refreshes the moment data changes (notify-then-pull; no payload). |
 
 Rule management (§7 write path) — publish/rollback require `ManageRules` (operator+, audited); the
 agent-facing routes require only `ReadObservability`. Available in both governance-on and -off mode:

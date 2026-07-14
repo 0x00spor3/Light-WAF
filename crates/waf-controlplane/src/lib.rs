@@ -28,10 +28,12 @@ pub mod server;
 pub mod siem;
 pub mod siem_forward;
 pub mod store;
+pub mod stream;
 
 pub use config::ControlPlaneConfig;
 pub use error::{Error, Result};
 pub use evaluator::{evaluate_once, run_evaluator};
+pub use stream::{EventBus, StreamKind};
 pub use gov_api::Governance;
 pub use ingest::Ingestor;
 pub use siem_forward::{SiemForwarder, SiemStatusHandle};

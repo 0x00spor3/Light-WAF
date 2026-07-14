@@ -4,8 +4,8 @@
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks/useApi";
-import { DecisionBadge, ErrorState, Loading, Panel, SeverityBadge, StatCard } from "../components/ui";
-import { decisionColor, fmtTime } from "../theme";
+import { ErrorState, Loading, Panel, SeverityBadge, VerdictMeter } from "../components/ui";
+import { fmtTime } from "../theme";
 
 export function EventDetail() {
   const { id = "" } = useParams();
@@ -28,13 +28,16 @@ export function EventDetail() {
       ) : !data ? null : (
         <>
           <Panel title="Verdict" subtitle={data.request_id}>
-            <div className="stat-row">
-              <StatCard label="Decision" value={<DecisionBadge decision={data.decision} />} accent={decisionColor(data.decision)} />
-              <StatCard label="Total score" value={data.score} accent="#4f8cff" />
-              <StatCard label="Node" value={data.node} />
-              <StatCard label="Time" value={fmtTime(data.ts)} />
-            </div>
-            <dl className="kv">
+            <VerdictMeter score={data.score} decision={data.decision} contributions={data.contributions} />
+            <dl className="kv" style={{ marginTop: "1.25rem" }}>
+              <div>
+                <dt>Node</dt>
+                <dd className="mono">{data.node}</dd>
+              </div>
+              <div>
+                <dt>Time</dt>
+                <dd className="mono">{fmtTime(data.ts)}</dd>
+              </div>
               <div>
                 <dt>Method</dt>
                 <dd className="mono">{data.method ?? "—"}</dd>

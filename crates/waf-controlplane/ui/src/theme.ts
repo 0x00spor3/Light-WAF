@@ -4,24 +4,24 @@
 // Shared visual tokens: chart palette + semantic colors for decisions/severities, so the whole
 // dashboard reads consistently.
 
-export const CHART_AXIS = "#6b7280";
-export const CHART_GRID = "#232833";
+export const CHART_AXIS = "#5a6377";
+export const CHART_GRID = "#232a38";
 
 /// Color for a decision class (blocked/rejected are the denied verdicts v1 stores).
 export function decisionColor(decision: string): string {
   switch (decision.toLowerCase()) {
     case "blocked":
-      return "#ff5c5c";
+      return "#fb5468";
     case "rejected":
-      return "#ff8a3d";
+      return "#ff9d42";
     case "allowed":
     case "passed":
-      return "#34d399";
+      return "#2fce8e";
     case "internal_error":
     case "upstream_error":
       return "#a78bfa";
     default:
-      return "#4f8cff";
+      return "#2fe0c0";
   }
 }
 
@@ -29,18 +29,39 @@ export function decisionColor(decision: string): string {
 export function severityColor(severity: string | null | undefined): string {
   switch ((severity ?? "").toLowerCase()) {
     case "critical":
-      return "#ff5c5c";
+      return "#fb5468";
     case "warning":
-      return "#ffb020";
+      return "#ff9d42";
     case "notice":
-      return "#4f8cff";
+      return "#5b9dff";
     default:
-      return "#9aa3b2";
+      return "#8791a4";
   }
 }
 
-/// Latency quantile palette (p50/p95/p99).
-export const LATENCY_COLORS = ["#4f8cff", "#ffb020", "#ff5c5c"];
+/// Latency quantile palette (p50/p95/p99) — cool signal → hot, as pressure rises.
+export const LATENCY_COLORS = ["#2fe0c0", "#ff9d42", "#fb5468"];
+
+/// Color for a lifecycle / apply status: healthy (active, applied, current) → allowed green;
+/// soft-negative (rejected, pending) → amber; hard-negative (error, disabled, revoked) → blocked red.
+export function statusColor(status: string): string {
+  switch (status.toLowerCase()) {
+    case "applied":
+    case "active":
+    case "current":
+    case "enabled":
+      return "#2fce8e";
+    case "rejected":
+    case "pending":
+      return "#ff9d42";
+    case "error":
+    case "disabled":
+    case "revoked":
+      return "#fb5468";
+    default:
+      return "#8791a4";
+  }
+}
 
 /// Format an RFC3339 timestamp as a compact local date-time; falls back to the raw string.
 export function fmtTime(iso: string): string {

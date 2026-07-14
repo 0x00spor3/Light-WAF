@@ -3,7 +3,8 @@
 
 import { api } from "../api";
 import { useApi } from "../hooks/useApi";
-import { Empty, ErrorState, Loading, Panel, SeverityBadge } from "../components/ui";
+import { useLiveStream } from "../hooks/useLiveStream";
+import { Empty, ErrorState, LiveIndicator, Loading, Panel, SeverityBadge } from "../components/ui";
 import { fmtTime } from "../theme";
 
 export function Alerts() {
@@ -16,10 +17,16 @@ export function Alerts() {
 }
 
 function FiredAlerts() {
-  const { data, loading, error, reload } = useApi(() => api.alerts(100));
+  // SSE pushes the moment the evaluator fires an alert; the slow poll is a fallback if the stream
+  // is blocked. Alerts are still evaluator-cadence bound, so "instant" here means "as soon as fired".
+  const { data, loading, error, reload, refresh, lastUpdated } = useApi(() => api.alerts(100), [], {
+    pollMs: 30_000,
+  });
+
+  useLiveStream("alerts", refresh);
 
   return (
-    <Panel title="Fired alerts" subtitle="Recent, newest first">
+    <Panel title="Fired alerts" subtitle="Recent, newest first" actions={<LiveIndicator at={lastUpdated} />}>
       {loading ? (
         <Loading />
       ) : error ? (

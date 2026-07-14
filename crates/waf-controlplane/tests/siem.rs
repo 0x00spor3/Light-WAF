@@ -226,6 +226,7 @@ async fn siem_all_streams_and_status_env_gated() {
         api_token: Some("t".into()),
         governance: None,
         siem: Some((config, siem_status)),
+        bus: waf_controlplane::EventBus::new(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());

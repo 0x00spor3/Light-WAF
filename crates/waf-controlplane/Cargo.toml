@@ -12,6 +12,9 @@ description = "Control plane for Light WAF — dashboard/API over the OPEN telem
 # `cargo build`/CI needs no Node toolchain and no `dist/`.
 embed-ui = ["dep:rust-embed", "dep:mime_guess"]
 
+# Cut a time-limited DEMO build: gate startup on a signed, expiring license. OFF by default.
+demo-license = ["dep:waf-license"]
+
 # DELIBERATELY does NOT depend on `waf-core`: the control plane is a SEPARATE service that consumes
 # the OPEN telemetry *contract* (the decision-log JSON schema + the Prometheus metrics ABI), not the
 # datapath crate. Its DTOs mirror the frozen log schema, so it can ingest logs from a core it does
@@ -39,6 +42,8 @@ sqlx = { version = "0.8", default-features = false, features = [
 time = { version = "0.3", features = ["serde-well-known"] }
 # HTTP server for the ingest endpoint + read API + the static web UI.
 axum = "0.8"
+# Wrap the broadcast channel (live SSE notices) as a Stream for the `GET /api/stream` endpoint.
+tokio-stream = { version = "0.1", features = ["sync"] }
 # Serve the built SPA (dev override via ui_dir); `fs` = ServeDir/ServeFile.
 tower-http = { version = "0.6", features = ["fs"] }
 # Single-binary production UI: embed `ui/dist` into the binary (behind the `embed-ui` feature, so a
@@ -54,6 +59,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # Governance (§8): RBAC + local auth + signed audit log. A sibling library; it owns its tables on the
 # same Postgres (applied via `apply_schema`) and never touches the datapath.
 waf-governance = { path = "../waf-governance" }
+# Demo license gate (behind the `demo-license` feature). Zero-core, enterprise-only.
+waf-license = { path = "../waf-license", optional = true }
 # OIDC SSO (§8 v2): Authorization Code + PKCE, discovery + JWKS id_token verification. Uses its own
 # reqwest for the IdP calls (discovery/token/JWKS); the ring provider installed in main covers TLS.
 openidconnect = { version = "3", features = ["reqwest"] }

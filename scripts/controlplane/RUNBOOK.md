@@ -699,6 +699,13 @@ Two Playwright **projects** (token / session), one browser (Chromium):
 - Non-secret test fixtures (`e2e-token`, admin password) live in `playwright.config.ts` — a throwaway DB.
 - Selectors are accessible/text-based (roles, placeholders, panel headings); no production code change.
 
-Follow-on: a GitHub Actions **CI job** (Postgres service + browsers + the two binaries), **OIDC/Keycloak**
-E2E, Firefox/WebKit, visual-regression snapshots, exhaustive per-view interactions, an API-mock lane for
-fast feedback.
+### CI
+
+A GitHub Actions workflow runs this suite on every push/PR touching `enterprise/**`:
+`.github/workflows/e2e.yml`. It brings up a `postgres:16` service, installs Rust + Node 22 +
+the chromium browser, then runs `npm run e2e` (build UI → build the release binary → `playwright test`)
+against `WAF_CP_DATABASE_URL`. Actions sets `CI=true`, so Playwright starts fresh servers, retries once,
+and forbids `.only`; the HTML report is uploaded as an artifact. Cargo and npm caches keep re-runs fast.
+
+Follow-on: **OIDC/Keycloak** E2E, Firefox/WebKit, visual-regression snapshots, exhaustive per-view
+interactions, an API-mock lane for fast feedback.

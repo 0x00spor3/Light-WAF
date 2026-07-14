@@ -98,7 +98,7 @@ function MySessions() {
             {data.map((s) => (
               <tr key={s.id}>
                 <td className="mono">
-                  {s.id.slice(0, 12)}…{s.current && <span className="badge" style={{ ["--c" as string]: "#4f8cff", marginLeft: "0.4rem" }}>current</span>}
+                  {s.id.slice(0, 12)}…{s.current && <span className="badge" style={{ ["--c" as string]: "#2fe0c0", marginLeft: "0.4rem" }}>this session</span>}
                 </td>
                 <td className="muted nowrap">{fmtTime(s.created_at)}</td>
                 <td className="muted nowrap">{fmtTime(s.expires_at)}</td>

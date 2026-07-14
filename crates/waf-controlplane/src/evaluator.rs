@@ -18,6 +18,7 @@ use crate::config::AlertRule;
 use crate::error::Result;
 use crate::model::Alert;
 use crate::store::Store;
+use crate::stream::{EventBus, StreamKind};
 
 /// Pure firing decision: the count reached the threshold AND the `(rule, group)` is out of cooldown.
 /// Kept side-effect-free so it is unit-testable without a database.
@@ -53,6 +54,7 @@ pub async fn run_evaluator(
     rules: Vec<AlertRule>,
     webhook_url: Option<String>,
     interval_secs: u64,
+    bus: EventBus,
 ) {
     if rules.is_empty() {
         info!("alerting: no [[controlplane.alerts]] rules; evaluator idle");
@@ -66,7 +68,7 @@ pub async fn run_evaluator(
     info!(rules = rules.len(), webhook = webhook_url.is_some(), interval_s = interval_secs, "alerting: evaluator started");
     loop {
         ticker.tick().await;
-        evaluate_once(&store, &rules, webhook_url.as_deref(), client.as_ref()).await;
+        evaluate_once(&store, &rules, webhook_url.as_deref(), client.as_ref(), &bus).await;
     }
 }
 
@@ -77,9 +79,10 @@ pub async fn evaluate_once(
     rules: &[AlertRule],
     webhook_url: Option<&str>,
     client: Option<&reqwest::Client>,
+    bus: &EventBus,
 ) {
     for rule in rules {
-        if let Err(e) = evaluate_rule(store, rule, webhook_url, client).await {
+        if let Err(e) = evaluate_rule(store, rule, webhook_url, client, bus).await {
             warn!(rule = %rule.name, error = %e, "alert rule evaluation failed (skipping this cycle)");
         }
     }
@@ -92,6 +95,7 @@ async fn evaluate_rule(
     rule: &AlertRule,
     webhook_url: Option<&str>,
     client: Option<&reqwest::Client>,
+    bus: &EventBus,
 ) -> Result<()> {
     let now = OffsetDateTime::now_utc();
     let since = now - Duration::from_secs(rule.window_seconds);
@@ -114,6 +118,8 @@ async fn evaluate_rule(
         };
         store.insert_alert(&alert).await?;
         warn!(rule = %rule.name, group = %group_key, value = count, threshold = rule.threshold, "ALERT fired");
+        // Push a live notice so connected dashboards refresh the Alerts view immediately.
+        bus.notify(StreamKind::Alerts);
         if let (Some(url), Some(client)) = (webhook_url, client) {
             deliver_webhook(client, url, &alert).await;
         }
@@ -225,12 +231,13 @@ mod tests {
         };
 
         // First cycle: 3 blocks from 7.7.7.7 reach threshold 3 → one alert fires (no webhook).
-        evaluate_rule(&store, &rule, None, None).await.expect("cycle 1");
+        let bus = EventBus::new();
+        evaluate_rule(&store, &rule, None, None, &bus).await.expect("cycle 1");
         let fired = |alerts: Vec<Alert>| alerts.iter().filter(|a| a.rule_name == uniq_name).count();
         assert_eq!(fired(store.recent_alerts(500).await.unwrap()), 1, "one alert on first cycle");
 
         // Second cycle immediately: still over threshold, but cooldown (3600s) blocks a re-fire.
-        evaluate_rule(&store, &rule, None, None).await.expect("cycle 2");
+        evaluate_rule(&store, &rule, None, None, &bus).await.expect("cycle 2");
         assert_eq!(fired(store.recent_alerts(500).await.unwrap()), 1, "cooldown prevents a second fire");
     }
 }

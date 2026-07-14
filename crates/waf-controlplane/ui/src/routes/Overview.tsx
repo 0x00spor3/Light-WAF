@@ -8,7 +8,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   Legend,
   ResponsiveContainer,
   Tooltip,
@@ -17,7 +16,7 @@ import {
 } from "recharts";
 import { api, type SeriesPoint } from "../api";
 import { useApi } from "../hooks/useApi";
-import { Empty, ErrorState, Loading, Panel, StatCard } from "../components/ui";
+import { Empty, ErrorState, LiveIndicator, Loading, Panel, StatCard } from "../components/ui";
 import {
   CHART_AXIS,
   CHART_GRID,
@@ -29,10 +28,12 @@ import {
 } from "../theme";
 
 const TOOLTIP_STYLE = {
-  background: "#12151b",
-  border: "1px solid #2a2f3a",
+  background: "#161a24",
+  border: "1px solid #2e3648",
   borderRadius: "8px",
-  color: "#e6e9ef",
+  color: "#e6eaf2",
+  fontFamily: "var(--font-mono)",
+  fontSize: "0.8rem",
 } as const;
 
 interface RangePreset {
@@ -47,6 +48,10 @@ const RANGES: RangePreset[] = [
   { label: "7d", window: 604800, bucket: 3600 },
 ];
 
+// Volume/latency/cluster tiles come from the Prometheus scraper (default 15s), so polling faster
+// than the scrape cadence would just re-fetch the same snapshot.
+const OVERVIEW_POLL_MS = 15_000;
+
 export function Overview() {
   return (
     <div className="stack">
@@ -60,12 +65,34 @@ export function Overview() {
   );
 }
 
+/// Format a fraction as a percentage; more precision for tiny block rates so "0.04%" stays legible.
+function fmtPct(frac: number): string {
+  if (frac <= 0) return "0%";
+  const digits = frac < 0.01 ? 2 : frac < 0.1 ? 1 : 1;
+  return `${(frac * 100).toFixed(digits)}%`;
+}
+
 function VolumeSection() {
-  const { data, loading, error, reload } = useApi(() => api.decisionsVolume());
-  const total = useMemo(() => (data ?? []).reduce((s, d) => s + d.total, 0), [data]);
+  const { data, loading, error, reload, lastUpdated } = useApi(() => api.decisionsVolume(), [], {
+    pollMs: OVERVIEW_POLL_MS,
+  });
+  const s = useMemo(() => {
+    const rows = data ?? [];
+    const of = (k: string) => rows.find((d) => d.decision.toLowerCase() === k)?.total ?? 0;
+    const allowed = of("allowed") + of("passed");
+    const blocked = of("blocked");
+    const rejected = of("rejected");
+    const denied = blocked + rejected;
+    const total = rows.reduce((sum, d) => sum + d.total, 0);
+    return { allowed, blocked, rejected, denied, total, rate: total ? denied / total : 0 };
+  }, [data]);
 
   return (
-    <Panel title="Decision volumes" subtitle="Latest counter snapshot across the cluster">
+    <Panel
+      title="Decision volumes"
+      subtitle="Latest counter snapshot across the cluster"
+      actions={<LiveIndicator at={lastUpdated} />}
+    >
       {loading ? (
         <Loading />
       ) : error ? (
@@ -75,57 +102,114 @@ function VolumeSection() {
       ) : (
         <>
           <div className="stat-row">
-            <StatCard label="Total requests" value={fmtNum(total)} accent="#4f8cff" />
-            {data.map((d) => (
-              <StatCard
-                key={d.decision}
-                label={d.decision}
-                value={fmtNum(d.total)}
-                accent={decisionColor(d.decision)}
-              />
-            ))}
+            <StatCard label="Total requests" value={fmtNum(s.total)} accent="#2fe0c0" />
+            <StatCard label="Allowed" value={fmtNum(s.allowed)} accent={decisionColor("allowed")} />
+            <StatCard label="Blocked" value={fmtNum(s.blocked)} accent={decisionColor("blocked")} />
+            <StatCard label="Rejected" value={fmtNum(s.rejected)} accent={decisionColor("rejected")} />
+            <StatCard label="Block rate" value={fmtPct(s.rate)} accent="#fb5468" />
           </div>
-          <div className="chart" style={{ height: 240 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-                <CartesianGrid stroke={CHART_GRID} vertical={false} />
-                <XAxis dataKey="decision" stroke={CHART_AXIS} tickLine={false} />
-                <YAxis stroke={CHART_AXIS} tickLine={false} width={48} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: "#ffffff08" }} />
-                <Bar dataKey="total" radius={[6, 6, 0, 0]} isAnimationActive={false}>
-                  {data.map((d) => (
-                    <Cell key={d.decision} fill={decisionColor(d.decision)} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <DispositionBars summary={s} />
         </>
       )}
     </Panel>
   );
 }
 
+/// Two proportion tracks (reusing the Verdict Meter aesthetic). The first shows how all traffic was
+/// disposed — allowed vastly outweighs denied, so denied slivers keep a visible minimum width. The
+/// second normalizes the denied traffic on its own, so the blocked/rejected mix stays readable even
+/// when it's a fraction of a percent of the whole.
+function DispositionBars({
+  summary,
+}: {
+  summary: { allowed: number; blocked: number; rejected: number; denied: number; total: number; rate: number };
+}) {
+  const { allowed, blocked, rejected, denied, total } = summary;
+  const seg = (v: number, color: string, min = 0) =>
+    v <= 0 ? null : { pct: total ? Math.max((v / total) * 100, min) : 0, color };
+
+  const disposition = [
+    seg(allowed, decisionColor("allowed")),
+    seg(blocked, decisionColor("blocked"), 3),
+    seg(rejected, decisionColor("rejected"), 3),
+  ].filter((x): x is { pct: number; color: string } => x !== null);
+
+  return (
+    <div className="stack" style={{ gap: "1.1rem" }}>
+      <div className="meter">
+        <div className="meter-head">
+          <span className="eyebrow">Traffic disposition</span>
+          <span className="meter-flag" style={{ color: decisionColor("blocked") }}>
+            {fmtPct(summary.rate)} denied
+          </span>
+        </div>
+        <div className="meter-track" role="img" aria-label="traffic disposition">
+          {disposition.map((d, i) => (
+            <span key={i} className="meter-seg" style={{ width: `${d.pct}%`, background: d.color }} />
+          ))}
+        </div>
+        <div className="meter-legend">
+          <span>
+            <i style={{ background: decisionColor("allowed") }} />
+            allowed {fmtNum(allowed)}
+          </span>
+          <span>
+            <i style={{ background: decisionColor("blocked") }} />
+            blocked {fmtNum(blocked)}
+          </span>
+          <span>
+            <i style={{ background: decisionColor("rejected") }} />
+            rejected {fmtNum(rejected)}
+          </span>
+        </div>
+      </div>
+
+      {denied > 0 && (
+        <div className="meter">
+          <div className="meter-head">
+            <span className="eyebrow">Denied mix</span>
+            <span className="meter-flag muted">{fmtNum(denied)} denied requests</span>
+          </div>
+          <div className="meter-track" role="img" aria-label="denied mix">
+            <span
+              className="meter-seg"
+              style={{ width: `${(blocked / denied) * 100}%`, background: decisionColor("blocked") }}
+            />
+            <span
+              className="meter-seg"
+              style={{ width: `${(rejected / denied) * 100}%`, background: decisionColor("rejected") }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SeriesSection() {
   const [range, setRange] = useState<RangePreset>(RANGES[1]);
-  const { data, loading, error, reload } = useApi(
+  const { data, loading, error, reload, lastUpdated } = useApi(
     () => api.decisionsSeries(range.window, range.bucket),
     [range.window, range.bucket],
+    { pollMs: OVERVIEW_POLL_MS },
   );
 
   const { rows, decisions } = useMemo(() => pivotSeries(data ?? []), [data]);
 
   const selector = (
-    <div className="segmented">
-      {RANGES.map((r) => (
-        <button
-          key={r.label}
-          className={r.label === range.label ? "seg active" : "seg"}
-          onClick={() => setRange(r)}
-        >
-          {r.label}
-        </button>
-      ))}
+    <div className="actions-group">
+      <LiveIndicator at={lastUpdated} />
+      <div className="segmented">
+        {RANGES.map((r) => (
+          <button
+            key={r.label}
+            className={r.label === range.label ? "seg active" : "seg"}
+            onClick={() => setRange(r)}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 
@@ -174,7 +258,9 @@ function SeriesSection() {
 }
 
 function LatencySection() {
-  const { data, loading, error, reload } = useApi(() => api.latency());
+  const { data, loading, error, reload, lastUpdated } = useApi(() => api.latency(), [], {
+    pollMs: OVERVIEW_POLL_MS,
+  });
 
   const rows = useMemo(
     () => (data ?? []).map((l) => ({ node: l.node, p50: l.p50_ms, p95: l.p95_ms, p99: l.p99_ms })),
@@ -182,7 +268,11 @@ function LatencySection() {
   );
 
   return (
-    <Panel title="Latency by node" subtitle="p50 / p95 / p99 (ms), latest snapshot">
+    <Panel
+      title="Latency by node"
+      subtitle="p50 / p95 / p99 (ms), latest snapshot"
+      actions={<LiveIndicator at={lastUpdated} />}
+    >
       {loading ? (
         <Loading />
       ) : error ? (
@@ -210,10 +300,16 @@ function LatencySection() {
 }
 
 function ClusterSection() {
-  const { data, loading, error, reload } = useApi(() => api.clusterStatus());
+  const { data, loading, error, reload, lastUpdated } = useApi(() => api.clusterStatus(), [], {
+    pollMs: OVERVIEW_POLL_MS,
+  });
 
   return (
-    <Panel title="Cluster status" subtitle="Scraped nodes and last-seen">
+    <Panel
+      title="Cluster status"
+      subtitle="Scraped nodes and last-seen"
+      actions={<LiveIndicator at={lastUpdated} />}
+    >
       {loading ? (
         <Loading />
       ) : error ? (

@@ -133,6 +133,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // the core already uses. `install_default` errors only if one is already set; ignore that.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    // Demo builds gate startup on a signed, time-limited license (no-op otherwise).
+    demo_license::enforce();
+
     // Identical config resolution to the OPEN binary — no duplication.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config_path =
@@ -610,4 +613,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     proxy.run().await
+}
+
+/// Demo-license gate: on a `demo-license` build, verify the license at boot (terminate if invalid or
+/// expired) and spawn a watchdog that stops the process when it later expires. A plain build is a no-op.
+#[cfg(feature = "demo-license")]
+mod demo_license {
+    pub fn enforce() {
+        waf_license::enforce_boot();
+        tokio::spawn(waf_license::watchdog(std::time::Duration::from_secs(900)));
+    }
+}
+#[cfg(not(feature = "demo-license"))]
+mod demo_license {
+    pub fn enforce() {}
 }

@@ -9,13 +9,18 @@
 
 use std::sync::Arc;
 
+use std::convert::Infallible;
+
 use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{from_fn_with_state, Next};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::{Stream, StreamExt};
 
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -46,6 +51,9 @@ pub struct AppState {
     /// When `Some`, the SIEM forwarder (§9) is enabled: `(config, live status handle)` for
     /// `GET /api/siem/status`. `None` when SIEM export is off.
     pub siem: Option<(crate::config::SiemConfig, crate::siem_forward::SiemStatusHandle)>,
+    /// Live change notifications for the dashboard (SSE `GET /api/stream`): the ingest handler and
+    /// the evaluator publish here so connected browsers refresh without polling.
+    pub bus: crate::stream::EventBus,
 }
 
 /// The read-observability API routes (no auth layer attached). Shared by the plain-bearer path and,
@@ -61,6 +69,7 @@ pub(crate) fn read_api() -> Router<Arc<AppState>> {
         .route("/api/alerts", get(list_alerts))
         .route("/api/alerts/rules", get(alert_rules))
         .route("/api/siem/status", get(siem_status))
+        .route("/api/stream", get(event_stream))
 }
 
 /// Build the router. `/healthz` + `/api/version` (+ the static UI, if `ui_dir` is set) are public.
@@ -199,7 +208,13 @@ async fn ingest_events(
 ) -> (StatusCode, String) {
     let node = q.node.unwrap_or_else(|| "unknown".to_string());
     match state.ingestor.ingest_ndjson(&node, &body).await {
-        Ok(n) => (StatusCode::OK, format!("stored {n}")),
+        Ok(n) => {
+            // Nudge any connected dashboards to refresh (notify-then-pull) — only if rows landed.
+            if n > 0 {
+                state.bus.notify(crate::stream::StreamKind::Events);
+            }
+            (StatusCode::OK, format!("stored {n}"))
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -378,6 +393,21 @@ async fn list_alerts(State(s): State<Arc<AppState>>, Query(q): Query<AlertQuery>
 /// The configured alert rules (so an operator can see what is active).
 async fn alert_rules(State(s): State<Arc<AppState>>) -> Response {
     Json(s.alert_rules.clone()).into_response()
+}
+
+/// Live change stream (SSE). Emits one event per change notice (`event: events` / `event: alerts`),
+/// so a connected dashboard re-fetches the affected view the moment it changes — no polling latency.
+/// Gated by the same auth as the rest of the read API (this route is mounted inside it). A lagged
+/// client silently drops notices (its periodic poll resyncs); keep-alive comments hold the
+/// connection open through idle periods and proxies.
+async fn event_stream(
+    State(s): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let stream = BroadcastStream::new(s.bus.subscribe()).filter_map(|res| match res {
+        Ok(kind) => Some(Ok(SseEvent::default().event(kind.as_str()).data("1"))),
+        Err(_lagged) => None,
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 #[derive(Serialize)]

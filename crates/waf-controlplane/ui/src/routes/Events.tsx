@@ -5,7 +5,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks/useApi";
-import { DecisionBadge, Empty, ErrorState, Loading, Panel } from "../components/ui";
+import { useLiveStream } from "../hooks/useLiveStream";
+import { DecisionBadge, Empty, ErrorState, LiveIndicator, Loading, Panel } from "../components/ui";
 import { fmtTime } from "../theme";
 
 interface Filters {
@@ -23,7 +24,7 @@ export function Events() {
   const [draft, setDraft] = useState<Filters>(EMPTY);
   const navigate = useNavigate();
 
-  const { data, loading, error, reload } = useApi(
+  const { data, loading, error, reload, refresh, lastUpdated } = useApi(
     () =>
       api.events({
         rule_id: applied.rule_id || undefined,
@@ -32,7 +33,13 @@ export function Events() {
         limit: applied.limit,
       }),
     [applied.rule_id, applied.decision, applied.client_ip, applied.limit],
+    // SSE (below) refreshes the instant new events are ingested; this slow poll is just a fallback
+    // in case the stream is blocked (e.g. a buffering proxy).
+    { pollMs: 20_000 },
   );
+
+  // Live: refresh the moment the control plane ingests new decision events.
+  useLiveStream("events", refresh);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -76,8 +83,15 @@ export function Events() {
     </form>
   );
 
+  const actions = (
+    <div className="actions-group">
+      <LiveIndicator at={lastUpdated} />
+      {form}
+    </div>
+  );
+
   return (
-    <Panel title="Denied requests" subtitle="Search blocked / rejected events, newest first" actions={form}>
+    <Panel title="Denied requests" subtitle="Search blocked / rejected events, newest first" actions={actions}>
       {loading ? (
         <Loading />
       ) : error ? (
