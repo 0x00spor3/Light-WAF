@@ -42,6 +42,19 @@ export function severityColor(severity: string | null | undefined): string {
 /// Latency quantile palette (p50/p95/p99) — cool signal → hot, as pressure rises.
 export const LATENCY_COLORS = ["#2fe0c0", "#ff9d42", "#fb5468"];
 
+/// Color for an API-inventory classification (§4-B pt3 discovery): shadow (undeclared surface being
+/// hit) → alarm red; documented (declared endpoint drawing blocks) → teal; unclassified → muted.
+export function classificationColor(classification: string): string {
+  switch (classification.toLowerCase()) {
+    case "shadow":
+      return "#fb5468";
+    case "documented":
+      return "#2fe0c0";
+    default:
+      return "#5a6377";
+  }
+}
+
 /// Color for a lifecycle / apply status: healthy (active, applied, current) → allowed green;
 /// soft-negative (rejected, pending) → amber; hard-negative (error, disabled, revoked) → blocked red.
 export function statusColor(status: string): string {

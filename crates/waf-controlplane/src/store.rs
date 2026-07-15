@@ -44,6 +44,17 @@ struct EventRow {
     contributions: Json<Vec<Contribution>>,
 }
 
+/// Row shape for the API-inventory aggregation (`api_inventory`): one observed `(method, path)` with
+/// its hit count and first/last-seen.
+#[derive(sqlx::FromRow)]
+struct InventoryRow {
+    method: String,
+    path: String,
+    hits: i64,
+    first_seen: OffsetDateTime,
+    last_seen: OffsetDateTime,
+}
+
 impl From<EventRow> for DecisionEvent {
     fn from(r: EventRow) -> Self {
         DecisionEvent {
@@ -177,6 +188,35 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Aggregate the denied events into an API attack-surface inventory (§4-B pt3 discovery): one row
+    /// per observed `(method, raw path)` with a hit count and first/last-seen. Path-templating and
+    /// classification against the spec happen in [`crate::inventory`] (SQL cannot collapse per-id
+    /// paths). `decision_events` holds only denied requests, so this is the attack surface, not all
+    /// traffic. `limit` caps the DISTINCT raw paths aggregated.
+    pub async fn api_inventory(&self, limit: i64) -> Result<Vec<crate::inventory::ObservedPath>> {
+        let rows: Vec<InventoryRow> = sqlx::query_as::<_, InventoryRow>(
+            "SELECT method, path, COUNT(*)::bigint AS hits, MIN(ts) AS first_seen, MAX(ts) AS last_seen \
+             FROM decision_events \
+             WHERE path IS NOT NULL AND method IS NOT NULL \
+             GROUP BY method, path \
+             ORDER BY hits DESC, path ASC \
+             LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| crate::inventory::ObservedPath {
+                method: r.method,
+                path: r.path,
+                hits: r.hits,
+                first_seen: r.first_seen,
+                last_seen: r.last_seen,
+            })
+            .collect())
     }
 
     /// Denied-event counts bucketed in time since `since`, per `bucket_seconds` and decision (for
@@ -807,6 +847,57 @@ mod tests {
             .await
             .expect("rollup");
         assert_eq!(store.prune_older_than_days(0).await.expect("prune noop"), 0);
+    }
+
+    #[tokio::test]
+    async fn api_inventory_env_gated() {
+        let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+            eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+            return;
+        };
+        let store = Store::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+
+        // A unique, non-numeric prefix so our rows don't collide with other tests' events and are
+        // not themselves collapsed by templating.
+        let nonce = format!("inv{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        let prefix = format!("/api/{nonce}");
+        let mk = |rid: &str, path: &str| {
+            let mut ev = sample_event(rid);
+            ev.path = Some(path.to_string());
+            ev
+        };
+        // Two per-id paths (must fold) + one shadow endpoint, all denied (blocked).
+        store.insert_decision_event(&mk(&format!("{nonce}-a"), &format!("{prefix}/users/5"))).await.unwrap();
+        store.insert_decision_event(&mk(&format!("{nonce}-b"), &format!("{prefix}/users/6"))).await.unwrap();
+        store.insert_decision_event(&mk(&format!("{nonce}-c"), &format!("{prefix}/secrets"))).await.unwrap();
+
+        let observed = store.api_inventory(50_000).await.expect("inventory");
+
+        // Classify against a spec declaring ONLY `<prefix>/users/{id}` (GET).
+        let mut paths = serde_json::Map::new();
+        paths.insert(format!("{prefix}/users/{{id}}"), serde_json::json!({ "get": {} }));
+        let spec = serde_json::json!({
+            "openapi": "3.0.3",
+            "info": { "title": "t", "version": "1" },
+            "paths": paths,
+        })
+        .to_string();
+        let routes = crate::inventory::SpecRoutes::from_spec_json(&spec).unwrap();
+        let inv = crate::inventory::build_inventory(observed, Some(&routes));
+
+        let users = inv
+            .iter()
+            .find(|e| e.path == format!("{prefix}/users/{{}}"))
+            .expect("the two per-id paths fold into one templated endpoint");
+        assert_eq!(users.hits, 2, "GET /users/5 and /users/6 fold and their hits sum");
+        assert_eq!(users.classification, crate::inventory::Classification::Documented);
+
+        let secrets = inv
+            .iter()
+            .find(|e| e.path == format!("{prefix}/secrets"))
+            .expect("undeclared endpoint present");
+        assert_eq!(secrets.classification, crate::inventory::Classification::Shadow);
     }
 
     #[tokio::test]

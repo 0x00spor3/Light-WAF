@@ -370,6 +370,19 @@ export interface VerifyResult {
 
 // ── Endpoints ─────────────────────────────────────────────────────────────────────────────────
 
+/** How an observed endpoint relates to the app's declared OpenAPI contract (§4-B pt3 discovery). */
+export type ApiClassification = "documented" | "shadow" | "unclassified";
+
+/** One inventoried endpoint (templated) from the API attack-surface inventory. */
+export interface ApiEndpoint {
+  method: string;
+  path: string;
+  classification: ApiClassification;
+  hits: number;
+  first_seen: string;
+  last_seen: string;
+}
+
 export const UI_VERSION = __APP_VERSION__;
 
 export const api = {
@@ -400,6 +413,10 @@ export const api = {
     apiFetch<DecisionEvent>(`/api/events/${encodeURIComponent(requestId)}`),
   alerts: (limit = 100) => apiFetch<Alert[]>(`/api/alerts?limit=${limit}`),
   alertRules: () => apiFetch<AlertRule[]>("/api/alerts/rules"),
+
+  // ── API attack-surface inventory (§4-B pt3 discovery) ──
+  inventory: () => apiFetch<ApiEndpoint[]>("/api/inventory"),
+  inventoryDrift: () => apiFetch<ApiEndpoint[]>("/api/inventory/drift"),
 
   // ── Rule management (§7 write-path) ──
   ruleVersions: () => apiFetch<RuleVersionMeta[]>("/api/rules/versions"),

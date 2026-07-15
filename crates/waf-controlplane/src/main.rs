@@ -86,6 +86,28 @@ async fn run() -> waf_controlplane::Result<()> {
         None
     };
 
+    // API-inventory classification spec (§4-B pt3 discovery). Optional; a missing/invalid spec is
+    // NOT fatal (the control plane is off-path) — the inventory is just served unclassified.
+    let api_routes = match config.api_inventory.spec_path.as_deref() {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(json) => match waf_controlplane::inventory::SpecRoutes::from_spec_json(&json) {
+                Some(r) => {
+                    info!(spec = %path, "loaded OpenAPI spec for API-inventory classification");
+                    Some(r)
+                }
+                None => {
+                    warn!(spec = %path, "api_inventory spec is not valid JSON — inventory served unclassified");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(spec = %path, error = %e, "cannot read api_inventory spec — inventory served unclassified");
+                None
+            }
+        },
+        None => None,
+    };
+
     // HTTP surface.
     if config.api_token.is_none() {
         warn!("no [controlplane].api_token (nor WAF_CP_API_TOKEN) — the ingest endpoint is UNAUTHENTICATED (dev only)");
@@ -99,6 +121,7 @@ async fn run() -> waf_controlplane::Result<()> {
         governance,
         siem,
         bus,
+        api_routes,
     });
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
     info!(listen = %config.listen, nodes = config.nodes.len(), "control plane HTTP listening (ingest + health)");

@@ -2,3 +2,7 @@
 [controlplane]
 listen = "127.0.0.1:9701"
 retention_days = 30
+
+# API attack-surface inventory (§4-B pt3 discovery). Path is relative to the webServer cwd (ui/).
+[controlplane.api_inventory]
+spec_path = "tests/e2e/openapi.json"

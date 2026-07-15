@@ -97,12 +97,17 @@ enabled = true
 enabled = true
 listen  = "0.0.0.0:9090"   # scrape GET http://127.0.0.1:9090/metrics
 
-[rate_limit]
-enabled          = true
-key              = "client_ip"
-requests         = 100        # token per finestra
-window_seconds   = 60
-burst            = 100        # capacità bucket (default = requests)
-action           = "block"    # "block" -> 429 | "score" -> contributo allo score
-score            = 5          # punti se action = "score"
-max_tracked_keys = 100000     # cap memoria; sweep evince i bucket idle
+#[rate_limit]
+#enabled          = true
+#key              = "client_ip"
+#requests         = 100        # token per finestra
+#window_seconds   = 60
+#burst            = 100        # capacità bucket (default = requests)
+#action           = "block"    # "block" -> 429 | "score" -> contributo allo score
+#score            = 5          # punti se action = "score"
+#max_tracked_keys = 100000     # cap memoria; sweep evince i bucket idle
+
+[enterprise.api_schema]
+enabled   = true
+spec_path = "/etc/waf/openapi.json"
+violation_severity = "critical"

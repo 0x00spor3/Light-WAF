@@ -76,6 +76,7 @@ export function Layout() {
             </NavLink>
             <NavLink to="/events">Events</NavLink>
             <NavLink to="/alerts">Alerts</NavLink>
+            <NavLink to="/inventory">API Inventory</NavLink>
           </div>
 
           {canRules && (

@@ -26,10 +26,15 @@ use apollo_compiler::{ExecutableDocument, Schema};
 use waf_core::{Config, Decision, ParsedBody, Phase, RequestContext, ScoreItem, Severity, WafModule};
 use waf_normalizer::graphql::unwrap_query_envelope;
 
+pub mod api_schema;
 pub mod bot;
 pub mod grpc;
 pub mod rules;
 
+pub use api_schema::{
+    load_spec, normalize_schema_3_0, parse_spec, ApiSchemaEnforcementConfig, ApiSchemaModule,
+    CompiledSpec, LoadedSpec, RequestParts, Resolution, Router, Violation,
+};
 pub use bot::{BotDetectionConfig, BotDetectionModule};
 pub use grpc::{GrpcSchemaEnforcementConfig, GrpcSchemaModule};
 

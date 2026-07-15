@@ -81,7 +81,10 @@ function VolumeSection() {
     const of = (k: string) => rows.find((d) => d.decision.toLowerCase() === k)?.total ?? 0;
     const allowed = of("allowed") + of("passed");
     const blocked = of("blocked");
-    const rejected = of("rejected");
+    // The Prometheus counters classify a rejection by its HTTP disposition (`rate_limited` = 429,
+    // `bad_request` = 400), whereas the decision-log calls both "rejected". Fold those metric
+    // categories together so this tile matches the Events view (and never shows a phantom 0).
+    const rejected = of("rejected") + of("rate_limited") + of("bad_request");
     const denied = blocked + rejected;
     const total = rows.reduce((sum, d) => sum + d.total, 0);
     return { allowed, blocked, rejected, denied, total, rate: total ? denied / total : 0 };

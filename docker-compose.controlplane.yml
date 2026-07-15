@@ -82,6 +82,7 @@ services:
       WAF_CP_OIDC_CLIENT_SECRET: ${WAF_CP_OIDC_CLIENT_SECRET:-waf-cp-secret}
     volumes:
       - ./controlplane.compose.toml:/etc/waf/controlplane.toml:ro
+      - ./scripts/api-schema-enforcement/openapi.json:/etc/waf/openapi.json
     ports:
       - "9600:9600"
     restart: unless-stopped

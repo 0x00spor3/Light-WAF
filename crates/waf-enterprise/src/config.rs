@@ -17,7 +17,10 @@ use std::time::Duration;
 use serde::Deserialize;
 use waf_core::Severity;
 use waf_marketplace::WasmOptions;
-use waf_modules_premium::{BotDetectionConfig, GrpcSchemaEnforcementConfig, SchemaEnforcementConfig};
+use waf_modules_premium::{
+    ApiSchemaEnforcementConfig, BotDetectionConfig, GrpcSchemaEnforcementConfig,
+    SchemaEnforcementConfig,
+};
 use waf_state_redis::Reputation;
 use waf_threatintel::FeedConfig;
 use waf_tls_managed::acme_dns01::Dns01Config;
@@ -174,6 +177,8 @@ pub struct EnterpriseConfig {
     pub schema_enforcement: SchemaEnforcementSection,
     /// `[enterprise.grpc_schema_enforcement]` — gRPC schema-enforcement module (§4-B part 2).
     pub grpc_schema_enforcement: GrpcSchemaEnforcementSection,
+    /// `[enterprise.api_schema]` — OpenAPI positive-security module (§4-B part 3).
+    pub api_schema: ApiSchemaEnforcementSection,
     /// `[enterprise.bot_detection]` — client-integrity / bot detection module (§4-A).
     pub bot_detection: BotDetectionSection,
     /// `[enterprise.wasm]` — signed WASM plugin loader (§4-C).
@@ -190,6 +195,7 @@ impl Default for EnterpriseConfig {
             crs_curated: CrsCuratedSection::default(),
             schema_enforcement: SchemaEnforcementSection::default(),
             grpc_schema_enforcement: GrpcSchemaEnforcementSection::default(),
+            api_schema: ApiSchemaEnforcementSection::default(),
             bot_detection: BotDetectionSection::default(),
             wasm: WasmSection::default(),
         }
@@ -375,6 +381,61 @@ impl SchemaEnforcementSection {
             schema_path: PathBuf::from(&self.schema_path),
             parse_error_severity: parse_severity(&self.parse_error_severity)?,
             unknown_field_severity: parse_severity(&self.unknown_field_severity)?,
+        })
+    }
+}
+
+/// `[enterprise.api_schema]` — OpenAPI **positive-security** (§4-B part 3). Validates each REST/JSON
+/// request under a guarded path prefix against the app's REAL OpenAPI spec (a JSON file — v1 is
+/// JSON-only). Default OFF. No Redis (pure detection). Contributes to the same cumulative anomaly
+/// score. An unknown route/method scores `unknown_route_severity`; a contract violation (param/body
+/// shape) scores the lower `violation_severity`. `spec_path` is required when enabled (boot-fatal if
+/// missing/invalid/uncompilable).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ApiSchemaEnforcementSection {
+    pub enabled: bool,
+    /// Path to the app's OpenAPI 3.0/3.1 spec (JSON; loaded once at boot, no hot-reload in v1).
+    pub spec_path: String,
+    /// Path prefixes this module guards. A request outside them is left alone (non-API surfaces).
+    pub paths: Vec<String>,
+    /// Severity for a request to an endpoint/method the spec does not declare (targeted probing).
+    pub unknown_route_severity: String,
+    /// Severity for a request to a KNOWN operation that violates its contract (param/body shape).
+    pub violation_severity: String,
+    /// Flag query parameters not declared for the operation.
+    pub strict_params: bool,
+    /// Enforce `additionalProperties:false` on the request body even where the spec is silent.
+    pub strict_body: bool,
+}
+
+impl Default for ApiSchemaEnforcementSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            spec_path: String::new(),
+            paths: vec!["/api".to_string()],
+            unknown_route_severity: "critical".to_string(),
+            violation_severity: "warning".to_string(),
+            strict_params: true,
+            strict_body: true,
+        }
+    }
+}
+
+impl ApiSchemaEnforcementSection {
+    /// Build the module's [`ApiSchemaEnforcementConfig`], parsing the severities (rejecting unknown
+    /// names). The spec file itself is read + compiled later by `ApiSchemaModule::from_config`
+    /// (boot-fatal).
+    pub fn to_config(&self) -> Result<ApiSchemaEnforcementConfig, String> {
+        Ok(ApiSchemaEnforcementConfig {
+            enabled: self.enabled,
+            paths: self.paths.clone(),
+            spec_path: PathBuf::from(&self.spec_path),
+            unknown_route_severity: parse_severity(&self.unknown_route_severity)?,
+            violation_severity: parse_severity(&self.violation_severity)?,
+            strict_params: self.strict_params,
+            strict_body: self.strict_body,
         })
     }
 }
@@ -790,6 +851,66 @@ unknown_field_severity = "nope"
 "#;
         let f = EnterpriseFile::from_toml_str(toml).expect("parses");
         assert!(f.enterprise.schema_enforcement.to_config().is_err());
+    }
+
+    #[test]
+    fn reads_api_schema_section_and_builds_config() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.api_schema]
+enabled = true
+spec_path = "/etc/waf/openapi.json"
+paths = ["/api", "/v2"]
+unknown_route_severity = "error"
+violation_severity = "notice"
+strict_params = false
+strict_body = false
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        let api = &f.enterprise.api_schema;
+        assert!(api.enabled);
+        let cfg = api.to_config().unwrap();
+        assert_eq!(cfg.spec_path, PathBuf::from("/etc/waf/openapi.json"));
+        assert_eq!(cfg.paths, vec!["/api".to_string(), "/v2".to_string()]);
+        assert_eq!(cfg.unknown_route_severity, Severity::Error);
+        assert_eq!(cfg.violation_severity, Severity::Notice);
+        assert!(!cfg.strict_params);
+        assert!(!cfg.strict_body);
+    }
+
+    #[test]
+    fn api_schema_defaults_off_with_api_prefix_and_critical_warning() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        let api = &f.enterprise.api_schema;
+        assert!(!api.enabled, "api-schema default OFF");
+        let cfg = api.to_config().unwrap();
+        assert_eq!(cfg.paths, vec!["/api".to_string()]);
+        assert_eq!(cfg.unknown_route_severity, Severity::Critical);
+        assert_eq!(cfg.violation_severity, Severity::Warning);
+        assert!(cfg.strict_params && cfg.strict_body);
+    }
+
+    #[test]
+    fn api_schema_unknown_severity_is_rejected() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.api_schema]
+enabled = true
+violation_severity = "nope"
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert!(f.enterprise.api_schema.to_config().is_err());
     }
 
     #[test]

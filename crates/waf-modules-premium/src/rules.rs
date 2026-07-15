@@ -23,6 +23,8 @@ pub enum Namespace {
     GrpcSchema,
     /// Client-integrity / bot detection (§4-A): `bot-*`.
     Bot,
+    /// OpenAPI positive-security / API schema-enforcement (§4-B pt3): `schema-api-*`.
+    ApiSchema,
 }
 
 impl Namespace {
@@ -32,6 +34,7 @@ impl Namespace {
             Namespace::GraphqlSchema => "schema-graphql",
             Namespace::GrpcSchema => "schema-grpc",
             Namespace::Bot => "bot",
+            Namespace::ApiSchema => "schema-api",
         }
     }
 }
@@ -90,6 +93,28 @@ pub const GRPC_UNKNOWN_FIELD: Rule = Rule::new(Namespace::GrpcSchema, "unknown-f
 /// always sends → a client impersonating a browser (Critical).
 pub const BOT_BROWSER_IMPERSONATION: Rule = Rule::new(Namespace::Bot, "browser-impersonation");
 
+// §4-B pt3 API Security (OpenAPI positive-security). Two severity tiers (like GraphQL parse-error vs
+// unknown-field): a request against an endpoint/method the spec doesn't declare (targeted probing —
+// the strong signal) vs a request to a known operation that violates its contract (a param/body
+// shape mismatch — a real client rarely emits these, but schema drift can, so it stays tunable).
+
+/// The request path matches no operation in the app's OpenAPI spec (Critical — targeted probing).
+pub const API_UNKNOWN_ROUTE: Rule = Rule::new(Namespace::ApiSchema, "unknown-route");
+/// The path is declared but not for this HTTP method (Critical — targeted probing).
+pub const API_METHOD_NOT_ALLOWED: Rule = Rule::new(Namespace::ApiSchema, "method-not-allowed");
+/// A query/header parameter not declared for the operation (`strict_params`; contract violation).
+pub const API_UNKNOWN_PARAM: Rule = Rule::new(Namespace::ApiSchema, "unknown-param");
+/// A parameter/body property the operation marks `required` is absent (contract violation).
+pub const API_MISSING_REQUIRED: Rule = Rule::new(Namespace::ApiSchema, "missing-required");
+/// A parameter/body value fails its schema (type/format/enum/range) (contract violation).
+pub const API_TYPE_VIOLATION: Rule = Rule::new(Namespace::ApiSchema, "type-violation");
+/// A body property not in the schema while `additionalProperties:false` (contract violation).
+pub const API_UNKNOWN_PROPERTY: Rule = Rule::new(Namespace::ApiSchema, "unknown-property");
+/// The request Content-Type is not one the operation declares (contract violation).
+pub const API_CONTENT_TYPE: Rule = Rule::new(Namespace::ApiSchema, "content-type");
+/// The body is declared JSON but does not parse (parse-error analog).
+pub const API_BODY_PARSE_ERROR: Rule = Rule::new(Namespace::ApiSchema, "body-parse-error");
+
 /// Every premium rule the crate can emit. Adding a rule = add it here (the uniqueness gate then
 /// covers it). Consumed by the anti-double-count / coverage test.
 pub const ALL: &[Rule] = &[
@@ -99,6 +124,14 @@ pub const ALL: &[Rule] = &[
     GRPC_DECODE_ERROR,
     GRPC_UNKNOWN_FIELD,
     BOT_BROWSER_IMPERSONATION,
+    API_UNKNOWN_ROUTE,
+    API_METHOD_NOT_ALLOWED,
+    API_UNKNOWN_PARAM,
+    API_MISSING_REQUIRED,
+    API_TYPE_VIOLATION,
+    API_UNKNOWN_PROPERTY,
+    API_CONTENT_TYPE,
+    API_BODY_PARSE_ERROR,
 ];
 
 #[cfg(test)]
@@ -130,5 +163,13 @@ mod tests {
         assert_eq!(GRPC_DECODE_ERROR.id(), "schema-grpc-decode-error");
         assert_eq!(GRPC_UNKNOWN_FIELD.id(), "schema-grpc-unknown-field");
         assert_eq!(BOT_BROWSER_IMPERSONATION.id(), "bot-browser-impersonation");
+        assert_eq!(API_UNKNOWN_ROUTE.id(), "schema-api-unknown-route");
+        assert_eq!(API_METHOD_NOT_ALLOWED.id(), "schema-api-method-not-allowed");
+        assert_eq!(API_UNKNOWN_PARAM.id(), "schema-api-unknown-param");
+        assert_eq!(API_MISSING_REQUIRED.id(), "schema-api-missing-required");
+        assert_eq!(API_TYPE_VIOLATION.id(), "schema-api-type-violation");
+        assert_eq!(API_UNKNOWN_PROPERTY.id(), "schema-api-unknown-property");
+        assert_eq!(API_CONTENT_TYPE.id(), "schema-api-content-type");
+        assert_eq!(API_BODY_PARSE_ERROR.id(), "schema-api-body-parse-error");
     }
 }

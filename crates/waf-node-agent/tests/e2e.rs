@@ -115,6 +115,7 @@ async fn rule_publish_reaches_waf_via_agent_env_gated() {
         governance: None,
         siem: None,
         bus: waf_controlplane::EventBus::new(),
+        api_routes: None,
     });
     let cp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cp_addr = cp_listener.local_addr().unwrap();

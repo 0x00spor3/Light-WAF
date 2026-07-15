@@ -28,8 +28,8 @@ use waf_tls_managed::{acme, acme_dns01, mtls, ManagedTlsCertSource};
 use waf_detection::crs::CrsModule;
 use waf_marketplace::{load_verified_plugin, WasmOptions};
 use waf_modules_premium::{
-    BotDetectionConfig, BotDetectionModule, GraphqlSchemaModule, GrpcSchemaEnforcementConfig,
-    GrpcSchemaModule, SchemaEnforcementConfig,
+    ApiSchemaEnforcementConfig, ApiSchemaModule, BotDetectionConfig, BotDetectionModule,
+    GraphqlSchemaModule, GrpcSchemaEnforcementConfig, GrpcSchemaModule, SchemaEnforcementConfig,
 };
 use waf_threatintel::{
     start_reputation_feed, FileFeed, HttpListFeed, ReputationConfig, ReputationFeed,
@@ -210,6 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut crs_curated_on = false;
     let mut se_cfg: Option<SchemaEnforcementConfig> = None;
     let mut ge_cfg: Option<GrpcSchemaEnforcementConfig> = None;
+    let mut api_cfg: Option<ApiSchemaEnforcementConfig> = None;
     let mut bd_cfg: Option<BotDetectionConfig> = None;
     let mut wasm_spec: Option<WasmFactorySpec> = None;
 
@@ -391,6 +392,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ge_cfg = Some(cfg);
     }
 
+    // ── Seam 3: premium detection modules — OpenAPI positive-security (§4-B part 3).
+    // Validates each REST/JSON request under a guarded path prefix against the app's REAL OpenAPI
+    // spec. Same posture as the GraphQL/gRPC modules: governance of the contract, additive
+    // `Decision::Scores`, zero core (value-injection stays in the OPEN §6 channel).
+    if ent.api_schema.enabled {
+        let cfg = match ent.api_schema.to_config() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("waf-enterprise: {e}");
+                std::process::exit(2);
+            }
+        };
+        info!(
+            spec = %cfg.spec_path.display(),
+            paths = ?cfg.paths,
+            "wiring OpenAPI positive-security module (§4-B part 3)"
+        );
+        // The spec is loaded + compiled (and re-compiled on reload) inside the module factory via the
+        // SAME `load_spec` + `CompiledSpec::compile`: boot-fatal on a missing/invalid/uncompilable
+        // spec; a reload that goes invalid aborts and keeps the last-good module (whole-set fallibility).
+        api_cfg = Some(cfg);
+    }
+
     // ── Seam 3: premium detection modules — client-integrity / bot detection (§4-A).
     // Native cross-header heuristics (browser impersonation). Additive `Decision::Scores`, zero core.
     if ent.bot_detection.enabled {
@@ -537,6 +561,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         || crs_curated_on
         || se_cfg.is_some()
         || ge_cfg.is_some()
+        || api_cfg.is_some()
         || bd_cfg.is_some()
         || wasm_spec.is_some();
     if has_factory_modules {
@@ -556,6 +581,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if let Some(cfg) = &ge_cfg {
                 let m = GrpcSchemaModule::from_config(cfg)
                     .map_err(|e| format!("gRPC schema-enforcement: {e}"))?;
+                mods.push(Box::new(m));
+            }
+            if let Some(cfg) = &api_cfg {
+                let m = ApiSchemaModule::from_config(cfg)
+                    .map_err(|e| format!("API schema-enforcement: {e}"))?;
                 mods.push(Box::new(m));
             }
             if let Some(cfg) = &bd_cfg {
@@ -587,8 +617,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // survive the validate-then-swap: the *seams* (`state_store` via the shared rate-limit state,
     // `cert_source` on the immutable acceptor) as before, AND the injected *modules* — the core-0.3
     // `.module_factory` re-runs the closure above on every reload (in place of the old `Vec::new()`),
-    // so reputation / curated CRS / schema-enforcement / bot / signed-WASM are rebuilt and re-`init`'d
-    // (e.g. a changed GraphQL SDL is reloaded). A rebuild that fails aborts that reload, last-good kept.
+    // so reputation / curated CRS / schema-enforcement (GraphQL/gRPC/OpenAPI) / bot / signed-WASM are
+    // rebuilt and re-`init`'d (e.g. a changed GraphQL SDL or OpenAPI spec is reloaded). A rebuild that
+    // fails aborts that reload, last-good kept.
     #[cfg(unix)]
     {
         let reloader = proxy.reloader();

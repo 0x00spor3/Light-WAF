@@ -219,6 +219,24 @@ pub enum Reputation { Unknown, Suspicious, Malicious }
   - **Config** `[enterprise.grpc_schema_enforcement]` (default off; `descriptor_path` obbligatorio se enabled →
     **boot-fatal** su descrittore mancante/invalido). `load_descriptors(path)` puro reload-ready (come GraphQL, G5).
   - **Solo unary** in v1 (streaming, grpc-web, validazione risposte, input `.proto`-via-protox = follow-on).
+- **API positive-security OpenAPI** (`waf-modules-premium`, `api_schema.rs`) — **IMPLEMENTATO (2026-07-15)**: valida
+  ogni richiesta REST/JSON sotto un prefisso guardato contro la **spec OpenAPI reale** dell'app (file JSON; v1
+  JSON-only) — è **gestione del contratto = positive security**, non baseline detection. `Phase::Body`,
+  `structural()`, `Decision::Scores` additivo, zero core. Namespace `rule_id` `schema-api-*` (registry strutturale).
+  - **Estrazione mirror-OPEN**: routing/gating su `ctx.normalized.path` (decoded + traversal-resolved →
+    **evasion-resistant**), query/header da `normalized` (lowercased), body JSON da `ctx.body` grezzo.
+  - **Router path** (statico > templato `/users/{id}`, most-specific-first) → `unknown-route`/`method-not-allowed`
+    (Critical, `unknown_route_severity`); operazione nota → validazione param (path/query/header con coercion
+    stringa→scalar) + `requestBody` via **`jsonschema`** (crate maturo, no hand-roll) → `unknown-param`/
+    `missing-required`/`type-violation`/`unknown-property`/`content-type`/`body-parse-error` (Warning,
+    `violation_severity`); dedup per-kind.
+  - **Confine**: injection value-level (SQLi/XSS nel *valore* di un param) resta OPEN §6; i cap DoS/body strutturali
+    OPEN girano PRIMA. **Librerie** (A0): `oas3` (parse 3.0+3.1), `jsonschema` `default-features=false` (NO
+    retriever HTTP — un WAF non fa fetch di schemi remoti); **normalizzazione 3.0→JSON-Schema al load** (il
+    `nullable` 3.0 sarebbe un falso positivo). `from_config`/`CompiledSpec::compile` **boot-fatal** su spec
+    mancante/invalida/non-compilabile; precompilazione per-operazione. Config `[enterprise.api_schema]` (default off).
+  - **Monitor-first naturale** (additivo → non blocca da solo sotto soglia; evita il muro-FP del positive-model
+    ModSecurity). Follow-on: BOLA/BFLA comportamentale, sensitive-data lato risposta, YAML pure-Rust, spec via §7.
 - **IP-reputation module** (consuma §3): `Phase::Connection`, legge `StateStore::reputation`.
 
 ### Marketplace / signing dei plugin WASM (`BOUNDARY.md` §1.7, §2.4)
@@ -462,6 +480,28 @@ architetturale. Uno **shipper per nodo** (o uno centrale che legge i log di tutt
 > **Vincolo cardinalità** ereditato dal core: MAI label da input utente su
 > `requests_total`. Breakdown per-regola/IP/path = metriche separate con cap, materializzate
 > nello store del control plane, non labels sul path caldo.
+
+### 7.3 API attack-surface inventory (discovery §4-B pt3) — **IMPLEMENTATO (2026-07-15)**
+
+Il control plane costruisce un **inventario della superficie d'attacco API** dagli enforcement decision
+già persistiti (`inventory.rs`, `GET /api/inventory` + `/api/inventory/drift`, vista UI "API Inventory").
+**Realtà dei dati (decisiva):** `decision_events` contiene **solo richieste denied** (blocked/rejected — il
+traffico benigno scade dal buffer di correlazione, mai memorizzato) → è la **superficie d'attacco vista**, NON
+un inventario all-traffic. Aggregazione **on-demand** su `decision_events` (niente tabella/aggregatore
+dedicati): `GROUP BY (method, path)` con hit/first/last, poi in Rust **templating** (segmenti numerici/UUID/
+hex-lunghi → `{}`, così `/users/5` e `/users/6` collassano) e **classificazione** vs la spec OpenAPI
+configurata (`[controlplane.api_inventory].spec_path`, opzionale, non-fatale):
+
+- **`documented`** = path+metodo dichiarati (endpoint noto che ha comunque attirato blocchi — violazioni di
+  contratto o injection contro API note),
+- **`shadow`** = path/metodo NON dichiarati (endpoint non documentato colpito — il segnale forte di discovery),
+- **`unclassified`** = nessuna spec configurata.
+
+**Confine (`BOUNDARY.md` §2.2)**: read-only, off-datapath, **core-free** — il control plane NON dipende da
+`waf-core` (consuma il contratto JSON OPEN), quindi il matcher path→route è una **reimplementazione standalone
+(solo `serde_json`)** del `Router` del datapath (§4-B A2), non un import di `waf-modules-premium`. **Zombie**
+(dichiarato-ma-inutilizzato) e discovery all-traffic = **follow-on** (servirebbe un ingest di tutto il traffico,
+non solo denied). Learning-mode "genera bozza OpenAPI dal traffico" = follow-on.
 
 ---
 

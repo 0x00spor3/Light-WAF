@@ -56,3 +56,7 @@ role_claim = "groups"
 [[controlplane.governance.oidc.role_map]]
 claim = "waf-admins"
 role = "admin"
+
+
+[controlplane.api_inventory]
+spec_path = "/etc/waf/openapi.json"

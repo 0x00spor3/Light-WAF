@@ -19,6 +19,7 @@ pub mod error;
 pub mod evaluator;
 pub mod gov_api;
 pub mod ingest;
+pub mod inventory;
 pub mod model;
 pub mod oidc;
 pub mod prometheus;

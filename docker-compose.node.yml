@@ -55,6 +55,7 @@ services:
     volumes:
       - ./config.compose.toml:/etc/waf/config.toml:ro
       - managed-rules:/etc/waf/rules
+      - ./scripts/api-schema-enforcement/openapi.json:/etc/waf/openapi.json
     ports:
       - "8080:8080"
       - "9090:9090"

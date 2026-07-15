@@ -54,6 +54,9 @@ pub struct AppState {
     /// Live change notifications for the dashboard (SSE `GET /api/stream`): the ingest handler and
     /// the evaluator publish here so connected browsers refresh without polling.
     pub bus: crate::stream::EventBus,
+    /// When `Some`, the app's OpenAPI routes for classifying the API inventory (§4-B pt3 discovery);
+    /// `None` ⇒ the inventory is served unclassified.
+    pub api_routes: Option<crate::inventory::SpecRoutes>,
 }
 
 /// The read-observability API routes (no auth layer attached). Shared by the plain-bearer path and,
@@ -69,6 +72,8 @@ pub(crate) fn read_api() -> Router<Arc<AppState>> {
         .route("/api/alerts", get(list_alerts))
         .route("/api/alerts/rules", get(alert_rules))
         .route("/api/siem/status", get(siem_status))
+        .route("/api/inventory", get(api_inventory))
+        .route("/api/inventory/drift", get(api_inventory_drift))
         .route("/api/stream", get(event_stream))
 }
 
@@ -393,6 +398,43 @@ async fn list_alerts(State(s): State<Arc<AppState>>, Query(q): Query<AlertQuery>
 /// The configured alert rules (so an operator can see what is active).
 async fn alert_rules(State(s): State<Arc<AppState>>) -> Response {
     Json(s.alert_rules.clone()).into_response()
+}
+
+#[derive(Deserialize)]
+struct InventoryQuery {
+    /// Max DISTINCT raw paths to aggregate (before templating). Defaults sensibly, capped.
+    limit: Option<i64>,
+}
+
+/// API attack-surface inventory (§4-B pt3 discovery): endpoints observed in enforcement decisions,
+/// templated + classified (`documented` / `shadow` / `unclassified`) against the configured spec.
+async fn api_inventory(State(s): State<Arc<AppState>>, Query(q): Query<InventoryQuery>) -> Response {
+    let limit = q.limit.unwrap_or(5000).clamp(1, 50000);
+    match s.store.api_inventory(limit).await {
+        Ok(observed) => {
+            Json(crate::inventory::build_inventory(observed, s.api_routes.as_ref())).into_response()
+        }
+        Err(e) => err500(e),
+    }
+}
+
+/// Drift only: the `shadow` endpoints (undeclared surface being hit). Empty when no spec is
+/// configured (nothing to compare against).
+async fn api_inventory_drift(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<InventoryQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(5000).clamp(1, 50000);
+    match s.store.api_inventory(limit).await {
+        Ok(observed) => {
+            let drift: Vec<_> = crate::inventory::build_inventory(observed, s.api_routes.as_ref())
+                .into_iter()
+                .filter(|e| e.classification == crate::inventory::Classification::Shadow)
+                .collect();
+            Json(drift).into_response()
+        }
+        Err(e) => err500(e),
+    }
 }
 
 /// Live change stream (SSE). Emits one event per change notice (`event: events` / `event: alerts`),

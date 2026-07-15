@@ -327,6 +327,20 @@ pub struct ControlPlaneConfig {
     pub governance: GovernanceConfig,
     /// SIEM export forwarder (§9). Default OFF.
     pub siem: SiemConfig,
+    /// API attack-surface inventory (§4-B pt3 discovery). Optional spec to classify against.
+    pub api_inventory: ApiInventoryConfig,
+}
+
+/// `[controlplane.api_inventory]` — builds an API attack-surface inventory from the persisted
+/// enforcement decisions (`decision_events` are denied requests only). When `spec_path` points at
+/// the app's OpenAPI **JSON** spec, observed endpoints are classified `documented` (a declared
+/// operation under attack / with contract violations) vs `shadow` (an undeclared endpoint being hit).
+/// Unset ⇒ the inventory still lists observed endpoints, but unclassified.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ApiInventoryConfig {
+    /// The app's OpenAPI spec (JSON) to classify observed endpoints against (optional).
+    pub spec_path: Option<String>,
 }
 
 impl Default for ControlPlaneConfig {
@@ -343,6 +357,7 @@ impl Default for ControlPlaneConfig {
             ui_dir: None,
             governance: GovernanceConfig::default(),
             siem: SiemConfig::default(),
+            api_inventory: ApiInventoryConfig::default(),
         }
     }
 }

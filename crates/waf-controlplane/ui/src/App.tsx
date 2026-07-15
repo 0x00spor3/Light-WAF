@@ -8,6 +8,7 @@ import { Overview } from "./routes/Overview";
 import { Events } from "./routes/Events";
 import { EventDetail } from "./routes/EventDetail";
 import { Alerts } from "./routes/Alerts";
+import { Inventory } from "./routes/Inventory";
 import { Rules } from "./routes/Rules";
 import { Users } from "./routes/Users";
 import { Tokens } from "./routes/Tokens";
@@ -25,6 +26,7 @@ export function App() {
             <Route path="events" element={<Events />} />
             <Route path="events/:id" element={<EventDetail />} />
             <Route path="alerts" element={<Alerts />} />
+            <Route path="inventory" element={<Inventory />} />
             <Route path="rules" element={<Rules />} />
             <Route path="users" element={<Users />} />
             <Route path="tokens" element={<Tokens />} />
