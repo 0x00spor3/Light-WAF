@@ -36,6 +36,7 @@ use waf_core::{
 };
 use waf_detection::{
     crs::CrsModule,
+    evasion::EvasionModule,
     graphql::GraphqlModule, grpc::GrpcModule, header_injection::HeaderInjectionModule, ldap::LdapModule,
     lfi_rfi::LfiRfiModule,
     mail::MailModule, nosql::NosqlModule, path_traversal::PathTraversalModule,
@@ -733,6 +734,9 @@ fn build_modules(config: &Config, rl_state: &RateLimitState) -> Vec<Box<dyn WafM
     }
     if config.modules.header_injection.enabled {
         modules.push(Box::new(HeaderInjectionModule::new()));
+    }
+    if config.modules.evasion.enabled {
+        modules.push(Box::new(EvasionModule::new()));
     }
     if config.modules.graphql.enabled {
         modules.push(Box::new(GraphqlModule::new()));

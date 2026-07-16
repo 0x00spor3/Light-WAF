@@ -141,7 +141,7 @@ fn percent_overlong_fixpoint(raw: &[u8], plus_as_space: bool, budget: &mut usize
 }
 
 /// Collapse overlong UTF-8 to ASCII and return a lossy string. Pub for §6 docs /
-/// tests; the pipeline uses the byte-level [`collapse_overlong`] inside the fixpoint.
+/// tests; the pipeline uses the byte-level `collapse_overlong` inside the fixpoint.
 pub fn decode_overlong_utf8(input: &str) -> String {
     String::from_utf8_lossy(&collapse_overlong(input.as_bytes())).into_owned()
 }
@@ -533,18 +533,27 @@ pub fn canonicalize_multipart_field(raw: &str) -> String {
 /// 5. Lowercase.
 /// 6. Resolve `.` / `..` segments and collapse consecutive slashes.
 ///
-/// Returns `(normalized_path, double_encoding_detected)`.
-pub fn normalize_path(raw: &str) -> (String, bool) {
+/// Returns `(normalized_path, double_encoding_detected, null_byte_detected)`.
+///
+/// `null_byte_detected` is captured PRE-strip (F-1): a decoded NUL in the path is
+/// stripped here (so `pt-null-byte`, which pattern-matches the stripped output, is
+/// structurally blind to it), but the request is forwarded RAW to the backend where
+/// `%2500`-style double-encoded NULs still truncate a filename. The flag preserves the
+/// signal for the `evasion` module. Path-scoped only — query/cookie/body keep their
+/// NUL, so `pt-null-byte` already covers those (no double-counting).
+pub fn normalize_path(raw: &str) -> (String, bool, bool) {
     // 10c: recursive percent + overlong fixpoint (shared cap), then NFKC / strip
     // NUL / lowercase / resolve. Overlong now collapses on the path too (`%C0%AE`→`.`).
     let mut budget = PIPELINE_CAP;
     let (bytes, passes) = percent_overlong_fixpoint(raw.as_bytes(), false, &mut budget);
     let nfkc: String = String::from_utf8_lossy(&bytes).nfkc().collect();
+    // Detect the NUL on the SAME string the strip filter reads, before it is removed.
+    let null_byte = nfkc.contains('\0');
     let no_nulls: String = nfkc.chars().filter(|&c| c != '\0').collect();
     let lower = no_nulls.to_lowercase();
     let resolved = resolve_path(&lower);
 
-    (resolved, passes >= 2)
+    (resolved, passes >= 2, null_byte)
 }
 
 fn resolve_path(path: &str) -> String {

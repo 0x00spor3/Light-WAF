@@ -174,14 +174,14 @@ fn traversal_cannot_escape_root() {
 #[test]
 fn fullwidth_ascii_chars_are_normalized() {
     // Fullwidth Ａ (U+FF21) Ｂ (U+FF22) → 'AB' after NFKC, then lowercase 'ab'
-    let (norm_path, _) = url::normalize_path("/\u{FF21}\u{FF42}\u{FF43}");
+    let (norm_path, _, _) = url::normalize_path("/\u{FF21}\u{FF42}\u{FF43}");
     assert_eq!(norm_path, "/abc");
 }
 
 #[test]
 fn unicode_fi_ligature_is_decomposed() {
     // ﬁ (U+FB01) → "fi" after NFKC
-    let (norm_path, _) = url::normalize_path("/\u{FB01}le");
+    let (norm_path, _, _) = url::normalize_path("/\u{FB01}le");
     assert_eq!(norm_path, "/file");
 }
 

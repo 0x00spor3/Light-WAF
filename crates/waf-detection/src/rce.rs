@@ -1,11 +1,18 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-use regex::RegexSet;
+use regex::{Regex, RegexSet};
 use tracing::warn;
 use waf_core::{Config, Decision, Phase, RequestContext, ScoreItem, Severity, WafModule};
 
 use crate::{all_matches, body_str_values, inspectable_header_values, Rule};
+
+/// Shellshock (CVE-2014-6271) signature: an empty-parens Bash function definition
+/// `() {` at a VALUE boundary (string start or a shell separator / `=`). The boundary
+/// anchor is what keeps minified JS `function(){` — where an identifier precedes the
+/// parens — from false-positive. Shared by the `rce-shellshock` rule (path/query/
+/// cookie/body/Referer via the main set) and the dedicated User-Agent scan (F-3).
+const SHELLSHOCK_PATTERN: &str = r"(?:^|[\s;&|=])\(\)\s*\{";
 
 // ── rules ─────────────────────────────────────────────────────────────────────
 //
@@ -48,6 +55,17 @@ pub static RCE_RULES: &[Rule] = &[
         id: "rce-reverse-shell",
         // Common reverse-shell idioms.
         pattern: r"(?i)(?:/dev/tcp/|bash\s+-i|nc\s+-[a-z]*e|mkfifo)",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "rce-shellshock",
+        // Shellshock (CVE-2014-6271): a `() { …;}` env-var function definition smuggled
+        // into a header/param and executed by a bash-CGI backend. Boundary-anchored so
+        // minified JS `function(){` does not false-positive. This entry covers path /
+        // query / cookie / body / Referer; the User-Agent surface (deny-listed for
+        // general inspection) is handled by the module's dedicated single-pattern scan.
+        pattern: SHELLSHOCK_PATTERN,
         severity: Severity::Critical,
         paranoia: 1,
     },
@@ -160,6 +178,9 @@ pub struct RceModule {
     rule_set: Option<RegexSet>,
     /// Rules active at the configured paranoia level, index-aligned with `rule_set`.
     active_rules: Vec<&'static Rule>,
+    /// F-3: standalone shellshock matcher for the User-Agent value only (UA is
+    /// excluded from `inspectable_header_values`). `Some` when `rce-shellshock` is active.
+    shellshock_ua: Option<Regex>,
 }
 
 impl RceModule {
@@ -184,6 +205,12 @@ impl WafModule for RceModule {
             RegexSet::new(self.active_rules.iter().map(|r| r.pattern))
                 .expect("RCE rule compilation failed — check patterns at startup"),
         );
+        // F-3: compile the dedicated UA matcher only when the shellshock rule is active.
+        self.shellshock_ua = self
+            .active_rules
+            .iter()
+            .any(|r| r.id == "rce-shellshock")
+            .then(|| Regex::new(SHELLSHOCK_PATTERN).expect("shellshock UA pattern compilation"));
     }
 
     fn inspect(&self, ctx: &RequestContext) -> Decision {
@@ -205,11 +232,8 @@ impl WafModule for RceModule {
         // P1-B: also scan the allowlisted request headers (Referer / X-Forwarded-* / custom x-*).
         let headers = inspectable_header_values(ctx);
         let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived).chain(headers));
-        if matched.is_empty() {
-            return Decision::Allow;
-        }
 
-        let items: Vec<ScoreItem> = matched
+        let mut items: Vec<ScoreItem> = matched
             .iter()
             .map(|&idx| {
                 let rule = self.active_rules[idx];
@@ -226,6 +250,36 @@ impl WafModule for RceModule {
             })
             .collect();
 
-        Decision::Scores(items)
+        // F-3: dedicated User-Agent scan for the shellshock signature. UA is deny-listed
+        // in `inspectable_header_values` (exposing it to the whole RCE set would
+        // false-positive), so this one tight pattern reads it in isolation. Emit
+        // `rce-shellshock` at most once (the main set may already have matched it via
+        // cookie/Referer/body).
+        if let Some(re) = &self.shellshock_ua {
+            let ua_hit = ctx
+                .normalized
+                .headers
+                .iter()
+                .find(|(name, _)| name == "user-agent")
+                .is_some_and(|(_, value)| re.is_match(value));
+            if ua_hit && !items.iter().any(|i| i.rule_id == "rce-shellshock") {
+                warn!(
+                    request_id = %ctx.request_id,
+                    rule_id = "rce-shellshock",
+                    severity = ?Severity::Critical,
+                    "rce detection"
+                );
+                items.push(ScoreItem {
+                    rule_id: "rce-shellshock".to_string(),
+                    severity: Severity::Critical,
+                });
+            }
+        }
+
+        if items.is_empty() {
+            Decision::Allow
+        } else {
+            Decision::Scores(items)
+        }
     }
 }

@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Duration;
 
 /// Final disposition of a request — the closed value set of the `decision` label.
-/// Discriminants are the array index into the counters; keep [`Outcome::ALL`] in sync.
+/// Discriminants are the array index into the counters; keep `Outcome::ALL` in sync.
 #[derive(Clone, Copy)]
 pub enum Outcome {
     /// Forwarded to the backend (whatever status the app returned).

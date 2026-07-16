@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-//! Parse lexed [`DirectiveLine`](super::lexer::DirectiveLine)s into a [`ParsedRuleset`].
+//! Parse lexed [`DirectiveLine`]s into a [`ParsedRuleset`].
 //!
 //! Scope (v1 subset — see the B2 plan table). Supported directives: `SecRule`,
 //! `SecDefaultAction`, `SecRuleRemoveById`. `SecAction` is configuration/setup (it sets

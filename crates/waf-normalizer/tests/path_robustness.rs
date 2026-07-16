@@ -23,7 +23,7 @@ use proptest::prelude::*;
 use waf_normalizer::url::normalize_path;
 
 fn check_invariants(input: &str) {
-    let (out, _) = normalize_path(input);
+    let (out, _, _) = normalize_path(input);
     assert!(out.starts_with('/'), "(i) not root-anchored: {out:?} from {input:?}");
     for seg in out.split('/') {
         assert_ne!(seg, "..", "(ii) residual traversal segment: {out:?} from {input:?}");
@@ -66,7 +66,7 @@ fn known_traversal_is_neutralized() {
         ("//a//b", "/a/b"),
         ("/%2e%2e/x", "/x"),       // encoded `..` is decoded then consumed
     ] {
-        let (out, _) = normalize_path(input);
+        let (out, _, _) = normalize_path(input);
         assert_eq!(out, expect, "input {input:?}");
         assert!(!out.split('/').any(|s| s == ".."), "residual .. in {out:?}");
     }

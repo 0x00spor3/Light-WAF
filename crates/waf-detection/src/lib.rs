@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod crs;
+pub mod evasion;
 pub mod graphql;
 pub mod grpc;
 pub mod header_injection;

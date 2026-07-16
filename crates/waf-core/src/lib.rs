@@ -656,6 +656,12 @@ pub struct ModulesConfig {
     pub xxe: ModuleConfig,
     #[serde(default)]
     pub header_injection: ModuleConfig,
+    /// Structural evasion signals (F-1): cabling the normalizer's `null_byte_detected`
+    /// (path NUL stripped pre-inspection) and `double_encoding_detected` flags into
+    /// scored contributions so a neutralized evasion still leaves a trace. NOT a
+    /// content-regex module. Default ON (a core security control like request_smuggling).
+    #[serde(default)]
+    pub evasion: ModuleConfig,
     /// HTTP request-smuggling framing checks (CL/TE). Structural security control,
     /// default on (see ARCHITECTURE §8).
     #[serde(default)]
@@ -767,7 +773,7 @@ impl Default for ModuleConfig {
 
 /// GraphQL module configuration (Phase 11). Structural DoS/abuse caps applied to the
 /// GraphQL operation(s) carried by a request (JSON `query` field, `application/graphql`
-/// raw body, or GET `?query=`). All counts come from the lexical [`graphql_lex`] pass.
+/// raw body, or GET `?query=`). All counts come from the lexical `graphql_lex` pass.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GraphqlConfig {
     /// Default OFF (opt-in per deployment).
@@ -1059,6 +1065,13 @@ pub struct Normalized {
     pub body: ParsedBody,
     /// True when any field had a percent-encoded sequence that decoded to another percent-encoded sequence.
     pub double_encoding_detected: bool,
+    /// True when a NUL byte was present in the DECODED path *before* the normalizer
+    /// stripped it (F-1 evasion signal). Set PRE-strip on the PATH only — the sole
+    /// channel where `pt-null-byte` is structurally blind (the normalizer strips NUL
+    /// from the path but query/cookie/body keep it, so those stay covered by
+    /// `pt-null-byte`). Consumed by the `evasion` module → `evasion-null-byte`
+    /// (Critical), so a stripped-then-forwarded NUL leaves a trace instead of vanishing.
+    pub null_byte_detected: bool,
     /// Phase 10c: additional inspection-only strings DERIVED from field values that
     /// were base64-encoded (gotestwaf Base64Flat). Each entry is the base64-decoded +
     /// canonicalized form of some query/cookie/body/header value that passed the

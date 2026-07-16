@@ -57,7 +57,7 @@ struct BucketAcc {
     severities: Vec<Severity>,
 }
 
-/// A `WafModule` evaluating imported CRS/ModSecurity rules. Build with [`CrsModule::from_str`]
+/// A `WafModule` evaluating imported CRS/ModSecurity rules. Build with [`CrsModule::from_source`]
 /// (one source) — the proxy loader concatenates the configured files in include order and
 /// resolves the boot report.
 pub struct CrsModule {

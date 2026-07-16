@@ -121,7 +121,7 @@ impl Normalizer {
         }
 
         // ── 5. Normalize path ─────────────────────────────────────────────────
-        let (norm_path, path_double_enc) = normalize_path(&ctx.raw_path);
+        let (norm_path, path_double_enc, path_null_byte) = normalize_path(&ctx.raw_path);
 
         // base64-derived from the URL PATH segments (10c REOPEN, pcap-confirmed:
         // gotestwaf places Base64Flat blobs AS the path, e.g. `/PGJvZHkg…`). The path
@@ -231,6 +231,8 @@ impl Normalizer {
         ctx.normalized.body = parsed_body;
         ctx.normalized.double_encoding_detected =
             path_double_enc || query_double_enc || cookie_double_enc;
+        // F-1: PATH-scoped pre-strip NUL (the channel `pt-null-byte` cannot see).
+        ctx.normalized.null_byte_detected = path_null_byte;
         ctx.normalized.derived_decoded = derived;
 
         Ok(())
@@ -262,7 +264,7 @@ fn header_base64_excluded(name: &str) -> bool {
 /// injects into `X-<random>`), and EXCLUDE everything else — even an `x-*` that is really
 /// infra/secret (`*-token`, `proxy-*`) or negotiation/validators (`accept*`, `content-*`,
 /// `etag`, `if-*`) or hop-by-hop. Names are pre-lowercased. The deny-list takes
-/// precedence over the `x-*` allowance. (Distinct from [`header_base64_excluded`], which
+/// precedence over the `x-*` allowance. (Distinct from `header_base64_excluded`, which
 /// is a deny-list for the separate base64-derive channel.)
 pub fn header_content_inspectable(name: &str) -> bool {
     // Deny-list FIRST (overrides the x-* allowance).

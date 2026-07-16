@@ -37,6 +37,20 @@ pub static SSTI_RULES: &[Rule] = &[
         paranoia: 1,
     },
     Rule {
+        id: "ssti-erb-jsp-arithmetic",
+        // ERB / EJS / JSP / ASP scriptlet+expression delimiter (`<%`, `<%=`, `<%-`)
+        // immediately followed by an arithmetic expression `<digits> <op> <digits>`.
+        // Matches `<%=7*7%>` (the classic ERB probe), `<% 16*8787 %>`, `<%- 2*2 -%>`;
+        // the `[=-]?` covers the expression (`=`) and trim (`-`) forms. The
+        // digit-operator-digit must sit ADJACENT to the delimiter, so an ERB comment
+        // `<%-- 2024 --%>` (a `-` follows, not a digit) and a real template
+        // `<%= user.name %>` (no digit-op-digit) do NOT flag. Node/EJS-only when the
+        // backend is not Ruby/JSP, but on a template backend this is RCE.
+        pattern: r"<%[=-]?\s*\d+\s*[*+/x-]\s*\d+",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
         id: "ssti-freemarker-directive",
         // FreeMarker directive / built-in syntax: `<#assign|list|if|…>`, the
         // instantiation built-in `?new()`, or the FQN of the template utility classes.

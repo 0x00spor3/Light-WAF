@@ -22,6 +22,7 @@ use waf_core::{
     Config, GraphqlConfig, GrpcConfig, RequestContext, ScoreContribution, SeverityScores, WafMode, WafModule,
 };
 use waf_detection::ContentPrefilter;
+use waf_detection::evasion::EvasionModule;
 use waf_detection::graphql::GraphqlModule;
 use waf_detection::grpc::GrpcModule;
 use waf_detection::header_injection::HeaderInjectionModule;
@@ -329,6 +330,7 @@ fn build_pipeline(config: &Config) -> Pipeline {
         Box::new(SsiModule::new()),
         Box::new(XxeModule::new()),
         Box::new(HeaderInjectionModule::new()),
+        Box::new(EvasionModule::new()),
         Box::new(GraphqlModule::new()),
         Box::new(GrpcModule::new()),
     ];

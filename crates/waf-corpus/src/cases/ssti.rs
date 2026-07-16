@@ -40,6 +40,16 @@ pub static CASES: &[Case] = &[
         rules: &["ssti-freemarker-directive"],
         desc: "FreeMarker `<#assign …?new()>` RCE — gotestwaf sst-injection (URL)",
     },
+    // ── ERB/EJS/JSP arithmetic (F-2 remediation, Juice-Shop report) ──────────────
+    Case {
+        id: "ssti-erb-arithmetic-query",
+        module: Module::Ssti,
+        field: Field::Query { name: "q", value: "<%=7*7%>" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["ssti-erb-jsp-arithmetic"],
+        desc: "ERB `<%=7*7%>` arithmetic probe — Juice-Shop report F-2 (new delimiter family)",
+    },
     // ── Base64Flat duplicates — CAUGHT at 10c via §6 base64-decode (derived) ─────
     Case {
         id: "ssti-jinja-arithmetic-b64",
@@ -130,5 +140,24 @@ pub static CASES: &[Case] = &[
         expect: Expect::Clean,
         rules: &[],
         desc: "arithmetic in prose, no template delimiter — must NOT flag",
+    },
+    Case {
+        id: "ssti-benign-erb-comment",
+        module: Module::Ssti,
+        field: Field::Query { name: "tpl", value: "<%-- build 2024 rev 7 --%>" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "F-2 FP trap: an ERB comment `<%-- … --%>` — a `-` follows `<%`, no adjacent \
+               digit-op-digit → must NOT flag",
+    },
+    Case {
+        id: "ssti-benign-erb-template-var",
+        module: Module::Ssti,
+        field: Field::Query { name: "tpl", value: "<%= user.name %>" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "F-2 FP trap: a real ERB output tag with no arithmetic — must NOT flag",
     },
 ];

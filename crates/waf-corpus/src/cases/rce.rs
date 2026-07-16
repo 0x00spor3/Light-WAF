@@ -292,6 +292,44 @@ pub static CASES: &[Case] = &[
         rules: &[],
         desc: "an ordinary Referer must stay clean under header inspection — P1-B FP guard",
     },
+    // ── F-3: Shellshock (CVE-2014-6271) — Juice-Shop report ──────────────────────
+    Case {
+        id: "rce-shellshock-user-agent",
+        module: Module::Rce,
+        field: Field::Header { name: "user-agent", value: "() { :;}; echo vulnerable" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["rce-shellshock"],
+        desc: "Shellshock function-def in User-Agent — the classic CGI vector; dedicated UA scan (F-3)",
+    },
+    Case {
+        id: "rce-shellshock-cookie",
+        module: Module::Rce,
+        field: Field::Cookie("m=() { :;}; echo vulnerable"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["rce-shellshock"],
+        desc: "Shellshock in a cookie value — covered by the main RCE rule via the parsed channel (F-3)",
+    },
+    Case {
+        id: "rce-shellshock-referer",
+        module: Module::Rce,
+        field: Field::Header { name: "referer", value: "() { :;}; /bin/cat /etc/passwd" },
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["rce-shellshock"],
+        desc: "Shellshock in Referer — the allowlisted header is scanned by the main set (F-3)",
+    },
+    Case {
+        id: "rce-benign-shellshock-minified-js",
+        module: Module::Rce,
+        field: Field::Query { name: "cb", value: "handler=function(){}" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "F-3 FP trap: minified JS `function(){}` — an identifier precedes the empty \
+               parens, so the boundary-anchored shellshock pattern must NOT fire",
+    },
     // ── §6-D3: VBScript / Classic-ASP webshell de-obfuscation — now CAUGHT ────────
     // WIRE ground-truth (pcap bypass-new.txt L8030): the gotestwaf rce-urlparam VBScript
     // webshell. On the wire the string-concat `&` is a LITERAL query separator, so the
