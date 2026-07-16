@@ -51,6 +51,37 @@ pub static SSTI_RULES: &[Rule] = &[
         paranoia: 1,
     },
     Rule {
+        id: "ssti-python-dunder",
+        // Python object-introspection gadgets used by Jinja/Mako SSTI to walk the class
+        // hierarchy to RCE: `{{''.__class__.__mro__[1].__subclasses__()}}`,
+        // `{{x.__init__.__globals__}}`. The `__dunder__` form never appears in benign
+        // web input. (G-2, pentest #2.)
+        pattern: r"(?i)__(?:class|mro|subclasses|bases?|globals|builtins|import|subclasshook|reduce)__",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "ssti-jinja-object",
+        // Jinja/Flask template CONTEXT objects inside `{{ }}` — secret disclosure
+        // (`{{config.items()}}`) or the entry of an RCE gadget chain
+        // (`{{request.application…}}`, `{{cycler.__init__…}}`). A bare `{{ user.name }}`
+        // (mustache/Vue) has no such object name and is NOT flagged. (G-2.)
+        pattern: r"(?i)\{\{[-+]?\s*(?:config|self|request|session|cycler|joiner|namespace|lipsum|url_for|get_flashed_messages|current_app)\b",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "ssti-template-statement",
+        // Jinja/Twig/Django STATEMENT tag `{% … %}` carrying an ARGUMENT — template control
+        // flow smuggled into a value (`{%for x in …%}`, `{%set x=…%}`, `{%if x%}`), distinct
+        // from the `{{ }}` interpolation the arithmetic/object rules cover. The keyword must
+        // be followed by whitespace + a non-`%` token, so technical prose that merely names a
+        // bare tag (`use {% for %} … {% endfor %}`) does NOT flag. (G-2.)
+        pattern: r"(?i)\{%[-+]?\s*(?:for|if|elif|set|with|print|include|import|from|macro|call|filter|block|extends|autoescape|do)\s+[^%\s]",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
         id: "ssti-freemarker-directive",
         // FreeMarker directive / built-in syntax: `<#assign|list|if|…>`, the
         // instantiation built-in `?new()`, or the FQN of the template utility classes.

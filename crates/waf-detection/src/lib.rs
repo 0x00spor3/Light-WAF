@@ -140,6 +140,9 @@ pub struct ContentPrefilter {
     main: RegexSet,
     /// Scanned over host header values only.
     host: RegexSet,
+    /// G-3: Mongo operator in KEY position (always-on, like the nosql module's dedicated
+    /// scan — it is Critical/PL-independent, so it is NOT part of the paranoia-gated union).
+    operator_key: regex::Regex,
     main_ids: Vec<&'static str>,
     host_ids: Vec<&'static str>,
 }
@@ -155,6 +158,8 @@ impl ContentPrefilter {
         Self {
             main,
             host,
+            operator_key: regex::Regex::new(nosql::NOSQL_OPERATOR_KEY_PATTERN)
+                .expect("content prefilter operator-key compilation failed"),
             main_ids: main_rules.iter().map(|(id, _)| *id).collect(),
             host_ids: host_rules.iter().map(|(id, _)| *id).collect(),
         }
@@ -177,22 +182,30 @@ impl ContentPrefilter {
     pub fn is_candidate(&self, ctx: &RequestContext) -> bool {
         let n = &ctx.normalized;
         // MAIN bucket over the superset surface.
-        if self.main.is_match(&n.path) {
+        if self.main_hit(&n.path) {
             return true;
         }
         for (_, v) in n.query_params.iter().chain(&n.cookies).chain(&n.headers) {
-            if self.main.is_match(v) {
+            if self.main_hit(v) {
                 return true;
             }
         }
-        if body_str_values(&n.body).iter().any(|v| self.main.is_match(v)) {
+        if body_str_values(&n.body).iter().any(|v| self.main_hit(v)) {
+            return true;
+        }
+        // G-3 soundness: the nosql module inspects KEY strings (param names + JSON/form
+        // keys) with an always-on operator scan, so the prefilter must scan the same keys
+        // or it would wrongly skip `q[$ne]` / `{"$gt":…}`.
+        if n.query_params.iter().any(|(k, _)| self.operator_key.is_match(k))
+            || crate::nosql::body_key_strings(&n.body).iter().any(|k| self.operator_key.is_match(k))
+        {
             return true;
         }
         // Base64-DERIVED surface (10c): the modules inspect `derived_decoded`, so the
         // prefilter MUST scan it too — else a Base64Flat payload (raw value matches no
         // pattern) would be wrongly skipped by the fast-path while full inspection
         // fires on the decode. Soundness = scan the same surface the modules read.
-        if n.derived_decoded.iter().any(|v| self.main.is_match(v)) {
+        if n.derived_decoded.iter().any(|v| self.main_hit(v)) {
             return true;
         }
         // HOST bucket over host header values only.
@@ -200,6 +213,14 @@ impl ContentPrefilter {
             .iter()
             .filter(|(name, _)| name == "host" || name == "x-forwarded-host")
             .any(|(_, v)| self.host.is_match(v))
+    }
+
+    /// `main` union hit on the value OR on its SQL-comment-collapsed form. G-1: the sqli
+    /// module inspects `UNION/**/SELECT` after collapsing `/* */` to a space, so the
+    /// prefilter must test the same collapsed surface or it would wrongly skip it.
+    fn main_hit(&self, v: &str) -> bool {
+        self.main.is_match(v)
+            || crate::sqli::collapse_sql_block_comments(v).is_some_and(|c| self.main.is_match(&c))
     }
 }
 

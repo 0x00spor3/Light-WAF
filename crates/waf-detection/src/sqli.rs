@@ -114,6 +114,52 @@ pub static SQLI_RULES: &[Rule] = &[
     },
 ];
 
+// ── SQL comment evasion (G-1) ───────────────────────────────────────────────────
+
+/// Replace each CLOSED SQL block comment `/* … */` with a single space, so a comment
+/// smuggled BETWEEN keywords no longer defeats the `\s+`-based signatures: SQLite (and
+/// MySQL/Postgres) treat `/* */` as whitespace, so `UNION/**/SELECT` is valid SQL — but
+/// `\bunion\s+select\b` cannot see it. Collapsing to a space (NOT deleting — `UNIONSELECT`
+/// would still miss) restores `UNION SELECT`. Mirrors ModSecurity `t:replaceComments`.
+///
+/// Returns `None` when the value has no `/*` (the common case → no allocation). The
+/// collapsed copy is scanned ALONGSIDE the original (never instead of it), so the
+/// dedicated `sqli-mysql-versioned-comment` rule still fires on the original `/*!…*/`
+/// (which the collapse would otherwise erase). v1 handles block comments only; line
+/// comments `--`/`#` terminate the line (they cannot separate keywords on one line) and
+/// are far more false-positive-prone in benign text — deferred.
+///
+/// NOTE (boundary): this runs only in the native `sqli` module. Operator-authored CRS
+/// `SecRule`s (the imported-rules engine) do NOT get this transform — a `t:replaceComments`
+/// CRS transform is a documented follow-on (see BOUNDARY / ARCHITECTURE §6).
+pub(crate) fn collapse_sql_block_comments(s: &str) -> Option<String> {
+    if !s.contains("/*") {
+        return None;
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    let mut changed = false;
+    while let Some(start) = rest.find("/*") {
+        match rest[start + 2..].find("*/") {
+            Some(end_rel) => {
+                out.push_str(&rest[..start]);
+                out.push(' '); // the comment becomes a single token separator
+                rest = &rest[start + 2 + end_rel + 2..];
+                changed = true;
+            }
+            None => {
+                // Unterminated `/*` comments out the remainder → not a token separator
+                // (and invalid/inert SQL). Keep it verbatim.
+                out.push_str(rest);
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    changed.then_some(out)
+}
+
 // ── module ────────────────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -152,9 +198,24 @@ impl WafModule for SqliModule {
             return Decision::Allow;
         };
 
+        let body_vals = body_str_values(&ctx.normalized.body);
+
+        // G-1: build comment-collapsed copies of every scanned value so a `/* */` smuggled
+        // between keywords (`UNION/**/SELECT`) is caught. Scanned ALONGSIDE the originals
+        // (see `collapse_sql_block_comments`), so `sqli-mysql-versioned-comment` still fires
+        // on the raw `/*!…*/`. Only values containing `/*` allocate. Declared early so it
+        // outlives the borrowing iterators built below.
+        let collapsed: Vec<String> = std::iter::once(ctx.normalized.path.as_str())
+            .chain(ctx.normalized.query_params.iter().map(|(_, v)| v.as_str()))
+            .chain(ctx.normalized.cookies.iter().map(|(_, v)| v.as_str()))
+            .chain(body_vals.iter().map(String::as_str))
+            .chain(ctx.normalized.derived_decoded.iter().map(String::as_str))
+            .chain(inspectable_header_values(ctx))
+            .filter_map(collapse_sql_block_comments)
+            .collect();
+
         let query = ctx.normalized.query_params.iter().map(|(_, v)| v.as_str());
         let cookies = ctx.normalized.cookies.iter().map(|(_, v)| v.as_str());
-        let body_vals = body_str_values(&ctx.normalized.body);
         let body = body_vals.iter().map(String::as_str);
         let derived = ctx.normalized.derived_decoded.iter().map(String::as_str);
 
@@ -164,7 +225,16 @@ impl WafModule for SqliModule {
         let path = std::iter::once(ctx.normalized.path.as_str());
         // P1-B: also scan the allowlisted request headers (Referer / X-Forwarded-* / custom x-*).
         let headers = inspectable_header_values(ctx);
-        let matched = all_matches(rule_set, path.chain(query).chain(cookies).chain(body).chain(derived).chain(headers));
+
+        let matched = all_matches(
+            rule_set,
+            path.chain(query)
+                .chain(cookies)
+                .chain(body)
+                .chain(derived)
+                .chain(headers)
+                .chain(collapsed.iter().map(String::as_str)),
+        );
         if matched.is_empty() {
             return Decision::Allow;
         }

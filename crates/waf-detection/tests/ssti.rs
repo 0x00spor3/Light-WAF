@@ -89,3 +89,56 @@ fn html_percent_prose_does_not_fire() {
     let d = module().inspect(&with_query("note", "discount was 7% then 7 off"));
     assert!(!fires(&d, "ssti-erb-jsp-arithmetic"), "false positive on prose: {d:?}");
 }
+
+// ── G-2: Jinja/Python object-access SSTI ─────────────────────────────────────────
+
+#[test]
+fn jinja_config_object_fires() {
+    // Secret disclosure vector — was 200 (missed) before G-2.
+    let d = module().inspect(&with_query("q", "{{config.items()}}"));
+    assert_eq!(severity_of(&d, "ssti-jinja-object"), Some(Severity::Critical), "got: {d:?}");
+}
+
+#[test]
+fn jinja_self_and_request_fire() {
+    assert!(fires(&module().inspect(&with_query("q", "{{self}}")), "ssti-jinja-object"));
+    assert!(fires(&module().inspect(&with_query("q", "{{request.application}}")), "ssti-jinja-object"));
+}
+
+#[test]
+fn python_dunder_rce_chain_fires() {
+    // The classic Jinja RCE gadget → must be Critical.
+    assert!(fires(&module().inspect(&with_query("q", "{{''.__class__.__mro__[1].__subclasses__()}}")), "ssti-python-dunder"));
+    assert!(fires(&module().inspect(&with_query("q", "{{cycler.__init__.__globals__.os.popen('id')}}")), "ssti-python-dunder"));
+}
+
+#[test]
+fn jinja_statement_tag_with_arg_fires() {
+    let d = module().inspect(&with_query("q", "{%for x in range(3)%}a{%endfor%}"));
+    assert!(fires(&d, "ssti-template-statement"), "got: {d:?}");
+}
+
+// ── G-2 FP guards ────────────────────────────────────────────────────────────────
+
+#[test]
+fn jinja_benign_mustache_var_is_clean() {
+    // A bare `{{ var }}` (Vue/mustache) has no context-object name → clean.
+    for v in ["{{ user.name }}", "{{ product.price }}", "{{ items.length }}"] {
+        let d = module().inspect(&with_query("tpl", v));
+        assert!(matches!(d, Decision::Allow), "false positive on {v:?}: {d:?}");
+    }
+}
+
+#[test]
+fn jinja_statement_prose_is_clean() {
+    // Technical prose naming a bare tag must NOT flag (the arg-required tightening).
+    let d = module().inspect(&with_query("note", "use {% for %} … {% endfor %} to loop in Jinja"));
+    assert!(matches!(d, Decision::Allow), "false positive on templating prose: {d:?}");
+}
+
+#[test]
+fn dunder_js_proto_is_clean() {
+    // `__proto__` (JS prototype) is NOT a Python introspection gadget → not flagged.
+    let d = module().inspect(&with_query("q", "obj.__proto__.polluted"));
+    assert!(!fires(&d, "ssti-python-dunder"), "false positive on __proto__: {d:?}");
+}

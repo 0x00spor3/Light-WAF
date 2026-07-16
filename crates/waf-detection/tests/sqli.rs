@@ -335,3 +335,88 @@ fn sqli_paranoia_level_gates_low_confidence_rules() {
         "PL3 must activate the cast-convert rule"
     );
 }
+
+// ── G-1: SQL block-comment evasion (`/**/` between keywords) ─────────────────────
+
+#[test]
+fn sqli_comment_collapsed_union_select_detected() {
+    // The verified real bypass: `/**/` between keywords defeats `union\s+select`.
+    let d = make_sqli().inspect(&with_query(&[("q", "x')) UNION/**/SELECT id,email FROM Users--")]));
+    assert!(scores_contains(&d, "sqli-union-select"), "got: {d:?}");
+}
+
+#[test]
+fn sqli_comment_with_content_collapsed_detected() {
+    let d = make_sqli().inspect(&with_query(&[("q", "1 UNION/**_**/SELECT 1")]));
+    assert!(scores_contains(&d, "sqli-union-select"), "got: {d:?}");
+}
+
+#[test]
+fn sqli_comment_collapsed_stacked_and_tautology_detected() {
+    assert!(
+        scores_contains(&make_sqli().inspect(&with_query(&[("q", "1;/**/SELECT 1")])), "sqli-stacked-query"),
+        "stacked query via /**/ must be caught"
+    );
+    assert!(
+        scores_contains(&make_sqli().inspect(&with_query(&[("q", "1'/**/OR/**/1=1")])), "sqli-tautology-or"),
+        "tautology via /**/ must be caught"
+    );
+}
+
+#[test]
+fn sqli_comment_collapse_in_body_and_cookie() {
+    assert!(
+        is_scored(&make_sqli().inspect(&with_form_body(&[("q", "a UNION/**/SELECT b")]))),
+        "form body /**/ union must be caught"
+    );
+    let mut c = base_ctx();
+    c.normalized.cookies = vec![("sid".to_string(), "1 UNION/**/SELECT 1".to_string())];
+    assert!(is_scored(&make_sqli().inspect(&c)), "cookie /**/ union must be caught");
+}
+
+/// INVARIANT (reviewer requirement #1): the collapse must NOT erase a match the
+/// dedicated versioned-comment rule already provides — it runs on the ORIGINAL value,
+/// never only on the collapsed copy (which would strip `/*!…*/` to a bare space).
+#[test]
+fn sqli_versioned_comment_still_caught_after_collapse() {
+    let d = make_sqli().inspect(&with_query(&[("q", "1 /*!50000UNION*/ /*!SELECT*/ 1")]));
+    assert!(
+        scores_contains(&d, "sqli-mysql-versioned-comment"),
+        "versioned /*!…*/ must stay caught (collapse must not eat it): {d:?}"
+    );
+}
+
+// ── G-1 FP guards: the collapse must not manufacture spurious matches ────────────
+
+#[test]
+fn sqli_benign_css_comment_is_clean() {
+    // `color:/*red*/blue` → `color: blue` — no SQL keywords.
+    let d = make_sqli().inspect(&with_query(&[("style", "color:/*red*/blue;margin:/*x*/0")]));
+    assert!(matches!(d, Decision::Allow), "false positive on CSS comment: {d:?}");
+}
+
+#[test]
+fn sqli_nasty_collapse_adjacency_stays_clean() {
+    // Reviewer requirement #3: values where the collapse brings tokens adjacent that,
+    // alone, are not suspicious — the `\b`/`_`/`=` boundary gating must hold.
+    // `or/**/der`   → `or der`            : tautology needs `<operand>=<operand>`, none here.
+    // `information/**/schema` → `information schema` : rule needs the `_` (information_schema).
+    // `un/**/ion sel/**/ect`  → `un ion sel ect`     : not the `union`/`select` keywords.
+    for v in [
+        "or/**/der by name",
+        "information/**/schema lookup",
+        "un/**/ion sel/**/ect",
+        "a/*c*/b and/*c*/text",
+    ] {
+        let d = make_sqli().inspect(&with_query(&[("q", v)]));
+        assert!(matches!(d, Decision::Allow), "false positive on {v:?}: {d:?}");
+    }
+}
+
+#[test]
+fn sqli_unterminated_comment_not_treated_as_separator() {
+    // `UNION/*SELECT` (no closing `*/`) comments out the rest → inert SQL, and our
+    // collapse leaves it verbatim, so it must NOT synthesise a `UNION SELECT` match.
+    let d = make_sqli().inspect(&with_query(&[("q", "1 UNION/*SELECT 1 FROM Users")]));
+    assert!(!scores_contains(&d, "sqli-union-select"), "unterminated /* must not match: {d:?}");
+}

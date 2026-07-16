@@ -116,4 +116,32 @@ pub static CASES: &[Case] = &[
         rules: &[],
         desc: "a hostname starting `db.` — not a shell method call, must NOT flag",
     },
+    // ── G-3: operator in KEY position (param name / JSON key) — pentest #2 ────────
+    Case {
+        id: "nosql-operator-key-query",
+        module: Module::Nosql,
+        field: Field::RawQuery("q%5B%24ne%5D=null"),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["nosql-operator-key"],
+        desc: "`q[$ne]=null` — Mongo operator in the PARAM NAME (bracket notation); G-3",
+    },
+    Case {
+        id: "nosql-operator-key-json",
+        module: Module::Nosql,
+        field: Field::JsonBody(r#"{"email":{"$gt":""},"password":{"$gt":""}}"#),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["nosql-operator-key"],
+        desc: "`{\"$gt\":\"\"}` — operator as a JSON KEY (auth-bypass on Mongo); G-3",
+    },
+    Case {
+        id: "nosql-benign-jsonschema-keys",
+        module: Module::Nosql,
+        field: Field::JsonBody(r##"{"$schema":"draft-2020-12","$ref":"#/defs/x","$id":"thing","$comment":"note"}"##),
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "G-3 FP guard: JSON-Schema `$schema`/`$ref`/`$id` keys are NOT Mongo operators",
+    },
 ];

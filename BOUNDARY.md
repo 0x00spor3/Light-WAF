@@ -73,10 +73,68 @@ Scale, governance, compliance, and team operability.
 ### 2.2 Control plane
 - Web dashboard, rule management, blocked-request drill-down, alerting.
 - **Pre-built dashboards + long-term retention** of metrics/telemetry.
+- A **separate service** consuming the OPEN telemetry (JSON decision-log + Prometheus `/metrics`),
+  **never on the data port** and off the request path — it does not affect datapath performance.
+  v1 (`waf-controlplane`, enterprise) is read-only observability: ingestion + retention + drill-down
+  + read API.
+
+*(RULE-MANAGEMENT WRITE PATH IMPLEMENTED 2026-07-07, gated behind §2.3 governance: the control plane
+versions **one managed SecRule `.conf`** and a per-node agent (`waf-node-agent`) pushes it. **Zero-core** —
+the WAF loads the file via `[modules.crs].files` and hot-reloads it on SIGHUP (validate-then-swap); the
+agent only writes the file + triggers that existing reload, never linking the datapath. Publish/rollback
+require `ManageRules` (operator+) and are audited; the agent **pre-validates** with the OPEN seclang parser
+(fail-safe level 1) before the WAF's own validate-then-swap (level 2). A **Rules** dashboard view covers
+publish / rollback / per-node convergence. Follow-on: server-side dry-run, canary/staged rollout, version
+diff, multiple named rulesets, ruleset signing.)*
+
+*(API ATTACK-SURFACE INVENTORY IMPLEMENTED 2026-07-15, §4-B pt3 discovery: the control plane builds an inventory
+of the endpoints seen in persisted enforcement decisions (`GET /api/inventory` + `/api/inventory/drift`, "API
+Inventory" dashboard view). It aggregates `decision_events` **on demand** — which hold **denied requests only**, so
+this is the observed attack surface, not all-traffic — templating per-id paths (`/users/{}`) and classifying them
+against the app's OpenAPI spec: `documented` (a declared endpoint drawing blocks) vs `shadow` (an undeclared
+endpoint being hit). Read-only, off-datapath, and **core-free** — the control plane does not link `waf-core`, so
+the path→route matcher is a standalone `serde_json`-only re-implementation of the datapath router, not an import of
+the premium module. Zombie [declared-but-unused] detection and all-traffic discovery need an all-traffic ingest =
+follow-on; a learning-mode OpenAPI-draft-from-traffic is a follow-on too.)*
 
 ### 2.3 Governance and compliance
-- **RBAC**, SSO/SAML/OIDC, signed audit logs (SOC2 / PCI-DSS).
+- **RBAC**, SSO (**OIDC native**; **SAML via an IdP broker**, see below), signed audit logs (SOC2 / PCI-DSS).
 - Automated compliance reports, long-term retention.
+
+*(COMPLIANCE REPORTS IMPLEMENTED 2026-07-07: a period-scoped, **signed** SOC2/PCI evidence bundle assembled
+from data the system already holds — access control, the tamper-evident audit log (a whole-chain
+verification is attested inside), and WAF telemetry — each section annotated with the controls it supports.
+Read-only, zero-core/zero-datapath, admin-only (`ViewAudit`), only with governance on (reuses the audit
+signer). `GET /api/compliance/report?from=&to=` + `POST /api/compliance/verify` + a **Compliance** dashboard
+view (print-to-PDF). The bundle is itself Ed25519-signed (order-independent content hash), so a generated
+report is self-verifiable evidence. Caveat: denied volumes are period-accurate, allowed/total are cumulative
+counters. Follow-on: native PDF, an immutable report archive, a dedicated auditor role.)*
+
+*(v1 IMPLEMENTED 2026-07-06: `waf-governance` — a control-plane library, zero-core/zero-datapath, on the
+same Postgres. Three fixed RBAC roles (viewer/operator/admin) + a pure permission matrix; **local auth**
+with argon2id passwords + server-side sessions (HttpOnly + SameSite=Strict cookie); a **tamper-evident
+signed audit log** (SHA-256 hash chain + Ed25519 via `ring`, with a `/api/audit/verify` endpoint). With
+governance on, `/api` takes a session (human, RBAC) or the bearer (a machine/admin principal); off by
+default = the plain bearer, backward-compat.)*
+
+*(v2 IMPLEMENTED 2026-07-06: **SSO via OIDC** (Authorization Code + PKCE, id_token verified against the
+IdP's JWKS; role mapped from a configurable claim; federated user provisioning) — verified live against
+Keycloak — plus **auth hardening**: named revocable role-bound service tokens, session listing/revocation
+(auto-revoke on disable / password change), self-service password change + admin reset, and login
+brute-force throttling. **Follow-on:** automated compliance reports, cluster-wide throttle, MFA.
+This unblocked the §2.2 rule-management write path (RBAC `ManageRules` + audit), now IMPLEMENTED.)*
+
+*(SAML — FROZEN DECISION 2026-07-07: **not natively supported by design; covered via an IdP broker.**
+Native SAML requires XML-DSig verification (C14N canonicalization + XML-Signature-Wrapping) — the bug
+class that has broken mature SAML libraries across every ecosystem for years; a hand-rolled validator
+would be false security (the §4-B/apollo-compiler discipline in reverse: there we chose the mature
+library because the control was critical — here a mature *pure-Rust* library does not exist, so we stay
+out of the territory), and the one mature option (`samael` → `xmlsec`/`libxml2`, a real CVE history)
+would betray the pure-Rust/no-C posture in the trust crate itself. Every relevant enterprise IdP (Okta,
+Entra ID, Ping, OneLogin, Keycloak, Google Workspace) speaks OIDC natively; the residual "SAML-only" case
+is covered by an **IdP broker** (Keycloak/Dex) — the customer's SAML IdP federated behind it, the control
+plane speaking only OIDC (runbook §J). **Native = demand-driven follow-on**: reconsidered ONLY on real
+paying-customer demand blocked by the broker path, and ONLY toward `samael` — never a pure-Rust hand-roll.)*
 
 ### 2.4 Threat intelligence and curated content
 - **Premium reputation/signature feed** by subscription. *(Reputation feed IMPLEMENTED
@@ -97,6 +155,16 @@ Scale, governance, compliance, and team operability.
   extraction mirrors the OPEN Phase-11 / gRPC modules and the OPEN structural caps run first, bounding the
   validator's input. gRPC v1 is unary; protobuf unknown-field flagging is opt-in [forward-compat]; streaming /
   grpc-web / `.proto`-source input are follow-ons.)*
+- **Managed OpenAPI positive-security** (validating each REST/JSON request against the app's real OpenAPI spec =
+  contract governance, §3.1). *(IMPLEMENTED 2026-07-15: `waf-modules-premium` `api_schema.rs` routes each request
+  under a guarded path prefix against the spec (JSON; 3.0+3.1 via `oas3`) and validates parameters + JSON body via
+  `jsonschema` — a `structural()` `Phase::Body` `WafModule`, gated by `[enterprise.api_schema]`, default off.
+  Premium-additive `Decision::Scores` under the reserved `schema-api-*` id namespace; an unknown route/method scores
+  Critical, a contract violation [param/body shape] scores the lower `violation_severity`. Extraction mirrors the
+  OPEN normalization [routes on the decoded/traversal-resolved path] and value-level injection stays in the OPEN §6
+  channel [contract, not content]. `jsonschema` runs with no HTTP retriever [a WAF never fetches remote schemas];
+  3.0 schemas are normalized to standard JSON Schema at load [`nullable`]. v1 is JSON-only; BOLA/BFLA and
+  response-side data classification are follow-ons.)*
 - **Premium native signature modules** (§4-A): high-curation `WafModule`s for logic a single regex
   can't express — deliberately NOT the OPEN `scanner` (UA-tool matching) or curated content (§6).
   *(Client-integrity / bot detection IMPLEMENTED 2026-07-03: `waf-modules-premium` scores a
@@ -116,6 +184,17 @@ Scale, governance, compliance, and team operability.
 
 ### 2.5 Integration and support
 - Enterprise SIEM connectors, SLA support, guided hardening.
+
+*(SIEM CONNECTORS IMPLEMENTED 2026-07-07: a background forwarder in the control plane PUSHes the stored
+events — denied WAF verdicts + the signed audit log + fired alerts — to configured SIEM sinks, normalized
+into a versioned, ECS-like NDJSON event (ECS field names where obvious + a `waf.*` domain namespace).
+Read-only, zero-core/zero-datapath (it reads the control-plane stores; the WAF is unaware). Delivery is
+at-least-once: a `(destination, stream)` cursor advances only on a whole-batch 2xx ack, so a sink being
+down loses nothing (the SIEM dedups on the stable `event.id`); backpressure is bounded by Postgres
+(retention), and the lag is exposed by `GET /api/siem/status`. The formatter is an abstraction from day one
+(`SiemFormatter`) so CEF/LEEF/syslog and vendor adapters are future variants over the same event. Config
+`[controlplane.siem]`, default off. Follow-on: those extra formats, a native `siem_forwarder_lag` metric,
+a dead-letter queue, export filters, OTLP.)*
 
 ---
 
