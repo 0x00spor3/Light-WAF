@@ -475,3 +475,73 @@ fn sqli_unterminated_comment_not_treated_as_separator() {
     let d = make_sqli().inspect(&with_query(&[("q", "1 UNION/*SELECT 1 FROM Users")]));
     assert!(!scores_contains(&d, "sqli-union-select"), "unterminated /* must not match: {d:?}");
 }
+
+// ── D-1: error-based / subquery SQLi (DVWA pentest, WAF-DVWA-Report.md) ───────────
+// These `… AND <function>(…)` predicates carry no UNION/OR/comment/numeric-tautology
+// token, so before this fix they bypassed detection at PL3 (confirmed data exfiltration
+// of the admin hash via the XPATH `extractvalue` error channel).
+
+#[test]
+fn sqli_error_based_extractvalue_updatexml_detected() {
+    let m = make_sqli();
+    for p in [
+        "1' AND extractvalue(1,concat(0x7e,version()))-- -",
+        "1' AND updatexml(1,concat(0x7e,user()),1)-- -",
+        "1 and EXTRACTVALUE(1, CONCAT(0x7e, database()))", // case-insensitive + spacing
+    ] {
+        assert!(
+            scores_contains(&m.inspect(&with_query(&[("id", p)])), "sqli-error-based-fn"),
+            "missed error-based function SQLi: {p}"
+        );
+    }
+}
+
+#[test]
+fn sqli_error_based_exfil_payload_from_dvwa_report_detected() {
+    // The exact vector proven to leak `~admin:5f4dcc3b…` through the WAF at PL3.
+    let m = make_sqli();
+    let p = "1' AND extractvalue(1,concat(0x7e,(SELECT concat(user,0x3a,password) FROM users LIMIT 1)))-- -";
+    assert!(
+        scores_contains(&m.inspect(&with_query(&[("id", p)])), "sqli-error-based-fn"),
+        "the confirmed DVWA exfil payload must now be caught"
+    );
+}
+
+#[test]
+fn sqli_error_exp_overflow_detected() {
+    let m = make_sqli();
+    for p in ["1' AND exp(~(SELECT * FROM(SELECT version())a))-- -", "1 AND EXP( ~(select 1))"] {
+        assert!(
+            scores_contains(&m.inspect(&with_query(&[("id", p)])), "sqli-error-exp-overflow"),
+            "missed exp() overflow error-based SQLi: {p}"
+        );
+    }
+}
+
+#[test]
+fn sqli_subquery_exists_detected() {
+    let m = make_sqli();
+    for p in ["1' AND EXISTS(SELECT * FROM users)-- -", "1 and exists ( select 1 )"] {
+        assert!(
+            scores_contains(&m.inspect(&with_query(&[("id", p)])), "sqli-subquery-exists"),
+            "missed EXISTS(SELECT …) subquery SQLi: {p}"
+        );
+    }
+}
+
+#[test]
+fn sqli_d1_no_false_positives() {
+    // Near-zero-FP by construction; these benign values must stay clean.
+    let m = make_sqli();
+    let traps = [
+        ("value", "exp(2)"),                    // math exponential — no `~`
+        ("formula", "exp(-1.5) + 3"),           // math — no `~`
+        ("doc", "extractValue is a helper method"), // prose — no `(` attached
+        ("note", "update xml sitemap nightly"), // words with space, not `updatexml(`
+        ("q", "check if the file exists (the record)"), // `exists (` but no `select`
+    ];
+    for (k, v) in traps {
+        let d = m.inspect(&with_query(&[(k, v)]));
+        assert!(matches!(d, Decision::Allow), "D-1 false positive on {k}={v:?}: {d:?}");
+    }
+}

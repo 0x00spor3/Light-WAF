@@ -108,6 +108,38 @@ pub static SQLI_RULES: &[Rule] = &[
         paranoia: 3,
     },
     Rule {
+        id: "sqli-error-based-fn",
+        // Error-based SQLi via the MySQL/MariaDB XPATH functions: the injected
+        // `extractvalue(1,concat(0x7e,(SELECT …)))` / `updatexml(…)` forces the DB to
+        // echo query results inside an "XPATH syntax error" message (DVWA pentest D-1,
+        // confirmed exfiltration of the admin hash). These predicates carry no
+        // UNION/OR/comment/tautology token, so the other rules miss them. A
+        // `extractvalue(`/`updatexml(` call in request data is an unequivocal SQL signal;
+        // prose that merely names the function (no attached `(`) stays clean.
+        pattern: r"(?i)\b(?:extractvalue|updatexml)\s*\(",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "sqli-error-exp-overflow",
+        // Error-based SQLi via arithmetic overflow: `exp(~(SELECT …))` overflows the
+        // double and leaks the subquery in the error (D-1). The `~` (bitwise NOT) right
+        // after `exp(` is the SQL-specific tell — a benign `exp(2)`/`exp(-1.5)` math call
+        // has no `~`, so FP is near-zero.
+        pattern: r"(?i)\bexp\s*\(\s*~",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "sqli-subquery-exists",
+        // Boolean subquery `EXISTS(SELECT …)` used for blind inference (D-1). Requiring
+        // `select` after the paren keeps benign prose ("check if the record exists (…)")
+        // clean while catching the injected predicate.
+        pattern: r"(?i)\bexists\s*\(\s*select\b",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
         id: "sqli-mssql-dangerous-proc",
         // MSSQL extended/OLE-automation stored procedures that grant OS-level command
         // execution, registry/file access or outbound HTTP (gotestwaf sql-injection:
