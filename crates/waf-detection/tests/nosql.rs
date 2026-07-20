@@ -111,3 +111,47 @@ fn currency_and_normal_names_are_clean() {
     // `$gt` as a VALUE (not a key) must not raise the KEY-position Critical.
     assert!(!fires(&module().inspect(&with_json_keys(&[("note", "3 $gt 2")])), "nosql-operator-key"));
 }
+
+// ── E-4: prototype pollution in KEY position (EXTREME follow-on) ──────────────────
+
+#[test]
+fn proto_pollution_underscore_key_fires_critical() {
+    // `{"__proto__":{"isAdmin":true}}` flattens to key `__proto__.isAdmin`.
+    let d = module().inspect(&with_json_keys(&[("__proto__.isAdmin", "true")]));
+    assert_eq!(severity_of(&d, "proto-pollution-key"), Some(Severity::Critical), "got: {d:?}");
+}
+
+#[test]
+fn proto_pollution_constructor_prototype_key_fires() {
+    // `{"constructor":{"prototype":{"polluted":"x"}}}` → key `constructor.prototype.polluted`.
+    let d = module().inspect(&with_json_keys(&[("constructor.prototype.polluted", "x")]));
+    assert!(fires(&d, "proto-pollution-key"), "got: {d:?}");
+}
+
+#[test]
+fn proto_pollution_form_bracket_key_fires() {
+    let mut c = base_ctx();
+    c.normalized.body = ParsedBody::FormUrlEncoded(vec![("__proto__[isAdmin]".to_string(), "true".to_string())]);
+    assert!(fires(&module().inspect(&c), "proto-pollution-key"), "form __proto__ bracket key");
+}
+
+#[test]
+fn proto_pollution_emitted_once() {
+    let d = module().inspect(&with_json_keys(&[("__proto__.a", "1"), ("__proto__.b", "2")]));
+    if let Decision::Scores(items) = &d {
+        let n = items.iter().filter(|i| i.rule_id == "proto-pollution-key").count();
+        assert_eq!(n, 1, "must emit once: {items:?}");
+    } else {
+        panic!("expected Scores, got {d:?}");
+    }
+}
+
+#[test]
+fn proto_pollution_fp_guards_stay_clean() {
+    // Legit field names that merely contain the words — not the pollution segments.
+    assert!(!fires(&module().inspect(&with_json_keys(&[("constructorName", "Acme")])), "proto-pollution-key"));
+    assert!(!fires(&module().inspect(&with_json_keys(&[("prototype", "v2")])), "proto-pollution-key"));
+    assert!(!fires(&module().inspect(&with_json_keys(&[("constructor", "Acme")])), "proto-pollution-key"));
+    // `__proto__` as a VALUE (key is benign) must not raise the KEY-position Critical.
+    assert!(!fires(&module().inspect(&with_json_keys(&[("note", "about obj.__proto__.x pollution")])), "proto-pollution-key"));
+}

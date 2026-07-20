@@ -154,6 +154,61 @@ fn sqli_tautology_no_fp_on_benign_phrases() {
     }
 }
 
+// ── E-2: tautology beyond `=`/integers (EXTREME follow-on) ──────────────────────
+
+#[test]
+fn sqli_tautology_non_equality_operators_detected() {
+    // EXTREME E-2: the tautology matcher was equality/integer-only. Comparison
+    // operators and LIKE with numeric operands are equally unequivocal tautologies.
+    let m = make_sqli();
+    let payloads = [
+        "1 OR 1 LIKE 1",
+        "1 OR 1<2",
+        "1 OR 2>1",
+        "1 OR 1<>2",
+        "1 OR 1!=2",
+        "1 OR 1<=1",
+        "1 OR 1>=1",
+    ];
+    for p in payloads {
+        assert!(
+            scores_contains(&m.inspect(&with_query(&[("q", p)])), "sqli-tautology-or"),
+            "missed E-2 tautology: {p}"
+        );
+    }
+}
+
+#[test]
+fn sqli_tautology_float_scientific_hex_operands_detected() {
+    // EXTREME E-2: float / scientific-notation / hex operands around `=`.
+    let m = make_sqli();
+    let payloads = ["1 OR 1.0e1=1e1", "1 OR 0x1=0x1", "1 OR 3.5=3.5"];
+    for p in payloads {
+        assert!(
+            scores_contains(&m.inspect(&with_query(&[("q", p)])), "sqli-tautology-or"),
+            "missed E-2 numeric-operand tautology: {p}"
+        );
+    }
+}
+
+#[test]
+fn sqli_tautology_e2_no_fp_on_benign_comparisons() {
+    // E-2 FP guard: comparison/LIKE operands are restricted to NUMERIC literals, so
+    // prose with single-char words around `<`/`>` (`or c>d`) stays clean; only the `=`
+    // form keeps the single-char operand (for `'a'='a'`).
+    let m = make_sqli();
+    let traps = [
+        "if a<b or c>d then true",   // single-char words, comparison → numeric-only guards it
+        "price < 10 or free shipping",
+        "5 or 6 items in stock",
+        "compare x or y then z",
+    ];
+    for t in traps {
+        let d = m.inspect(&with_query(&[("q", t)]));
+        assert!(matches!(d, Decision::Allow), "E-2 false positive on {t:?}: {d:?}");
+    }
+}
+
 #[test]
 fn sqli_quote_comment_detected() {
     let m = make_sqli();

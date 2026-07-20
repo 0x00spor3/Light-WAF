@@ -144,4 +144,32 @@ pub static CASES: &[Case] = &[
         rules: &[],
         desc: "G-3 FP guard: JSON-Schema `$schema`/`$ref`/`$id` keys are NOT Mongo operators",
     },
+    // ── E-4: prototype pollution in KEY position (EXTREME follow-on) ─────────────
+    Case {
+        id: "nosql-proto-pollution-underscore",
+        module: Module::Nosql,
+        field: Field::JsonBody(r#"{"__proto__":{"isAdmin":true}}"#),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["proto-pollution-key"],
+        desc: "E-4: `{\"__proto__\":{…}}` — prototype pollution via JSON key (Node/JS)",
+    },
+    Case {
+        id: "nosql-proto-pollution-constructor",
+        module: Module::Nosql,
+        field: Field::JsonBody(r#"{"constructor":{"prototype":{"polluted":true}}}"#),
+        min_pl: 1,
+        expect: Expect::Triggers,
+        rules: &["proto-pollution-key"],
+        desc: "E-4: `constructor.prototype` chain pollution via JSON key",
+    },
+    Case {
+        id: "nosql-benign-constructor-name",
+        module: Module::Nosql,
+        field: Field::JsonBody(r#"{"constructorName":"Acme","prototype":"v2"}"#),
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "E-4 FP guard: fields merely CONTAINING the words (`constructorName`, lone `prototype`) — must NOT flag",
+    },
 ];

@@ -121,6 +121,69 @@ fn ssrf_short_loopback_form_detected() {
     assert!(scores_contains(&m.inspect(&with_query(&[("u", "http://127.1/admin")])), "ssrf-loopback"));
 }
 
+// ── E-3b: homoglyph loopback is already covered by NFKC (verify-first lock) ──────
+//
+// The report v2-extreme flagged `①②⑦.0.0.1` (circled/fullwidth digit homoglyphs) as a
+// 200/bypass. Verification through the REAL normalizer shows the opposite: NFKC folds the
+// circled (U+2460..) and fullwidth (U+FF11..) digits to ASCII `127.0.0.1` BEFORE detection,
+// so `ssrf-loopback` fires in every form. The report's 200 was a byte/encoding artifact in
+// the harness (same class as the null-byte and U+00A0 false alarms the report itself ruled
+// out). No new rule is needed; this test LOCKS the NFKC-fold coverage against normalizer
+// regressions.
+#[test]
+fn ssrf_homoglyph_loopback_folded_by_nfkc_and_caught() {
+    let m = make_ssrf();
+    let forms = [
+        ("raw circled", "host=\u{2460}\u{2461}\u{2466}.0.0.1"),
+        ("pct circled", "host=%E2%91%A0%E2%91%A1%E2%91%A6.0.0.1"),
+        ("fullwidth", "host=\u{FF11}\u{FF12}\u{FF17}.0.0.1"),
+    ];
+    for (label, query) in forms {
+        let c = normalized_query_ctx(query);
+        assert_eq!(
+            c.normalized.query_params,
+            vec![("host".to_string(), "127.0.0.1".to_string())],
+            "{label}: NFKC should fold homoglyph digits to 127.0.0.1"
+        );
+        assert!(
+            scores_contains(&m.inspect(&c), "ssrf-loopback"),
+            "{label}: loopback must fire after NFKC fold"
+        );
+    }
+}
+
+// ── E-3a: IPv6 loopback (EXTREME follow-on, report v2-extreme) ──────────────────
+
+#[test]
+fn ssrf_ipv6_loopback_detected() {
+    // E-3a: the `[::1]` branch was dead code — it sat inside `\b(?:…)\b`, but `[`/`]`
+    // are non-word chars so those boundaries never matched. Also cover the fully
+    // expanded and partially compressed forms.
+    let m = make_ssrf();
+    for v in [
+        "http://[::1]:6379/",
+        "http://[0:0:0:0:0:0:0:1]/",
+        "http://[0::1]/",
+        "http://[0:0:0:0::1]/",
+    ] {
+        assert!(
+            scores_contains(&m.inspect(&with_query(&[("u", v)])), "ssrf-loopback"),
+            "missed E-3a IPv6 loopback: {v}"
+        );
+    }
+}
+
+#[test]
+fn ssrf_ipv6_loopback_no_fp_on_public_v6() {
+    // FP guard: the bracketed-loopback branch only matches all-zeros-ending-in-1, so a
+    // public / documentation IPv6 must NOT trip loopback.
+    let m = make_ssrf();
+    for v in ["http://[2001:db8::1]/", "http://[2606:4700:4700::1111]/"] {
+        let d = m.inspect(&with_query(&[("u", v)]));
+        assert!(!scores_contains(&d, "ssrf-loopback"), "FP on public IPv6 {v}: {d:?}");
+    }
+}
+
 #[test]
 fn ssrf_private_ip_detected_at_pl3() {
     let m = make_ssrf(); // PL3

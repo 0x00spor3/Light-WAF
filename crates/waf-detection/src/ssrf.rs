@@ -24,7 +24,8 @@ use crate::{all_matches, body_str_values, Rule};
 // Known gaps (documented in ARCHITECTURE §8):
 //   - decimal/hex/octal obfuscation below covers only 127.0.0.1, not the
 //     metadata IP (169.254.169.254 decimal = 2852039166);
-//   - IPv6 coverage is limited to [::1] and fd00:ec2::254 (no fc00::/7, fe80::).
+//   - IPv6 coverage: bracketed loopback (`[::1]`, expanded `[0:0:…:1]`, partial
+//     `[0::1]` — E-3a) and fd00:ec2::254 metadata; still no fc00::/7 or fe80::.
 
 pub static SSRF_RULES: &[Rule] = &[
     Rule {
@@ -46,7 +47,15 @@ pub static SSRF_RULES: &[Rule] = &[
         // Loopback hosts. The `127.1` short form is anchored to a host boundary
         // (start, `/` or `@`) so it does not match valid IPs ending in `.127.1`
         // such as 192.168.127.1.
-        pattern: r"(?i)(?:\b(?:127\.0\.0\.1|0\.0\.0\.0|localhost|\[::1\])\b|(?:[/@]|\A)127\.1(?:[:/]|\z))",
+        //
+        // E-3a: the bracketed IPv6 loopback `[::1]` is a DEDICATED alternative anchored to
+        // the literal `[`/`]` — the old `\[::1\]` sat inside `\b(?:…)\b` and was DEAD CODE
+        // (`[`/`]` are non-word chars, so those `\b` boundaries can never match). The
+        // `\[(?:0{1,4}:|:){1,7}0{0,3}1\]` shape covers `[::1]`, the fully expanded
+        // `[0:0:0:0:0:0:0:1]`, and partial forms (`[0::1]`), while a public IPv6
+        // (`[2001:db8::1]`) is rejected — the bracket body must be all zeros/colons ending
+        // in `1`.
+        pattern: r"(?i)(?:\b(?:127\.0\.0\.1|0\.0\.0\.0|localhost)\b|\[(?:0{1,4}:|:){1,7}0{0,3}1\]|(?:[/@]|\A)127\.1(?:[:/]|\z))",
         severity: Severity::Warning,
         paranoia: 2,
     },

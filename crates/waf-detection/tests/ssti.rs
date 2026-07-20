@@ -142,3 +142,50 @@ fn dunder_js_proto_is_clean() {
     let d = module().inspect(&with_query("q", "obj.__proto__.polluted"));
     assert!(!fires(&d, "ssti-python-dunder"), "false positive on __proto__: {d:?}");
 }
+
+// ── E-4: additional template-engine coverage (EXTREME follow-on) ─────────────────
+
+#[test]
+fn thymeleaf_selection_arithmetic_fires() {
+    // Thymeleaf selection expression `*{7*7}` — new delimiter for the arithmetic rule.
+    let d = module().inspect(&with_query("q", "*{7*7}"));
+    assert!(fires(&d, "ssti-template-arithmetic"), "got: {d:?}");
+}
+
+#[test]
+fn razor_arithmetic_fires() {
+    // Razor `@(1+2)` explicit expression.
+    let d = module().inspect(&with_query("q", "@(1+2)"));
+    assert!(fires(&d, "ssti-template-arithmetic"), "got: {d:?}");
+}
+
+#[test]
+fn jinja_print_paren_statement_fires() {
+    // `{%print(7*7)%}` — `(` directly after the keyword (no whitespace) was missed.
+    let d = module().inspect(&with_query("q", "{%print(7*7)%}"));
+    assert!(fires(&d, "ssti-template-statement"), "got: {d:?}");
+}
+
+#[test]
+fn smarty_php_tag_fires() {
+    for v in ["{php}phpinfo();{/php}", "{php}echo 1;{/php}"] {
+        let d = module().inspect(&with_query("q", v));
+        assert!(fires(&d, "ssti-smarty-php"), "missed Smarty {v:?}: {d:?}");
+    }
+}
+
+// ── E-4 FP guards ────────────────────────────────────────────────────────────────
+
+#[test]
+fn e4_engine_fp_guards_stay_clean() {
+    for v in [
+        "@(user)",             // Razor without arithmetic
+        "@model.Name",         // Razor member access, no delimiter+digits
+        "* { color: red }",    // CSS universal selector (space, no digit-op-digit)
+        "*{margin:0}",         // CSS, no digit-op-digit adjacent
+        "use {% print %} to output",  // bare statement tag naming (prose)
+    ] {
+        let d = module().inspect(&with_query("tpl", v));
+        assert!(matches!(d, Decision::Allow), "E-4 false positive on {v:?}: {d:?}");
+    }
+}

@@ -15,6 +15,14 @@ use crate::{all_matches, body_str_values, inspectable_header_values, Rule};
 pub(crate) const NOSQL_OPERATOR_KEY_PATTERN: &str =
     r"\$(?:or|and|nor|not|ne|eq|gt|gte|lt|lte|nin|in|regex|exists|expr|elemMatch|all|size|type|mod|where|jsonSchema)\b";
 
+/// Prototype-pollution gadget segments in KEY position (E-4): a JSON/form key path whose
+/// segment is `__proto__` or the `constructor.prototype` chain — the Node/JS pollution
+/// vectors (`{"__proto__":{"isAdmin":true}}`, `{"constructor":{"prototype":…}}`). Anchored
+/// to word boundaries so a benign field merely CONTAINING the words (`constructorName`,
+/// a lone `constructor`/`prototype`) does NOT match; scanned in KEY position only, so
+/// `__proto__` appearing in a VALUE (`"note":"about __proto__"`) is not flagged.
+pub(crate) const PROTO_POLLUTION_KEY_PATTERN: &str = r"\b__proto__\b|\bconstructor\.prototype\b";
+
 /// Key strings the operator-in-key scan inspects: JSON / form field keys and multipart
 /// field names. Query param names are added by the caller. Also read by the content
 /// prefilter (Pillar 3 soundness — it must scan the same key surface this module does).
@@ -80,6 +88,8 @@ pub struct NosqlModule {
     active_rules: Vec<&'static Rule>,
     /// G-3: matcher for Mongo operators in KEY position (param names / JSON keys).
     operator_key: Option<Regex>,
+    /// E-4: matcher for prototype-pollution gadgets in KEY position.
+    proto_pollution: Option<Regex>,
 }
 
 impl NosqlModule {
@@ -107,6 +117,10 @@ impl WafModule for NosqlModule {
         // G-3: the operator-in-key scan is always active (structural, PL-independent).
         self.operator_key =
             Some(Regex::new(NOSQL_OPERATOR_KEY_PATTERN).expect("NoSQL key pattern compilation"));
+        // E-4: the prototype-pollution key scan is likewise always active (structural).
+        self.proto_pollution = Some(
+            Regex::new(PROTO_POLLUTION_KEY_PATTERN).expect("proto-pollution key pattern compilation"),
+        );
     }
 
     fn inspect(&self, ctx: &RequestContext) -> Decision {
@@ -145,17 +159,22 @@ impl WafModule for NosqlModule {
             })
             .collect();
 
-        // G-3: scan KEY position (param names + JSON/form/multipart keys). A Mongo operator
-        // as a key is unequivocal → Critical, once.
+        // Scan KEY position (param names + JSON/form/multipart keys) for the two
+        // structural, PL-independent key-injection gadgets. Collect the keys once and
+        // emit each rule at most once.
+        let keys: Vec<&str> = ctx
+            .normalized
+            .query_params
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .chain(body_key_strings(&ctx.normalized.body))
+            .collect();
+
+        // G-3: a Mongo operator as a key is unequivocal → Critical.
         if let Some(re) = &self.operator_key {
-            let key_hit = ctx
-                .normalized
-                .query_params
-                .iter()
-                .map(|(k, _)| k.as_str())
-                .chain(body_key_strings(&ctx.normalized.body))
-                .any(|k| re.is_match(k));
-            if key_hit && !items.iter().any(|i| i.rule_id == "nosql-operator-key") {
+            if keys.iter().any(|k| re.is_match(k))
+                && !items.iter().any(|i| i.rule_id == "nosql-operator-key")
+            {
                 warn!(
                     request_id = %ctx.request_id,
                     rule_id = "nosql-operator-key",
@@ -164,6 +183,25 @@ impl WafModule for NosqlModule {
                 );
                 items.push(ScoreItem {
                     rule_id: "nosql-operator-key".to_string(),
+                    severity: Severity::Critical,
+                });
+            }
+        }
+
+        // E-4: a prototype-pollution gadget (`__proto__` / `constructor.prototype`) as a
+        // key is unequivocal Node/JS pollution → Critical.
+        if let Some(re) = &self.proto_pollution {
+            if keys.iter().any(|k| re.is_match(k))
+                && !items.iter().any(|i| i.rule_id == "proto-pollution-key")
+            {
+                warn!(
+                    request_id = %ctx.request_id,
+                    rule_id = "proto-pollution-key",
+                    severity = ?Severity::Critical,
+                    "nosql detection"
+                );
+                items.push(ScoreItem {
+                    rule_id: "proto-pollution-key".to_string(),
                     severity: Severity::Critical,
                 });
             }

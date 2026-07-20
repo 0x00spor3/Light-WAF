@@ -18,12 +18,18 @@ pub static SQLI_RULES: &[Rule] = &[
     },
     Rule {
         id: "sqli-tautology-or",
-        // OR <operand> = <operand> where each operand is numeric or a single
-        // (optionally quoted) char: OR 1=1, OR 'a'='a', OR x=x. The regex engine
-        // has no backreferences, so we can't enforce equality; restricting operands
-        // to numeric/single-char rejects benign `or word=word` phrases (e.g.
-        // "men or women=adult") that the old space-in-class `+` pattern flagged.
-        pattern: r#"(?i)\bor\s+(?:\d+|['"`]?\w['"`]?)\s*=\s*(?:\d+|['"`]?\w['"`]?)"#,
+        // OR <operand> <op> <operand> boolean tautology. The regex engine has no
+        // backreferences, so we can't enforce equality — we instead constrain the shape:
+        //   • `=` form: each operand is a single (optionally quoted) char or a numeric
+        //     literal (int/float/scientific/hex): `OR 1=1`, `OR 'a'='a'`, `OR x=x`,
+        //     `OR 1.0e1=1e1`, `OR 0x1=0x1`. The single-char operand keeps `'a'='a'`.
+        //   • comparison (`<` `>` `<>` `!=` `<=` `>=`) and `LIKE` forms: operands are
+        //     restricted to NUMERIC literals (E-2), which catches `OR 1<2` / `OR 1 LIKE 1`
+        //     while keeping benign prose with single-char words clean (`a<b or c>d` does
+        //     NOT fire, because `c`/`d` are not numeric).
+        // Restricting operands to numeric/single-char also rejects benign `or word=word`
+        // phrases (e.g. "men or women=adult") that the old space-in-class `+` pattern flagged.
+        pattern: r#"(?i)\bor\s+(?:(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)\s*=\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s*(?:<=|>=|<>|!=|<|>)\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s+like\s+(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?))"#,
         severity: Severity::Critical,
         paranoia: 1,
     },
@@ -72,8 +78,10 @@ pub static SQLI_RULES: &[Rule] = &[
     },
     Rule {
         id: "sqli-tautology-and",
-        // Same narrowing as sqli-tautology-or (rejects benign `and word=word`).
-        pattern: r#"(?i)\band\s+(?:\d+|['"`]?\w['"`]?)\s*=\s*(?:\d+|['"`]?\w['"`]?)"#,
+        // Same shape/operands as sqli-tautology-or (E-2): `=` with single-char/numeric
+        // operands, plus comparison/LIKE with numeric operands. Rejects benign
+        // `and word=word` and keeps `red and blue=mix` clean.
+        pattern: r#"(?i)\band\s+(?:(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)\s*=\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s*(?:<=|>=|<>|!=|<|>)\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s+like\s+(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?))"#,
         severity: Severity::Warning,
         paranoia: 2,
     },

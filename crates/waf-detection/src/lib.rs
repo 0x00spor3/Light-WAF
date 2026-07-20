@@ -143,6 +143,8 @@ pub struct ContentPrefilter {
     /// G-3: Mongo operator in KEY position (always-on, like the nosql module's dedicated
     /// scan — it is Critical/PL-independent, so it is NOT part of the paranoia-gated union).
     operator_key: regex::Regex,
+    /// E-4: prototype-pollution gadget in KEY position (always-on, same model as `operator_key`).
+    proto_pollution: regex::Regex,
     main_ids: Vec<&'static str>,
     host_ids: Vec<&'static str>,
 }
@@ -160,6 +162,8 @@ impl ContentPrefilter {
             host,
             operator_key: regex::Regex::new(nosql::NOSQL_OPERATOR_KEY_PATTERN)
                 .expect("content prefilter operator-key compilation failed"),
+            proto_pollution: regex::Regex::new(nosql::PROTO_POLLUTION_KEY_PATTERN)
+                .expect("content prefilter proto-pollution compilation failed"),
             main_ids: main_rules.iter().map(|(id, _)| *id).collect(),
             host_ids: host_rules.iter().map(|(id, _)| *id).collect(),
         }
@@ -193,13 +197,16 @@ impl ContentPrefilter {
         if body_str_values(&n.body).iter().any(|v| self.main_hit(v)) {
             return true;
         }
-        // G-3 soundness: the nosql module inspects KEY strings (param names + JSON/form
-        // keys) with an always-on operator scan, so the prefilter must scan the same keys
-        // or it would wrongly skip `q[$ne]` / `{"$gt":…}`.
-        if n.query_params.iter().any(|(k, _)| self.operator_key.is_match(k))
-            || crate::nosql::body_key_strings(&n.body).iter().any(|k| self.operator_key.is_match(k))
+        // G-3 / E-4 soundness: the nosql module inspects KEY strings (param names + JSON/form
+        // keys) with always-on operator + prototype-pollution scans, so the prefilter must
+        // scan the same keys or it would wrongly skip `q[$ne]` / `{"$gt":…}` / `{"__proto__":…}`.
         {
-            return true;
+            let key_hit = |k: &str| self.operator_key.is_match(k) || self.proto_pollution.is_match(k);
+            if n.query_params.iter().any(|(k, _)| key_hit(k))
+                || crate::nosql::body_key_strings(&n.body).iter().any(|k| key_hit(k))
+            {
+                return true;
+            }
         }
         // Base64-DERIVED surface (10c): the modules inspect `derived_decoded`, so the
         // prefilter MUST scan it too — else a Base64Flat payload (raw value matches no

@@ -28,11 +28,12 @@ use crate::{all_matches, body_str_values, inspectable_header_values, Rule};
 pub static SSTI_RULES: &[Rule] = &[
     Rule {
         id: "ssti-template-arithmetic",
-        // A template delimiter (`{{`, `#{`, `${`) immediately followed by an
-        // arithmetic expression `<digits> <op> <digits>`. Matches `{{1337*1338}}`,
-        // `#{16*8787}`, `${7*7}`; a benign `{{ user.name }}` or `${base}` has no
-        // digit-operator-digit and is not flagged.
-        pattern: r"(?:\{\{|[#$]\{)\s*\d+\s*[*+/x-]\s*\d+",
+        // A template delimiter immediately followed by an arithmetic expression
+        // `<digits> <op> <digits>`. Delimiters: `{{` (Jinja/Twig), `#{`/`${` (EL/JSP),
+        // `*{` (Thymeleaf selection — E-4), `@(` (Razor — E-4). Matches `{{1337*1338}}`,
+        // `#{16*8787}`, `${7*7}`, `*{7*7}`, `@(1+2)`; a benign `{{ user.name }}`, `${base}`,
+        // `@(user)` or CSS `*{margin:0}` has no digit-operator-digit and is not flagged.
+        pattern: r"(?:\{\{|[#$*]\{|@\()\s*\d+\s*[*+/x-]\s*\d+",
         severity: Severity::Critical,
         paranoia: 1,
     },
@@ -75,9 +76,19 @@ pub static SSTI_RULES: &[Rule] = &[
         // Jinja/Twig/Django STATEMENT tag `{% … %}` carrying an ARGUMENT — template control
         // flow smuggled into a value (`{%for x in …%}`, `{%set x=…%}`, `{%if x%}`), distinct
         // from the `{{ }}` interpolation the arithmetic/object rules cover. The keyword must
-        // be followed by whitespace + a non-`%` token, so technical prose that merely names a
-        // bare tag (`use {% for %} … {% endfor %}`) does NOT flag. (G-2.)
-        pattern: r"(?i)\{%[-+]?\s*(?:for|if|elif|set|with|print|include|import|from|macro|call|filter|block|extends|autoescape|do)\s+[^%\s]",
+        // be followed by whitespace + a non-`%` token, OR an opening `(` directly
+        // (`{%print(7*7)%}` — E-4), so technical prose that merely names a bare tag
+        // (`use {% for %} … {% endfor %}`) does NOT flag. (G-2.)
+        pattern: r"(?i)\{%[-+]?\s*(?:for|if|elif|set|with|print|include|import|from|macro|call|filter|block|extends|autoescape|do)(?:\s+[^%\s]|\s*\()",
+        severity: Severity::Critical,
+        paranoia: 1,
+    },
+    Rule {
+        id: "ssti-smarty-php",
+        // Smarty `{php}…{/php}` tag executes raw PHP — unequivocal RCE (E-4). The tag
+        // never appears in benign user input; matching the bare `{php}`/`{/php}` marker is
+        // enough (a Smarty backend evaluates it).
+        pattern: r"(?i)\{/?php\}",
         severity: Severity::Critical,
         paranoia: 1,
     },

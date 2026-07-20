@@ -63,6 +63,25 @@ pub static CASES: &[Case] = &[
         rules: &["ssrf-private-ip"],
         desc: "RFC1918 private address (Notice/PL3)",
     },
+    // ── E-3a: IPv6 loopback (EXTREME follow-on, report v2-extreme) ──────────────
+    Case {
+        id: "ssrf-ipv6-loopback-compressed",
+        module: Module::Ssrf,
+        field: Field::Query { name: "url", value: "http://[::1]:6379/" },
+        min_pl: 2,
+        expect: Expect::Triggers,
+        rules: &["ssrf-loopback"],
+        desc: "E-3a: `[::1]` IPv6 loopback — the old `\\[::1\\]` sat inside dead `\\b…\\b` boundaries",
+    },
+    Case {
+        id: "ssrf-ipv6-loopback-expanded",
+        module: Module::Ssrf,
+        field: Field::Query { name: "url", value: "http://[0:0:0:0:0:0:0:1]/" },
+        min_pl: 2,
+        expect: Expect::Triggers,
+        rules: &["ssrf-loopback"],
+        desc: "E-3a: fully expanded IPv6 loopback `[0:0:0:0:0:0:0:1]`",
+    },
     // ── known gaps (ARCHITECTURE §8): tracked, never gate ───────────────────────
     Case {
         id: "ssrf-gap-decimal-metadata",
@@ -118,5 +137,16 @@ pub static CASES: &[Case] = &[
         expect: Expect::Clean,
         rules: &[],
         desc: "version-like string that is not a full dotted-quad private IP",
+    },
+    Case {
+        id: "ssrf-benign-public-ipv6",
+        module: Module::Ssrf,
+        // No scheme: a bare `http://` URL fires rfi-remote-url at PL3 (see header note);
+        // the host alone isolates the loopback FP guard.
+        field: Field::Query { name: "host", value: "[2001:db8::1]" },
+        min_pl: 1,
+        expect: Expect::Clean,
+        rules: &[],
+        desc: "E-3a FP guard: public/documentation IPv6 — bracket body is not all-zeros-ending-in-1, so no loopback match",
     },
 ];
