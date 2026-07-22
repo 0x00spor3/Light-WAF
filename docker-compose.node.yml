@@ -20,7 +20,9 @@ name: waf-node
 services:
   # A tiny upstream so the stack works out of the box: echoes the request (headers, method, path).
   echo:
-    image: traefik/whoami
+    #image: bkimminich/juice-shop
+    #image: traefik/whoami
+    image: vulnerables/web-dvwa
     restart: unless-stopped
 
   # Seed the shared rules volume with an (empty) managed file the WAF can load at boot, and

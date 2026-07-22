@@ -1,0 +1,114 @@
+{{- /* SPDX-License-Identifier: BUSL-1.1 */ -}}
+{{- $httpPort := (splitList ":" .Values.config.listen) | last -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wafcp.fullname" . }}
+  labels:
+    {{- include "wafcp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wafcp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: control-plane
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "wafcp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: control-plane
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "wafcp.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: controlplane
+          image: {{ include "wafcp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["/etc/waf/controlplane.toml"]
+          ports:
+            - name: http
+              containerPort: {{ $httpPort }}
+          envFrom:
+            - secretRef:
+                name: {{ include "wafcp.secretName" . }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            {{- if .Values.database.existingSecret }}
+            - name: WAF_CP_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.existingSecretKey }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # The binary connects to Postgres and runs migrations on startup; if the DB is
+          # not ready yet it exits and Kubernetes restarts it until it is.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/waf/controlplane.toml
+              subPath: controlplane.toml
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.config.apiInventory.enabled }}
+            - name: api-spec
+              mountPath: {{ .Values.config.apiInventory.mountPath }}
+              subPath: openapi.json
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "wafcp.fullname" . }}-config
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.config.apiInventory.enabled }}
+        - name: api-spec
+          configMap:
+            name: {{ required "config.apiInventory.specConfigMap is required" .Values.config.apiInventory.specConfigMap }}
+        {{- end }}

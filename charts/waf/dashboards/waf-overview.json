@@ -1,0 +1,131 @@
+{
+  "uid": "waf-overview",
+  "title": "WAF Overview",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(waf_up, namespace)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "WAF up",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } }
+          ]
+        }
+      },
+      "targets": [
+        { "expr": "min(waf_up{namespace=~\"$namespace\"})", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Build version",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^version$/" }, "textMode": "name" },
+      "targets": [
+        { "expr": "waf_build_info{namespace=~\"$namespace\"}", "refId": "A", "format": "table", "instant": true }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Blocked ratio (%)",
+      "type": "stat",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1 } },
+      "targets": [
+        {
+          "expr": "100 * sum(rate(waf_requests_total{decision=\"blocked\",namespace=~\"$namespace\"}[5m])) / clamp_min(sum(rate(waf_requests_total{namespace=~\"$namespace\"}[5m])), 1)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Request rate by decision",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "expr": "sum(rate(waf_requests_total{namespace=~\"$namespace\"}[5m])) by (decision)",
+          "legendFormat": "{{decision}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Request-handling latency (quantiles)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(waf_request_duration_seconds_bucket{namespace=~\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.90, sum(rate(waf_request_duration_seconds_bucket{namespace=~\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p90",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(waf_request_duration_seconds_bucket{namespace=~\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Error verdicts (bad_request / upstream / internal)",
+      "type": "timeseries",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "expr": "sum(rate(waf_requests_total{decision=~\"bad_request|upstream_error|internal_error\",namespace=~\"$namespace\"}[5m])) by (decision)",
+          "legendFormat": "{{decision}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+# ─────────────────────────────────────────────────────────────────────────────
+# waf-operator — Kubernetes operator that reconciles WafProxy CRs into data-plane
+# Deployments (K4, BSL 1.1). It has NO inbound port (a controller/client).
+#
+#   docker build -f Dockerfile.operator -t waf-operator:latest .
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM rust:1-bookworm AS build
+
+# kube-client uses rustls+ring (no aws-lc-rs), so the base toolchain plus
+# ca-certificates for the crates.io fetch is enough — no cmake.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --locked -p waf-operator \
+    && cp /build/target/release/waf-operator /usr/local/bin/waf-operator
+
+# ── Runtime stage ────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+ARG VERSION=0.0.0-dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="waf-operator" \
+      org.opencontainers.image.description="Kubernetes operator (WafProxy CRD → WAF data-plane)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="BUSL-1.1" \
+      org.opencontainers.image.vendor="WAF"
+
+# ca-certificates: TLS to the Kubernetes API server.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin waf \
+    && mkdir -p /app \
+    && chown -R waf:waf /app
+
+COPY --from=build /usr/local/bin/waf-operator /usr/local/bin/waf-operator
+
+USER waf
+WORKDIR /app
+
+# Default entrypoint runs the controller; `waf-operator crd` prints the CRD manifest.
+ENTRYPOINT ["waf-operator"]

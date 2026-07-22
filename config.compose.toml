@@ -107,7 +107,7 @@ listen  = "0.0.0.0:9090"   # scrape GET http://127.0.0.1:9090/metrics
 #score            = 5          # punti se action = "score"
 #max_tracked_keys = 100000     # cap memoria; sweep evince i bucket idle
 
-[enterprise.api_schema]
-enabled   = true
-spec_path = "/etc/waf/openapi.json"
-violation_severity = "critical"
+#[enterprise.api_schema]
+#enabled   = true
+#spec_path = "/etc/waf/openapi.json"
+#violation_severity = "critical"

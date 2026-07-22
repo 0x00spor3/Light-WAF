@@ -1,0 +1,28 @@
+{{ include "waf.fullname" . }} — WAF data-plane deployed (WAF-per-workload).
+
+  Protecting upstream : {{ .Values.waf.backend }}
+  Mode / paranoia     : {{ .Values.waf.mode }} / PL{{ .Values.waf.paranoiaLevel }}
+  Replicas            : {{ if .Values.autoscaling.enabled }}HPA {{ .Values.autoscaling.minReplicas }}–{{ .Values.autoscaling.maxReplicas }}{{ else }}{{ .Values.replicaCount }}{{ end }}
+  Agent sidecar       : {{ if .Values.agent.enabled }}on ({{ .Values.agent.controlPlaneUrl }}){{ else }}off{{ end }}
+
+Reach it in-cluster:
+  http://{{ include "waf.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+{{- if not .Values.redis.urlSecret.name }}
+{{- if gt (int .Values.replicaCount) 1 }}
+
+⚠  replicaCount > 1 but no shared Redis (redis.urlSecret.name unset): rate-limit /
+   reputation / cert state will be counted PER-POD. Set redis.urlSecret for cluster-wide state.
+{{- end }}
+{{- end }}
+{{- if eq .Values.probes.type "http" }}
+
+ℹ  Probes hit the health endpoint on :{{ .Values.health.port }} — {{ .Values.probes.livenessPath }} (liveness) /
+   {{ .Values.probes.readinessPath }} (readiness). On SIGTERM /readyz → 503 so k8s drains gracefully.
+{{- else }}
+
+ℹ  Probes are TCP on the data port (fallback). Set probes.type=http to use the health endpoint.
+{{- end }}
+
+Log shipping: this chart does NOT run a log sidecar — decision-logs go to stdout and are
+collected by the cluster-wide DaemonSet (Vector/Fluent-bit → control-plane /ingest/events).

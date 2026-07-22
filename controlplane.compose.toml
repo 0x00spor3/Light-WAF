@@ -58,5 +58,5 @@ claim = "waf-admins"
 role = "admin"
 
 
-[controlplane.api_inventory]
-spec_path = "/etc/waf/openapi.json"
+#[controlplane.api_inventory]
+#spec_path = "/etc/waf/openapi.json"

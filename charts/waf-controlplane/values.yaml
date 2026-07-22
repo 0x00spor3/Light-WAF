@@ -1,0 +1,197 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Default values for the `waf-controlplane` chart.
+
+# ── Image (set a private registry prefix; never published publicly) ───────────
+image:
+  repository: waf-controlplane
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Sessions live in Postgres, so >1 replica is safe. Default 1 (it's an off-path
+# control service, not on the datapath).
+replicaCount: 1
+
+# ── Control-plane configuration (rendered into controlplane.toml) ─────────────
+config:
+  listen: "0.0.0.0:9600"
+  port: 9600
+  retentionDays: 30
+
+  # Nodes to scrape /metrics from (control plane pulls rollups). Optional — the
+  # push ingest path (/ingest/events) works without this.
+  nodes: []
+  # - name: edge-1
+  #   metricsUrl: http://myapp-waf.prod.svc.cluster.local:9090/metrics
+
+  alerting:
+    enabled: true
+    evalIntervalSeconds: 5
+  alerts:
+    - name: block-burst-per-ip
+      decision: blocked
+      groupBy: client_ip # none | client_ip | rule_id
+      windowSeconds: 60
+      threshold: 20
+      severity: critical
+      cooldownSeconds: 300
+    - name: block-burst-per-rule
+      decision: blocked
+      groupBy: rule_id
+      windowSeconds: 60
+      threshold: 20
+      severity: critical
+      cooldownSeconds: 300
+
+  # Governance (§8): session login + RBAC + signed audit. The bootstrap password and
+  # the audit key come from Secrets, never this config.
+  governance:
+    enabled: true
+    bootstrapAdmin: admin
+    # OIDC SSO (optional). issuerUrl unset ⇒ SSO not configured (local login only).
+    oidc:
+      enabled: false
+      issuerUrl: ""
+      clientId: ""
+      redirectUrl: ""
+      roleClaim: groups
+      roleMap: []
+      # - claim: waf-admins
+      #   role: admin
+
+  # OpenAPI inventory / drift (optional): a ConfigMap holding openapi.json, mounted RO.
+  apiInventory:
+    enabled: false
+    specConfigMap: ""
+    mountPath: /etc/waf/openapi.json
+
+  # Raw TOML appended verbatim (SIEM blocks, extra alerts, …).
+  extraConfig: ""
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# If existingSecret is set, the Deployment loads ALL WAF_CP_* env from it (the chart
+# creates no Secret). Otherwise the chart creates a Secret from the values below.
+secrets:
+  existingSecret: ""
+  # apiToken: bearer for ingest + read API (agents reuse it as WAF_AGENT_TOKEN).
+  apiToken: "changeme-shared-token"
+  # auditKey: 64 hex chars (32-byte Ed25519 seed) for the signed audit log.
+  auditKey: ""
+  # bootstrapAdminPassword: initial local admin password (governance).
+  bootstrapAdminPassword: "changeme-admin"
+  # oidcClientSecret: only if config.governance.oidc.enabled.
+  oidcClientSecret: ""
+  # alertWebhook: optional generic webhook URL for fired alerts.
+  alertWebhook: ""
+
+# ── Database ──────────────────────────────────────────────────────────────────
+# Precedence: existingSecret (must carry WAF_CP_DATABASE_URL) > bundled Postgres > url.
+database:
+  existingSecret: ""
+  existingSecretKey: WAF_CP_DATABASE_URL
+  # Used only when neither existingSecret nor bundled Postgres is in play.
+  # PLACEHOLDER — override with your managed Postgres URL (or use existingSecret /
+  # postgres.bundled). Kept non-empty so `helm template` renders with defaults.
+  url: "postgres://waf:changeme@postgres:5432/waf_cp"
+
+# Optional in-chart Postgres (DEV/DEMO convenience). Production: use a managed DB
+# and set database.existingSecret. Image repo overridable to a private registry.
+postgres:
+  bundled:
+    enabled: false
+    image: postgres:16
+    user: waf
+    password: waf
+    database: waf_cp
+    storage: 8Gi
+    storageClassName: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+
+# Optional in-chart Redis for cluster-wide DATA-PLANE state (rate-limit/reputation/
+# cert). Off by default. When on, point the `waf` chart's redis.urlSecret here.
+redis:
+  bundled:
+    enabled: false
+    image: redis:7
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+# ── Ingress (dashboard/API) ───────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: waf-cp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: waf-cp-tls
+  #   hosts: [waf-cp.example.com]
+
+# ── Service ───────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 9600
+  annotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Extra env / envFrom (e.g. WAF_CP_SIEM_AUTH_* secrets).
+extraEnv: []
+extraEnvFrom: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+pdb:
+  enabled: false
+  minAvailable: 1
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+terminationGracePeriodSeconds: 30
+
+probes:
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

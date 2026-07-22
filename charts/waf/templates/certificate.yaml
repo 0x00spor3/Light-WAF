@@ -1,0 +1,25 @@
+{{- /* SPDX-License-Identifier: BUSL-1.1 */ -}}
+{{- if and .Values.tls.enabled .Values.tls.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "waf.fullname" . }}-tls
+  labels:
+    {{- include "waf.labels" . | nindent 4 }}
+spec:
+  # cert-manager writes the PEM here; the WAF mounts it (tls.secretName should match).
+  secretName: {{ default (printf "%s-tls" (include "waf.fullname" .)) .Values.tls.secretName }}
+  issuerRef:
+    name: {{ required "tls.certManager.issuerRef.name is required" .Values.tls.certManager.issuerRef.name }}
+    kind: {{ .Values.tls.certManager.issuerRef.kind }}
+  dnsNames:
+    {{- range .Values.tls.certManager.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- with .Values.tls.certManager.duration }}
+  duration: {{ . }}
+  {{- end }}
+  {{- with .Values.tls.certManager.renewBefore }}
+  renewBefore: {{ . }}
+  {{- end }}
+{{- end }}

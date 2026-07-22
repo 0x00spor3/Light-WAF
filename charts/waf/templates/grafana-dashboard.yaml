@@ -1,0 +1,15 @@
+{{- /* SPDX-License-Identifier: BUSL-1.1 */ -}}
+{{- if and .Values.metrics.enabled .Values.metrics.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "waf.fullname" . }}-grafana-dashboard
+  labels:
+    {{- include "waf.labels" . | nindent 4 }}
+    {{- with .Values.metrics.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  waf-overview.json: |-
+    {{- .Files.Get "dashboards/waf-overview.json" | nindent 4 }}
+{{- end }}

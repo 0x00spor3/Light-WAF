@@ -1,0 +1,26 @@
+{{- /* SPDX-License-Identifier: BUSL-1.1 */ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "waf.fullname" . }}
+  labels:
+    {{- include "waf.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "waf.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    {{- if and .Values.metrics.enabled .Values.service.exposeMetrics }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}

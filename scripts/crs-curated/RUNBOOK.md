@@ -21,13 +21,13 @@ Two layers:
 ```sh
 cd enterprise
 cargo test -p waf-crs-curated
-# gate.rs (29): 1 load-gate + 27 per-rule bite-tests + 1 benign control ; datapath.rs: 1 pipeline
+# gate.rs (31): 1 load-gate + 28 per-rule bite-tests + 1 obfuscation FP-trap + 1 benign control ; datapath.rs: 2 pipeline
 # block/control ; lib: 1 embed sanity
 ```
 
 What it proves (the enterprise value — a *guaranteed-compatible, tested* ruleset):
 - `all_curated_rules_load_and_nothing_is_silently_skipped` — the engine loads exactly
-  `EXPECTED_LOADED` (27) rules with **zero** skipped. If a future edit reaches outside the supported
+  `EXPECTED_LOADED` (28) rules with **zero** skipped. If a future edit reaches outside the supported
   subset (which the engine would *skip*, not load) this fails — no silent coverage loss.
 - one bite-test per rule — each signature fires on its payload with the declared severity.
 - `datapath.rs` — the module, on the REAL pipeline, blocks a Log4Shell request; the same request
@@ -63,7 +63,7 @@ enabled = true                 # load the curated premium ruleset
 
 ```sh
 WAF_CONFIG=crs-node.toml cargo run -p waf-enterprise
-# boot log: "wiring curated premium CRS ruleset: CRS import: 27 rules loaded, 0 skipped"
+# boot log: "wiring curated premium CRS ruleset: CRS import: 28 rules loaded, 0 skipped"
 ```
 
 In another terminal:
@@ -77,7 +77,7 @@ PORT=8080 scripts/crs-curated/check_curated_rules.sh
 - Every **attack** row → `[BLOCK ok ] … -> 403` (blocked before the backend is reached).
 - The **control** row → `[PASS ok  ] … -> 200` (proxied to the dummy backend).
 - Summary `failed: 0` and `curated ruleset verified on the wire.`
-- Confirm the boot log shows **27 rules loaded, 0 skipped** — the wire counterpart of the offline
+- Confirm the boot log shows **28 rules loaded, 0 skipped** — the wire counterpart of the offline
   gate. Fewer-than-expected also raises a `warn` at boot.
 
 The script only asserts CRITICAL-severity signatures block (they cross `block_threshold = 5` alone).
@@ -94,7 +94,7 @@ same cumulative anomaly score as the native modules).
   `mode = "blocking"`, and `block_threshold <= 6`.
 - **`BLOCK ok` never seen but a different code repeats** — your build's block status differs from
   `403`; re-run with `BLOCK_CODE=<code> scripts/crs-curated/check_curated_rules.sh`.
-- **Boot log says fewer than 27 loaded / N skipped** — a rule fell outside the engine subset (the
+- **Boot log says fewer than 28 loaded / N skipped** — a rule fell outside the engine subset (the
   offline gate would have caught this first); inspect `skipped` reasons at debug log level.
 - **The benign control is blocked (`FALSE +`)** — a curated rule is too broad; identify it from the
   decision log (`rule_id = crs-<id>`) and tighten or drop it.

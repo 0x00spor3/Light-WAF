@@ -41,6 +41,20 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ── Runtime stage ────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
+# OCI provenance labels — populated by scripts/images/build.sh (VERSION from the
+# enterprise workspace, VCS_REF/BUILD_DATE from the build environment). Kept as
+# build args so `docker build` without them still produces a valid image.
+ARG VERSION=0.0.0-dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="waf-enterprise" \
+      org.opencontainers.image.description="WAF data-plane binary (enterprise tier)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="BUSL-1.1" \
+      org.opencontainers.image.vendor="WAF"
+
 # ca-certificates: outbound TLS (ACME directory, HTTPS threat-intel feeds, backends).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
@@ -57,7 +71,8 @@ WORKDIR /app
 # The sample config listens on 0.0.0.0:8080 (plain h1/h2c). If you enable TLS
 # termination it serves on the configured port instead (443 needs a published
 # mapping and, if bound directly, NET_BIND_SERVICE — prefer a mapped high port).
-EXPOSE 8080
+# 8081 = the health endpoint (/healthz + /readyz), WAF_HEALTH_LISTEN (K0).
+EXPOSE 8080 8081
 
 # The enterprise binary reuses the core's config resolver, which takes `--config <path>`
 # (or the WAF_CONFIG env var) — NOT a bare positional. Mount your config at this path.

@@ -34,7 +34,7 @@ const FILES: &[&str] = &[
 /// subset. The compat gate asserts the engine's `loaded_count()` equals this **exactly**: any edit
 /// that introduces an unsupported construct (which is *skipped*, not loaded) then fails the test
 /// rather than silently reducing coverage — the lesson of the B2 setvar-scoring bug.
-pub const EXPECTED_LOADED: usize = 27;
+pub const EXPECTED_LOADED: usize = 28;
 
 /// The full curated ruleset as one `seclang` source: the embedded `.conf` files concatenated in
 /// include order, ready for `waf_detection::crs::CrsModule::from_source`.

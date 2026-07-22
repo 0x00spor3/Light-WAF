@@ -643,7 +643,83 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
     }
 
-    proxy.run().await
+    // ── K0: health endpoint (liveness/readiness) — enterprise-only, zero-core. A tiny raw-HTTP
+    //    listener separate from the datapath. `/healthz` = liveness (process serving); `/readyz` =
+    //    readiness, which flips to 503 once SIGTERM starts the drain so Kubernetes stops routing.
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    {
+        let health_addr =
+            std::env::var("WAF_HEALTH_LISTEN").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
+        match tokio::net::TcpListener::bind(&health_addr).await {
+            Ok(listener) => {
+                info!(addr = %health_addr, "health endpoint listening (/healthz, /readyz)");
+                tokio::spawn(serve_health(listener, Arc::clone(&ready)));
+            }
+            Err(e) => warn!(error = %e, addr = %health_addr, "cannot bind health endpoint; continuing without it"),
+        }
+    }
+
+    // ── K0: graceful drain on SIGTERM via the core-0.5.4 seam. On SIGTERM we mark not-ready
+    //    (readiness → 503) and let `run_with_shutdown` finish in-flight requests, then exit. On
+    //    non-unix (or if the handler cannot be installed) the signal never fires ⇒ identical to
+    //    the historical `run()`. Kubernetes bounds total drain via terminationGracePeriodSeconds.
+    #[cfg(unix)]
+    let shutdown = {
+        let ready = Arc::clone(&ready);
+        async move {
+            let mut term = match tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(error = %e, "cannot install SIGTERM handler; graceful drain disabled");
+                    return std::future::pending::<()>().await;
+                }
+            };
+            term.recv().await;
+            info!("SIGTERM received; marking not-ready and draining in-flight requests");
+            ready.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    };
+    #[cfg(not(unix))]
+    let shutdown = std::future::pending::<()>();
+
+    proxy.run_with_shutdown(shutdown).await
+}
+
+/// Minimal health responder (K0). Not on the datapath: a dedicated listener that answers
+/// `/readyz` with 200/503 by the `ready` flag and everything else (`/healthz`) with 200.
+async fn serve_health(
+    listener: tokio::net::TcpListener,
+    ready: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let ready = Arc::clone(&ready);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            let is_readyz = buf[..n].windows(7).any(|w| w == b"/readyz");
+            let (status, body) = if is_readyz {
+                if ready.load(std::sync::atomic::Ordering::SeqCst) {
+                    ("200 OK", "ready\n")
+                } else {
+                    ("503 Service Unavailable", "draining\n")
+                }
+            } else {
+                ("200 OK", "ok\n")
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+    }
 }
 
 /// Demo-license gate: on a `demo-license` build, verify the license at boot (terminate if invalid or

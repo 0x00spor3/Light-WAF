@@ -1,0 +1,135 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Cluster-wide log shipper (K5 decision): a Vector DaemonSet reads the WAF pods' stdout
+# (JSON decision-log), keeps the request/decision lines, and POSTs them as NDJSON to the
+# control plane's /ingest/events. Out-of-process, zero datapath — the WAF just logs.
+#
+# Edit: WAF_CP_URL (control-plane Service) and the ingest token Secret (waf-cp-ingest/token).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: waf-log-shipper
+  namespace: waf-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: waf-log-shipper
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: waf-log-shipper
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: waf-log-shipper
+subjects:
+  - kind: ServiceAccount
+    name: waf-log-shipper
+    namespace: waf-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: waf-log-shipper
+  namespace: waf-system
+data:
+  vector.toml: |
+    data_dir = "/vector-data"
+
+    # Read ONLY the WAF pods' logs (label selector), never other workloads → no feedback loop.
+    [sources.waf]
+    type = "kubernetes_logs"
+    extra_label_selector = "app.kubernetes.io/name=waf"
+
+    # Reparse each line into the WAF's original JSON and keep only the correlated lines
+    # (they carry fields.request_id: `→ request` + `request blocked/rejected`).
+    [transforms.decisions]
+    type = "remap"
+    inputs = ["waf"]
+    drop_on_abort = true
+    source = '''
+    parsed, err = parse_json(.message)
+    if err != null {
+        abort
+    }
+    . = object(parsed) ?? {}
+    if !exists(.fields.request_id) {
+        abort
+    }
+    '''
+
+    [sinks.control_plane]
+    type = "http"
+    inputs = ["decisions"]
+    uri = "${WAF_CP_URL}/ingest/events?node=${VECTOR_SELF_NODE_NAME}"
+    method = "post"
+    [sinks.control_plane.encoding]
+    codec = "json"
+    [sinks.control_plane.framing]
+    method = "newline_delimited"
+    [sinks.control_plane.request.headers]
+    Authorization = "Bearer ${WAF_CP_INGEST_TOKEN}"
+    [sinks.control_plane.batch]
+    max_events = 50
+    timeout_secs = 1
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: waf-log-shipper
+  namespace: waf-system
+  labels:
+    app.kubernetes.io/name: waf-log-shipper
+    app.kubernetes.io/component: log-shipper
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: waf-log-shipper
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: waf-log-shipper
+    spec:
+      serviceAccountName: waf-log-shipper
+      containers:
+        - name: vector
+          # Public image, pulled to run (this is NOT one of our images being published).
+          image: timberio/vector:0.44.0-debian
+          args: ["--config", "/etc/vector/vector.toml"]
+          env:
+            # CHANGE ME → the control-plane Service URL.
+            - name: WAF_CP_URL
+              value: http://waf-cp-waf-controlplane.waf.svc.cluster.local:9600
+            - name: WAF_CP_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: waf-cp-ingest
+                  key: token
+            - name: VECTOR_SELF_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vector
+              readOnly: true
+            - name: data
+              mountPath: /vector-data
+            - name: var-log
+              mountPath: /var/log
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: waf-log-shipper
+        - name: data
+          emptyDir: {}
+        # kubernetes_logs reads pod stdout from the node's log files.
+        - name: var-log
+          hostPath:
+            path: /var/log

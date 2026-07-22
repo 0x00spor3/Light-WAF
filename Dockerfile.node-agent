@@ -37,12 +37,29 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp /build/target/release/waf-node-agent /usr/local/bin/waf-node-agent
 
 # ── Runtime stage ────────────────────────────────────────────────────────────
+# NOTE: this image intentionally keeps a shell (dash) — the agent runs the
+# configured `reload_command` through `sh`, so a full-distroless base is NOT an
+# option here (unlike the data-plane / control-plane images).
 FROM debian:bookworm-slim AS runtime
+
+ARG VERSION=0.0.0-dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="waf-node-agent" \
+      org.opencontainers.image.description="Per-node rule-management agent (§7 write-path)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="BUSL-1.1" \
+      org.opencontainers.image.vendor="WAF"
 
 # ca-certificates: only needed if the control-plane URL is https. `sh` (dash) is
 # present in the base and is what the agent uses to run `reload_command`.
+# procps: gives `pidof`/`pkill` — under Kubernetes `shareProcessNamespace` the WAF is
+# NOT PID 1 (the pause container is), so the k8s reload_command is
+# `kill -HUP $(pidof waf-enterprise)` rather than compose's `kill -HUP 1`.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates procps \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin waf \
     && mkdir -p /etc/waf /app \
