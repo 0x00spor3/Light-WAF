@@ -48,6 +48,9 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
+      - name: Make scripts executable
+        run: chmod +x scripts/k8s/*.sh scripts/images/*.sh
+
       - name: Run e2e
         run: bash scripts/k8s/e2e-kind.sh
 
