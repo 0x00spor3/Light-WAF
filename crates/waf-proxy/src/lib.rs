@@ -6,13 +6,16 @@ pub mod metrics;
 pub mod tls;
 
 use std::convert::Infallible;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Instant, SystemTime};
+
+use tokio::sync::{watch, Notify};
 
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
@@ -1011,16 +1014,46 @@ impl Proxy {
         self.metrics_listener.as_ref().and_then(|l| l.local_addr().ok())
     }
 
+    /// Serve forever (until an accept error). Equivalent to [`Self::run_with_shutdown`] with a
+    /// signal that never fires — the historical behaviour.
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.run_with_shutdown(std::future::pending::<()>()).await
+    }
+
+    /// Serve until `shutdown` resolves, then **gracefully drain** (core 0.5.4 seam).
+    ///
+    /// On the signal the listener stops accepting NEW connections and each in-flight connection
+    /// is told to finish its current exchange (keep-alive disabled) and close; the method returns
+    /// once every connection has drained. An embedder wires this to `SIGTERM` so a Kubernetes
+    /// rolling update loses no in-flight request (the caller bounds total drain time — e.g.
+    /// `terminationGracePeriodSeconds`). Additive: `run()` delegates here with a never-firing
+    /// signal, so existing behaviour is unchanged.
+    pub async fn run_with_shutdown(
+        self,
+        shutdown: impl Future<Output = ()> + Send,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Spawn the metrics server (B1) on its dedicated listener, if enabled. It shares the
         // process-wide `Metrics` with the datapath and is wholly separate from data serving.
         if let Some(metrics_listener) = self.metrics_listener {
             let metrics = Arc::clone(&self.state.metrics);
             tokio::spawn(serve_metrics(metrics_listener, metrics));
         }
+
+        // `drain` broadcasts the shutdown to every live connection; `conns` counts in-flight
+        // connections so we can wait for a real quiescence (not just "stopped accepting").
+        let (drain_tx, drain_rx) = watch::channel(false);
+        let conns = Arc::new(ConnTracker::default());
+        let mut shutdown = std::pin::pin!(shutdown);
+
         loop {
-            let (stream, client_addr) = self.listener.accept().await?;
+            let (stream, client_addr) = tokio::select! {
+                accepted = self.listener.accept() => accepted?,
+                _ = &mut shutdown => break,
+            };
             let state = Arc::clone(&self.state);
+            let drain_rx = drain_rx.clone();
+            let conns = Arc::clone(&conns);
+            conns.enter();
 
             tokio::spawn(async move {
                 // When TLS is enabled, complete the handshake first; a handshake error is
@@ -1030,17 +1063,56 @@ impl Proxy {
                 match state.tls_acceptor.clone() {
                     Some(acceptor) => match acceptor.accept(stream).await {
                         Ok(tls_stream) => {
-                            serve_connection(TokioIo::new(tls_stream), state, client_addr).await;
+                            serve_connection(TokioIo::new(tls_stream), state, client_addr, drain_rx)
+                                .await;
                         }
                         Err(e) => {
                             warn!(error = %e, client_ip = %client_addr.ip(), "TLS handshake error");
                         }
                     },
                     None => {
-                        serve_connection(TokioIo::new(stream), state, client_addr).await;
+                        serve_connection(TokioIo::new(stream), state, client_addr, drain_rx).await;
                     }
                 }
+                conns.leave();
             });
+        }
+
+        // Drain: stop accepting (listener dropped below), signal live connections to finish, and
+        // wait for them to close. The caller bounds the total time (k8s SIGKILLs on overrun).
+        info!("shutdown signal received; draining in-flight connections");
+        drop(self.listener);
+        let _ = drain_tx.send(true);
+        conns.wait_idle().await;
+        info!("drain complete; all connections closed");
+        Ok(())
+    }
+}
+
+/// Counts in-flight connections so `run_with_shutdown` can wait for real quiescence.
+#[derive(Default)]
+struct ConnTracker {
+    count: AtomicUsize,
+    idle: Notify,
+}
+
+impl ConnTracker {
+    fn enter(&self) {
+        self.count.fetch_add(1, Ordering::AcqRel);
+    }
+    fn leave(&self) {
+        if self.count.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.idle.notify_waiters();
+        }
+    }
+    async fn wait_idle(&self) {
+        loop {
+            // Arm the notification BEFORE re-reading the count to avoid a lost wakeup.
+            let armed = self.idle.notified();
+            if self.count.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            armed.await;
         }
     }
 }
@@ -1125,19 +1197,41 @@ impl<'a> ProxyBuilder<'a> {
 /// Serve one connection with the auto (h1/h2) builder. Generic over the transport so the
 /// SAME service runs over a plain `TcpStream` or a `TlsStream` — the protocol negotiation
 /// (h1 vs h2/h2c) is entirely inside `auto::Builder`, and `handle()` stays protocol-neutral.
-async fn serve_connection<I>(io: I, state: Arc<StaticState>, client_addr: SocketAddr)
-where
+async fn serve_connection<I>(
+    io: I,
+    state: Arc<StaticState>,
+    client_addr: SocketAddr,
+    mut drain_rx: watch::Receiver<bool>,
+) where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
     let svc = service_fn(move |req| {
         let state = Arc::clone(&state);
         handle(req, state, client_addr)
     });
-    if let Err(e) = auto::Builder::new(TokioExecutor::new())
-        .serve_connection(io, svc)
-        .await
-    {
-        warn!(error = %e, client_ip = %client_addr.ip(), "connection error");
+    let builder = auto::Builder::new(TokioExecutor::new());
+    let conn = builder.serve_connection(io, svc);
+    let mut conn = std::pin::pin!(conn);
+    loop {
+        tokio::select! {
+            res = conn.as_mut() => {
+                if let Err(e) = res {
+                    warn!(error = %e, client_ip = %client_addr.ip(), "connection error");
+                }
+                break;
+            }
+            // On the drain signal, tell hyper to finish the in-flight exchange, disable
+            // keep-alive, and close — then await the connection to completion.
+            changed = drain_rx.changed() => {
+                if changed.is_err() || *drain_rx.borrow() {
+                    conn.as_mut().graceful_shutdown();
+                    if let Err(e) = conn.as_mut().await {
+                        warn!(error = %e, client_ip = %client_addr.ip(), "connection error during drain");
+                    }
+                    break;
+                }
+            }
+        }
     }
 }
 

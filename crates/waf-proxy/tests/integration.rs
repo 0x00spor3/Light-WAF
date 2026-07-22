@@ -923,3 +923,45 @@ async fn reload_does_not_reset_rate_limit_buckets() {
     assert_eq!(send("/c").await.unwrap().status(), 429, "bucket must survive reload");
     std::fs::remove_file(&path).ok();
 }
+
+/// The core-0.5.4 graceful-drain seam: `run_with_shutdown` serves normally, and once the
+/// shutdown future resolves it drains in-flight connections and RETURNS (so an embedder can
+/// exit cleanly on SIGTERM). After draining the listener is closed, so new connections fail.
+#[tokio::test]
+async fn run_with_shutdown_serves_then_drains_and_returns() {
+    let backend = start_echo_backend().await;
+    let proxy = Proxy::bind(&make_config(backend)).await.unwrap();
+    let proxy_addr = proxy.local_addr().unwrap();
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let handle = tokio::spawn(async move {
+        proxy
+            .run_with_shutdown(async move {
+                let _ = rx.await;
+            })
+            .await
+    });
+
+    let client = test_client();
+    // Serves normally before the shutdown signal.
+    let pre = client
+        .request(Request::builder().uri(format!("http://{proxy_addr}/pre")).body(empty_body()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(pre.status(), 200, "must serve before shutdown");
+
+    // Fire the signal: the method must drain and return Ok promptly (no hang on the idle
+    // keep-alive connection the client is holding).
+    tx.send(()).unwrap();
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("run_with_shutdown did not return within 5s — drain hung")
+        .expect("run_with_shutdown task panicked");
+    assert!(joined.is_ok(), "run_with_shutdown returned an error: {joined:?}");
+
+    // After draining, the listener is gone → a fresh request cannot connect.
+    let after = client
+        .request(Request::builder().uri(format!("http://{proxy_addr}/post")).body(empty_body()).unwrap())
+        .await;
+    assert!(after.is_err(), "listener must be closed after drain");
+}
