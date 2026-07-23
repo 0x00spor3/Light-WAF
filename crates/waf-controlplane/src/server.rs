@@ -19,12 +19,14 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::config::AlertRule;
+use crate::gov_api::{audit, MaybePrincipal};
 use crate::ingest::Ingestor;
 use crate::prometheus::histogram_quantile;
 use crate::store::{EventFilter, Store};
@@ -77,12 +79,21 @@ pub(crate) fn read_api() -> Router<Arc<AppState>> {
         .route("/api/stream", get(event_stream))
 }
 
+/// The request-capture drill-down route (§Request Capture, C4). Kept OUT of [`read_api`] because it
+/// needs a stricter permission than the rest of the read API: the full captured request may hold raw
+/// secrets. Governance ON gates it with `ViewCaptures` (see `gov_api`); governance OFF gates it with
+/// the static bearer (the admin-equivalent). The view is audited by the handler in both wirings.
+pub(crate) fn capture_routes() -> Router<Arc<AppState>> {
+    Router::new().route("/api/events/{request_id}/capture", get(get_event_capture))
+}
+
 /// Build the router. `/healthz` + `/api/version` (+ the static UI, if `ui_dir` is set) are public.
 /// Ingest is always bearer-gated (machine credential). The read API is gated by the plain bearer, or
 /// — when governance (§8) is enabled — by session/RBAC (and the governance endpoints are mounted).
 pub fn app(state: Arc<AppState>) -> Router {
     let ingest = Router::new()
         .route("/ingest/events", post(ingest_events))
+        .route("/ingest/captures", post(ingest_capture))
         .route_layer(from_fn_with_state(state.clone(), require_bearer));
     let api = if state.governance.is_some() {
         crate::gov_api::governed_router(&state)
@@ -92,6 +103,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         read_api()
             .merge(crate::rule_api::manage_routes())
             .merge(crate::rule_api::agent_routes())
+            .merge(capture_routes())
             .route_layer(from_fn_with_state(state.clone(), require_bearer))
     };
     #[cfg_attr(not(feature = "embed-ui"), allow(unused_mut))]
@@ -220,6 +232,21 @@ async fn ingest_events(
             }
             (StatusCode::OK, format!("stored {n}"))
         }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// Request-capture ingest: store ONE full denied request shipped by a node's request-capture feature.
+/// Bearer-gated (same machine credential as `/ingest/events`). The body is a single JSON capture; a
+/// re-delivered capture (shipper retry) is absorbed idempotently by the store.
+async fn ingest_capture(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<IngestQuery>,
+    Json(capture): Json<crate::model::CapturedRequest>,
+) -> (StatusCode, String) {
+    let node = q.node.unwrap_or_else(|| "unknown".to_string());
+    match state.store.insert_capture(&node, &capture).await {
+        Ok(()) => (StatusCode::OK, "stored".to_string()),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -377,6 +404,25 @@ async fn get_event(State(s): State<Arc<AppState>>, Path(request_id): Path<String
     match s.store.get_decision_event(&request_id).await {
         Ok(Some(ev)) => Json(ev).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "no such request_id").into_response(),
+        Err(e) => err500(e),
+    }
+}
+
+/// The full captured request for a denied event (request-capture feature), joined by `request_id`.
+/// Gated by `ViewCaptures` (raw headers/cookies/body may hold secrets) and the *view* is audited so
+/// access to sensitive data is attributable. 404 when no capture was shipped for that id (capture off,
+/// evicted from the node ring before the verdict, or a connection-phase denial the module never saw).
+async fn get_event_capture(
+    State(s): State<Arc<AppState>>,
+    principal: MaybePrincipal,
+    Path(request_id): Path<String>,
+) -> Response {
+    match s.store.get_capture(&request_id).await {
+        Ok(Some(cap)) => {
+            audit(&s, principal.actor(), "capture.view", Some(request_id), json!({})).await;
+            Json(cap).into_response()
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, "no capture for this request_id").into_response(),
         Err(e) => err500(e),
     }
 }

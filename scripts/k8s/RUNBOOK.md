@@ -64,7 +64,36 @@ Enable in the `waf` chart: `metrics.podMonitor.enabled`, `metrics.prometheusRule
 `metrics.grafanaDashboard.enabled` (Prometheus Operator + Grafana sidecar). The dashboard JSON
 is also at `charts/waf/dashboards/waf-overview.json`.
 
-## D. Static validation (no cluster)
+## D. Request capture (full denied requests)
+
+Capture the FULL denied request (headers/cookies/body) for the event drill-down. Optional, OFF by
+default, zero data-plane core changes. **Raw by default → redact + keep retention short.** Viewing a
+capture needs `ViewCaptures` (operator+) and is audited (`GET /api/events/{id}/capture`).
+
+```sh
+# 1. A Secret with the ingest bearer token (== the control-plane API token) in the WAF's namespace:
+kubectl -n prod create secret generic waf-capture-token --from-literal=token=<api-token>
+
+# 2. Enable capture on the data-plane chart (redact sensitive names node-side):
+helm upgrade myapp-waf charts/waf -n prod --reuse-values \
+  --set capture.enabled=true \
+  --set capture.controlPlaneUrl=http://waf-controlplane.waf.svc.cluster.local:9600 \
+  --set capture.tokenSecret.name=waf-capture-token \
+  --set 'capture.redaction.headers={cookie,authorization,set-cookie}' \
+  --set 'capture.redaction.bodyFields={password,token,secret}'
+
+# 3. Retention (hard-delete) is a CONTROL-PLANE concern — keep it short (default 7d = 168h):
+helm upgrade waf-cp charts/waf-controlplane -n waf --reuse-values \
+  --set config.captures.retentionHours=168
+```
+
+The redacted value never leaves the node (only the names are reported, for the UI banner). The body
+is truncated at `capture.maxBodyBytes` (flagged in the UI). Connection-phase rejects (rate-limit) and
+parser-limit 400s happen before inspection, so they stay metadata-only. The kind e2e
+(`scripts/k8s/e2e-kind.sh`) asserts SQLi → 403 → event → the captured request at
+`/api/events/{id}/capture`.
+
+## E. Static validation (no cluster)
 
 ```sh
 helm lint charts/waf charts/waf-controlplane

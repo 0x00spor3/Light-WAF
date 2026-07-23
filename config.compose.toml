@@ -93,6 +93,28 @@ files = ["/etc/waf/rules/managed.conf"]
 [enterprise.crs_curated]
 enabled = true
 
+# ── Request Capture (enterprise) — cattura la richiesta COMPLETA dei denied ──────
+# Bufferizza method/path/headers/cookies/body delle richieste bloccate in un ring
+# bounded FUORI dal datapath e le spedisce sul canale laterale POST /ingest/captures
+# del control plane (host.docker.internal:9600), per il drill-down evento in dashboard.
+# Raw di default -> redigi i nomi sensibili qui sotto (il valore redatto NON lascia il
+# nodo; solo i NOMI sono riportati, per il banner UI). Il token bearer arriva da
+# WAF_CAPTURE_TOKEN (vedi docker-compose.node.yml), mai da questo file. La retention
+# (hard-delete) e' un concern del control plane ([controlplane.captures]).
+[enterprise.capture]
+enabled          = true
+controlplane_url = "http://host.docker.internal:9600"
+token_env        = "WAF_CAPTURE_TOKEN"
+max_body_bytes   = 65536      # body oltre soglia -> troncato + flaggato
+ring_capacity    = 1024
+ring_bytes       = 33554432   # 32 MiB
+ring_ttl_ms      = 5000       # TTL di una cattura non spedita prima dell'evict
+queue_capacity   = 256        # coda shipper: piena -> drop (mai backpressure sul datapath)
+
+[enterprise.capture.redaction]
+headers     = ["cookie", "authorization", "set-cookie"]
+body_fields = ["password", "token", "secret"]
+
 [metrics]
 enabled = true
 listen  = "0.0.0.0:9090"   # scrape GET http://127.0.0.1:9090/metrics

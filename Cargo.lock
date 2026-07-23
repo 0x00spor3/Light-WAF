@@ -5548,6 +5548,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
+name = "waf-capture"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tracing",
+ "tracing-subscriber",
+ "waf-core",
+ "webpki-roots 1.0.9",
+]
+
+[[package]]
 name = "waf-controlplane"
 version = "0.1.0"
 dependencies = [
@@ -5616,6 +5632,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "waf-capture",
  "waf-core",
  "waf-crs-curated",
  "waf-detection",

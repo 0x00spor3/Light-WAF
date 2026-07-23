@@ -42,6 +42,8 @@ central dashboard, governed rule management, alerting, compliance evidence, or S
    forwarding events to a SIEM.
 8. [Operations](08-operations.md) — reloads, fail-open/closed posture, monitoring, backups, and
    troubleshooting.
+9. [Kubernetes deployment](09-kubernetes.md) — the Helm charts, the `WafProxy` operator, request
+   capture on k8s, observability, and the kind end-to-end test.
 
 ## A note on secrets
 
@@ -52,6 +54,7 @@ Every service reads its secrets from **environment variables that override the c
 |---|---|---|
 | `WAF_REDIS_URL` | proxy | Redis connection for cluster-wide rate limit / reputation |
 | `WAF_CERT_STORE_KEY` | proxy | encrypts the ACME private key at rest (clustered DNS-01) |
+| `WAF_CAPTURE_TOKEN` | proxy | ingest bearer for shipping captured requests (matches `WAF_CP_API_TOKEN`) |
 | `CF_API_TOKEN`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` | proxy | DNS-01 provider credentials |
 | `WAF_CP_DATABASE_URL` | control plane | Postgres connection string |
 | `WAF_CP_API_TOKEN` | control plane | static bearer token (governance off) |

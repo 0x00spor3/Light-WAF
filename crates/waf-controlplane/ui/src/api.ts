@@ -183,6 +183,28 @@ export interface DecisionEvent {
   contributions: Contribution[];
 }
 
+/// A captured HTTP request (request-capture feature) joined to a denied event by `request_id`.
+/// Headers/cookies/body are the raw denied request, with redaction + truncation already applied
+/// node-side. The body arrives base64-encoded (`body_b64`). Viewing it is gated (ViewCaptures) and
+/// audited server-side.
+export interface CapturedRequest {
+  request_id: string;
+  method: string;
+  path: string;
+  query: string | null;
+  http_version: string;
+  headers: [string, string][];
+  cookies: [string, string][];
+  /** Base64 of the (redacted, possibly truncated) body bytes. */
+  body_b64: string;
+  /** Original body size in bytes, before any truncation. */
+  body_size: number;
+  /** True when the stored body was capped node-side. */
+  body_truncated: boolean;
+  /** Header/field names redacted node-side (drives the banner); never carries the redacted values. */
+  redacted: string[];
+}
+
 export interface Alert {
   rule_name: string;
   group_key: string;
@@ -411,6 +433,9 @@ export const api = {
   },
   event: (requestId: string) =>
     apiFetch<DecisionEvent>(`/api/events/${encodeURIComponent(requestId)}`),
+  /** The full captured request for a denied event. Gated by ViewCaptures; the view is audited. */
+  eventCapture: (requestId: string) =>
+    apiFetch<CapturedRequest>(`/api/events/${encodeURIComponent(requestId)}/capture`),
   alerts: (limit = 100) => apiFetch<Alert[]>(`/api/alerts?limit=${limit}`),
   alertRules: () => apiFetch<AlertRule[]>("/api/alerts/rules"),
 

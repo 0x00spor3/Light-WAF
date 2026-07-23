@@ -38,8 +38,11 @@ impl Role {
         match perm {
             // Everyone who can log in can read the observability API.
             Permission::ReadObservability => true,
-            // Operator-and-up: operational write actions (wired as the write path lands).
-            Permission::ManageAlerts | Permission::ManageRules => self >= Role::Operator,
+            // Operator-and-up: operational write actions (wired as the write path lands) plus viewing
+            // captured requests (raw headers/cookies/body of denied requests — sensitive, so above viewer).
+            Permission::ManageAlerts | Permission::ManageRules | Permission::ViewCaptures => {
+                self >= Role::Operator
+            }
             // Admin-only: user management, service tokens, audit access, governance config.
             Permission::ManageUsers
             | Permission::ManageTokens
@@ -95,6 +98,9 @@ pub enum Permission {
     ManageConfig,
     /// Edit/version rules and push them to nodes (reserved for the §7 write path, v3).
     ManageRules,
+    /// View the full captured request (headers/cookies/body) of a denied event (request-capture
+    /// feature). Above viewer because captures may hold raw secrets; each view is audited.
+    ViewCaptures,
 }
 
 #[cfg(test)]
@@ -108,6 +114,7 @@ mod tests {
         assert!(!Role::Viewer.allows(Permission::ManageUsers));
         assert!(!Role::Viewer.allows(Permission::ViewAudit));
         assert!(!Role::Viewer.allows(Permission::ManageRules));
+        assert!(!Role::Viewer.allows(Permission::ViewCaptures));
     }
 
     #[test]
@@ -115,6 +122,7 @@ mod tests {
         assert!(Role::Operator.allows(Permission::ReadObservability));
         assert!(Role::Operator.allows(Permission::ManageAlerts));
         assert!(Role::Operator.allows(Permission::ManageRules));
+        assert!(Role::Operator.allows(Permission::ViewCaptures));
         // Still not an admin.
         assert!(!Role::Operator.allows(Permission::ManageUsers));
         assert!(!Role::Operator.allows(Permission::ManageTokens));
@@ -132,6 +140,7 @@ mod tests {
             Permission::ViewAudit,
             Permission::ManageConfig,
             Permission::ManageRules,
+            Permission::ViewCaptures,
         ] {
             assert!(Role::Admin.allows(p), "admin must be granted {p:?}");
         }

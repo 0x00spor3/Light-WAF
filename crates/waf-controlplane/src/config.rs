@@ -32,6 +32,9 @@ fn default_listen() -> String {
 fn default_retention_days() -> u32 {
     30
 }
+fn default_capture_retention_hours() -> u32 {
+    168 // 7 days — shorter than telemetry retention; captures hold raw request material.
+}
 fn default_scrape_interval() -> u64 {
     15
 }
@@ -329,6 +332,24 @@ pub struct ControlPlaneConfig {
     pub siem: SiemConfig,
     /// API attack-surface inventory (§4-B pt3 discovery). Optional spec to classify against.
     pub api_inventory: ApiInventoryConfig,
+    /// Request-capture storage (retention of the full denied requests shipped by nodes).
+    pub captures: CaptureStoreConfig,
+}
+
+/// `[controlplane.captures]` — retention of the full denied requests (`request_captures`) shipped by
+/// nodes running the request-capture feature. Independent of and typically SHORTER than
+/// `retention_days`: captures carry raw request material (bodies/headers), so they age out fast.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CaptureStoreConfig {
+    /// Hard-delete captures older than this many hours (`0` = keep forever). Default 168 (7 days).
+    pub retention_hours: u32,
+}
+
+impl Default for CaptureStoreConfig {
+    fn default() -> Self {
+        Self { retention_hours: default_capture_retention_hours() }
+    }
 }
 
 /// `[controlplane.api_inventory]` — builds an API attack-surface inventory from the persisted
@@ -358,6 +379,7 @@ impl Default for ControlPlaneConfig {
             governance: GovernanceConfig::default(),
             siem: SiemConfig::default(),
             api_inventory: ApiInventoryConfig::default(),
+            captures: CaptureStoreConfig::default(),
         }
     }
 }

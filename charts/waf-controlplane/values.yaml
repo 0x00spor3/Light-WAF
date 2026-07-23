@@ -18,6 +18,12 @@ config:
   port: 9600
   retentionDays: 30
 
+  # Request-capture retention (hard-delete). Independent of — and deliberately SHORTER than —
+  # retentionDays: captured requests may hold raw secrets, so the reaper prunes them aggressively.
+  # 0 = keep forever (not recommended). Node-side capture is enabled per-workload in the `waf` chart.
+  captures:
+    retentionHours: 168 # 7 days
+
   # Nodes to scrape /metrics from (control plane pulls rollups). Optional — the
   # push ingest path (/ingest/events) works without this.
   nodes: []

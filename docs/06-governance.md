@@ -37,8 +37,12 @@ Three built-in roles, each a superset of the previous:
 | Role | Can do |
 |---|---|
 | `viewer` | read observability — Overview, Events, Alerts, and the read API |
-| `operator` | everything a viewer can, **plus** manage rules (publish/rollback) |
+| `operator` | everything a viewer can, **plus** manage rules (publish/rollback) and view captured requests (`ViewCaptures`) |
 | `admin` | everything, **plus** user & token management, sessions, the audit log, and compliance reports |
+
+Viewing a captured request (the full denied request — see [request capture](03-waf-configuration.md#request-capture))
+needs the `ViewCaptures` permission (operator and up), because captures may hold raw secrets; each view is
+recorded in the signed audit log.
 
 The dashboard hides views a role can't use, but the gating is enforced by the **backend** — a viewer
 who calls an admin endpoint gets `403` regardless of the UI.

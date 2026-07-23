@@ -121,6 +121,13 @@ spec:
                   name: {{ .Values.redis.urlSecret.name }}
                   key: {{ .Values.redis.urlSecret.key }}
             {{- end }}
+            {{- if .Values.capture.enabled }}
+            - name: WAF_CAPTURE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "capture.tokenSecret.name is required when capture.enabled" .Values.capture.tokenSecret.name }}
+                  key: {{ .Values.capture.tokenSecret.key }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

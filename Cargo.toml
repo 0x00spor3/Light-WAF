@@ -20,6 +20,7 @@ members = [
     "crates/waf-modules-premium",
     "crates/waf-marketplace",
     "crates/waf-controlplane",
+    "crates/waf-capture",
     "crates/waf-governance",
     "crates/waf-node-agent",
     "crates/waf-enterprise",

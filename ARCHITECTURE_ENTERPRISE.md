@@ -651,3 +651,92 @@ richiesta); l'enterprise logga le **azioni umane/amministrative** sul control pl
   quando cambia un seam o un'implementazione a scala.
 - Disciplina **bite-test** ereditata (§13 core): una guardia mai vista fallire è speranza,
   non garanzia — vale in primis per l'atomicità distribuita.
+
+---
+
+## 12. Deployment Kubernetes-native — `BOUNDARY.md` §2.5
+
+Feature **interamente enterprise, zero-core datapath**: packaging dichiarativo + integrazione
+ecosistema, NON una riscrittura del datapath. L'unità è **WAF-per-workload** — un Deployment
+`waf-enterprise` davanti a **una** Service applicativa (`[proxy].backend` = quella Service),
+scalato/policy-ato per-app. NON è un ingress-controller cluster-wide: quello richiederebbe
+routing multi-backend nel core (follow-on strategico), e finché non c'è **non si promette**.
+
+### Componenti (tutti in `enterprise/`)
+- **Immagini** (`Dockerfile.*` + `scripts/images/`): build multi-arch, SBOM + scan, OCI labels.
+  **Mai push su registry pubblici** — build/verify locali o registry privato; la pubblicazione
+  è azione manuale dell'operatore (come `cargo publish`).
+- **Chart data-plane** `charts/waf`: Deployment + agent sidecar opzionale (`shareProcessNamespace`,
+  reload `kill -HUP $(pidof waf-enterprise)` — sotto k8s il WAF NON è PID 1), ConfigMap che rende
+  `config.toml`, Service, PodMonitor/PrometheusRule/Grafana, NetworkPolicy, HPA/PDB, Certificate
+  (cert-manager), securityContext non-root 10001/readOnlyRootFS.
+- **Chart control-plane** `charts/waf-controlplane`: Deployment (auto-migrate, embed-ui) + Service
+  + Ingress + Secret + Postgres/Redis bundled opzionali.
+- **Operator** `crates/waf-operator` (kube-rs): CRD `WafProxy` (namespaced) → riconcilia
+  ConfigMap + Deployment + Service con ownerRefs. UX dichiarativa nativa senza routing nel core.
+- **Log shipping**: DaemonSet Vector (`deploy/log-shipper/`) legge lo stdout dei pod WAF e forwarda
+  il decision-log al control plane `/ingest/events` — off-process, zero datapath.
+
+### Osservabilità
+Metriche ABI del core (`waf_up`, `waf_requests_total{decision}`, `waf_request_duration_seconds`)
+→ PodMonitor/PrometheusRule + dashboard Grafana. Nessuna label ad alta cardinalità (path/IP/rule).
+
+### Graceful shutdown
+Interim: `preStop` sleep + `terminationGracePeriodSeconds` (il pod esce dagli endpoint prima del
+SIGTERM). Il drain in-process garantito arriva con la seam OPEN additiva `Proxy::run(shutdown)`.
+
+### Confine
+Il datapath resta il solo Deployment `waf-enterprise`. Control-plane, operator e log-shipper sono
+**off request-path**: osservano/generano manifest, non ispezionano traffico. Verifica end-to-end su
+kind: `scripts/k8s/e2e-kind.sh` (SQLi → 403 → evento nel control plane) e CI `e2e-kind.yml`.
+
+## 13. Request Capture — `BOUNDARY.md` §2.2
+
+Feature **interamente enterprise, opzionale (default OFF), zero-core**: cattura la richiesta HTTP
+**completa** (method/path/query/**headers/cookies/body**) delle richieste **bloccate/rejected** e la
+mostra nel drill-down evento del control plane. Il decision-log ordinario porta solo metadati (per
+privacy + peso); il body **non** viaggia mai nei log/Vector, ma su un **canale laterale dedicato**.
+
+### Seam ZERO-OPEN (nessuna modifica a `waf-core`/`waf-proxy`)
+Tre pezzi nel crate `enterprise/crates/waf-capture`, gated `[enterprise.capture] enabled=false`:
+- **Capture module** (`WafModule` iniettato via `module_factory`, `Phase::RequestLine` + `structural`):
+  clona ogni richiesta in un **ring bounded** (count + byte + TTL); è un **osservatore puro** →
+  ritorna sempre `Allow`, non tocca lo score. Gli allowed sono evictati senza spedire.
+- **CaptureLayer** (`tracing::Layer` nel subscriber enterprise): intercetta le righe `request
+  blocked`/`rejected`, legge il `request_id`, estrae la cattura dal ring e la accoda. È **armato
+  deferred** (`OnceLock`): a capture OFF costa un solo load atomico per evento.
+- **Shipper**: coda bounded + retry best-effort → `POST /ingest/captures` (bearer). **Drop-on-overflow
+  con metrica/log, MAI backpressure sul datapath.**
+
+### Privacy (raw-default + tre difese obbligatorie in v1)
+La cattura è **raw di default**. Poiché segreti in chiaro possono atterrare nel DB del control plane,
+v1 richiede insieme:
+1. **Redazione node-side per-campo** (`[enterprise.capture.redaction]`): liste `headers` + `body_fields`
+   → `***REDACTED***` applicate **sul nodo** (il valore redatto non lascia mai il nodo; solo i **nomi**
+   redatti sono riportati, per il banner UI). Il body è redatto in modo **strutturale** (JSON ricorsivo
+   + form-urlencoded).
+2. **Retention corta e indipendente** nel control plane (`[controlplane.captures] retention_hours`,
+   default 168 = 7g): un reaper orario fa **hard-delete** delle catture, più aggressivo di
+   `retention_days` della telemetria.
+3. **RBAC `ViewCaptures` (operator+) + audit della visione**: il drill-down `GET /api/events/{id}/capture`
+   è gated e ogni visione scrive una riga di audit firmata (`capture.view`) — accesso attribuibile.
+
+### Control plane (zero-core, estende il read-model)
+Migrazione `0007_captures` (`request_captures`: `request_id` PK, headers/cookies/redacted **JSONB**,
+body **BYTEA**, flag `body_truncated`); `POST /ingest/captures` (bearer, idempotente `ON CONFLICT`);
+`GET /api/events/{id}/capture` (RBAC + audit); reaper `run_retention`. UI: pannello **"Captured
+request"** nel dettaglio evento, **reveal-on-click** (l'accesso è deliberato + auditato), con banner
+redazione/troncamento, tabelle headers/cookies e body **Text/Hex** + copy/download.
+
+### Deploy
+Chart `charts/waf`: `capture.enabled` + `capture.redaction.{headers,bodyFields}` + `capture.tokenSecret`
+(→ env `WAF_CAPTURE_TOKEN`, mai nel ConfigMap). Chart `charts/waf-controlplane`:
+`config.captures.retentionHours`. E2e su kind: `scripts/k8s/e2e-kind.sh` estende SQLi → 403 → evento →
+**cattura completa** su `/api/events/{id}/capture`.
+
+### Confine onesto / scope v1
+Reject di **connection-phase** (rate-limit) e 400 da parser-limit avvengono **prima** dell'inspection →
+il capture module non li vede → restano **solo-metadati** (documentato). Costo datapath a ON = un clone
+`Bytes`+headers per richiesta nel ring bounded (trascurabile). Il `CaptureLayer` è accoppiato alle
+stringhe di log `request blocked/rejected` (già contratto del CP). Follow-on: cattura response-body,
+connection-phase, sampling/quota per-nodo, cifratura at-rest, export forense firmato.

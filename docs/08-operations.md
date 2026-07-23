@@ -85,9 +85,4 @@ against a real control plane on Postgres — auth (both modes), RBAC, every view
 Run it with `npm run e2e` (needs `WAF_CP_DATABASE_URL` and a fresh Postgres). It's a good smoke test
 after upgrading.
 
----
-
-That's the operator guide. For the design rationale behind the enterprise/core split and the extension
-seams, continue to [`ARCHITECTURE_ENTERPRISE.md`](../ARCHITECTURE_ENTERPRISE.md) and
-[`BOUNDARY.md`](../../BOUNDARY.md); for per-feature copy-paste procedures, the
-[`scripts/*/RUNBOOK.md`](../scripts) files.
+Next: [Kubernetes deployment](09-kubernetes.md).

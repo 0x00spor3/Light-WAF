@@ -4,13 +4,17 @@
 //! Postgres store for the control plane. Runtime queries (no compile-time `query!` macro) so the
 //! crate builds with no database; only the env-gated integration test needs a live Postgres.
 
+use base64::Engine as _;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::types::Json;
 use time::OffsetDateTime;
 
 use crate::config::AlertRule;
-use crate::error::Result;
-use crate::model::{Alert, Contribution, DecisionEvent, MetricRollup, NodeRuleStatus, RuleVersion, RuleVersionMeta};
+use crate::error::{Error, Result};
+use crate::model::{
+    Alert, CapturedRequest, Contribution, DecisionEvent, MetricRollup, NodeRuleStatus, RuleVersion,
+    RuleVersionMeta,
+};
 use crate::prometheus::{DecisionCount, LatencyBucket};
 
 /// Optional filters for [`Store::search_events`]. A `None` field matches everything.
@@ -69,6 +73,41 @@ impl From<EventRow> for DecisionEvent {
             reason: r.reason,
             score: r.score,
             contributions: r.contributions.0,
+        }
+    }
+}
+
+/// Row shape for `request_captures` reads — JSONB columns decode into typed vecs; `body` is raw
+/// `BYTEA` re-encoded to base64 on the way out to the DTO.
+#[derive(sqlx::FromRow)]
+struct CaptureRow {
+    request_id: String,
+    method: String,
+    path: String,
+    query: Option<String>,
+    http_version: String,
+    headers: Json<Vec<(String, String)>>,
+    cookies: Json<Vec<(String, String)>>,
+    body: Vec<u8>,
+    body_size: i64,
+    body_truncated: bool,
+    redacted: Json<Vec<String>>,
+}
+
+impl From<CaptureRow> for CapturedRequest {
+    fn from(r: CaptureRow) -> Self {
+        CapturedRequest {
+            request_id: r.request_id,
+            method: r.method,
+            path: r.path,
+            query: r.query,
+            http_version: r.http_version,
+            headers: r.headers.0,
+            cookies: r.cookies.0,
+            body_b64: base64::engine::general_purpose::STANDARD.encode(&r.body),
+            body_size: r.body_size.max(0) as u64,
+            body_truncated: r.body_truncated,
+            redacted: r.redacted.0,
         }
     }
 }
@@ -168,6 +207,50 @@ impl Store {
     /// The `limit` most recent events (basic listing; richer search is [`Self::search_events`]).
     pub async fn recent_events(&self, limit: i64) -> Result<Vec<DecisionEvent>> {
         self.search_events(&EventFilter::default(), limit).await
+    }
+
+    /// Store one captured request (request-capture ingest). The node ships the body base64-encoded;
+    /// it is decoded to raw `BYTEA` here. Idempotent: a re-delivered capture (shipper retry) with the
+    /// same `request_id` is absorbed (`ON CONFLICT DO NOTHING`). A body that is not valid base64 is a
+    /// malformed payload → `Error::Config`.
+    pub async fn insert_capture(&self, node: &str, cap: &CapturedRequest) -> Result<()> {
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(cap.body_b64.as_bytes())
+            .map_err(|e| Error::Config(format!("capture body not valid base64: {e}")))?;
+        sqlx::query(
+            "INSERT INTO request_captures \
+             (request_id, node, method, path, query, http_version, headers, cookies, body, body_size, body_truncated, redacted) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+             ON CONFLICT (request_id) DO NOTHING",
+        )
+        .bind(&cap.request_id)
+        .bind(node)
+        .bind(&cap.method)
+        .bind(&cap.path)
+        .bind(&cap.query)
+        .bind(&cap.http_version)
+        .bind(Json(&cap.headers))
+        .bind(Json(&cap.cookies))
+        .bind(&body)
+        .bind(cap.body_size as i64)
+        .bind(cap.body_truncated)
+        .bind(Json(&cap.redacted))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The captured request for a `request_id`, if one was shipped (and not yet pruned). `None` when
+    /// capture is off for the node, the request was not denied, or the capture has aged out.
+    pub async fn get_capture(&self, request_id: &str) -> Result<Option<CapturedRequest>> {
+        let row: Option<CaptureRow> = sqlx::query_as::<_, CaptureRow>(
+            "SELECT request_id, method, path, query, http_version, headers, cookies, body, body_size, body_truncated, redacted \
+             FROM request_captures WHERE request_id = $1",
+        )
+        .bind(request_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Into::into))
     }
 
     /// Search denied-request events with optional filters, newest first (drill-down list, Phase 3).
@@ -783,6 +866,21 @@ impl Store {
             .await?;
         Ok(a.rows_affected() + b.rows_affected() + c.rows_affected() + d.rows_affected())
     }
+
+    /// Hard-delete captured requests older than `hours` (their own retention window — typically much
+    /// shorter than the telemetry `retention_days`, since captures hold raw request material). `0`
+    /// keeps everything. Returns rows removed.
+    pub async fn prune_captures_older_than_hours(&self, hours: u32) -> Result<u64> {
+        if hours == 0 {
+            return Ok(0);
+        }
+        let interval = format!("{hours} hours");
+        let r = sqlx::query("DELETE FROM request_captures WHERE captured_at < now() - $1::interval")
+            .bind(&interval)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
 }
 
 // ── Env-gated integration test (needs a live Postgres) ────────────────────────────────────────
@@ -847,6 +945,47 @@ mod tests {
             .await
             .expect("rollup");
         assert_eq!(store.prune_older_than_days(0).await.expect("prune noop"), 0);
+    }
+
+    fn sample_capture(request_id: &str) -> CapturedRequest {
+        CapturedRequest {
+            request_id: request_id.to_string(),
+            method: "POST".to_string(),
+            path: "/login".to_string(),
+            query: Some("next=/admin".to_string()),
+            http_version: "HTTP/1.1".to_string(),
+            headers: vec![("user-agent".to_string(), "curl/8".to_string())],
+            cookies: vec![("sid".to_string(), "***REDACTED***".to_string())],
+            // base64 of `{"user":"a"}`
+            body_b64: base64::engine::general_purpose::STANDARD.encode(br#"{"user":"a"}"#),
+            body_size: 12,
+            body_truncated: false,
+            redacted: vec!["sid".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_store_roundtrip_env_gated() {
+        let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+            eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+            return;
+        };
+        let store = Store::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+
+        let rid = format!("cap-test-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        let cap = sample_capture(&rid);
+        store.insert_capture("edge-1", &cap).await.expect("insert capture");
+        // Idempotent re-delivery (shipper retry) is absorbed, not an error.
+        store.insert_capture("edge-1", &cap).await.expect("re-insert absorbed");
+
+        let got = store.get_capture(&rid).await.expect("get").expect("present");
+        assert_eq!(got, cap, "capture must round-trip (body via BYTEA↔base64, JSONB headers/cookies)");
+        assert!(got.redacted.contains(&"sid".to_string()));
+
+        // No-op prune (hours=0 keeps everything); a huge window removes nothing recent.
+        assert_eq!(store.prune_captures_older_than_hours(0).await.expect("noop"), 0);
+        assert_eq!(store.prune_captures_older_than_hours(24 * 365).await.expect("wide"), 0);
     }
 
     #[tokio::test]

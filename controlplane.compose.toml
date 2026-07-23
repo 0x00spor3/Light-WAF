@@ -7,6 +7,11 @@
 listen = "0.0.0.0:9600"
 retention_days = 30
 
+# Request-capture retention (hard-delete). Independent of — and shorter than — retention_days:
+# captured requests may hold raw secrets, so the reaper prunes them aggressively. 0 = keep forever.
+[controlplane.captures]
+retention_hours = 168      # 7 giorni
+
 [[controlplane.nodes]]
 name        = "edge-1"
 metrics_url = "http://host.docker.internal:9090/metrics"

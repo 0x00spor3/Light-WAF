@@ -9,6 +9,9 @@
 # Vector tails the WAF's JSON decision-log and ships it to the control plane's /ingest/events
 # (so blocked requests show up in the dashboard). All of it talks to the control plane at
 # WAF_CP_URL (default: the host's published control plane via host.docker.internal:9600).
+# Request capture is ON (config.compose.toml [enterprise.capture]): the WAF ALSO ships the FULL
+# denied request (headers/body, redacted) on a dedicated side-channel to /ingest/captures, so the
+# event drill-down shows the captured request. That bearer is WAF_CAPTURE_TOKEN (below).
 #
 # This stack is runnable as-is: the WAF proxies to the bundled `echo` upstream and loads
 # ./config.compose.toml. Point node-agent.compose.toml `control_plane_url` at your control plane
@@ -21,8 +24,8 @@ services:
   # A tiny upstream so the stack works out of the box: echoes the request (headers, method, path).
   echo:
     #image: bkimminich/juice-shop
-    #image: traefik/whoami
-    image: vulnerables/web-dvwa
+    image: traefik/whoami
+    #image: vulnerables/web-dvwa
     restart: unless-stopped
 
   # Seed the shared rules volume with an (empty) managed file the WAF can load at boot, and
@@ -49,11 +52,18 @@ services:
         condition: service_started
       init-rules:
         condition: service_completed_successfully
-    # Optional enterprise secrets go in an `environment:` mapping, e.g.:
-    #   environment:
-    #     WAF_REDIS_URL: redis://redis:6379
-    #     CF_API_TOKEN: "..."
-    #     AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION: "..."
+    # Lets `host.docker.internal` (the control plane in config.compose.toml's
+    # [enterprise.capture].controlplane_url) resolve on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Bearer for shipping captured requests to the control plane's /ingest/captures
+      # (== the control plane's WAF_CP_API_TOKEN; ingest is bearer-gated). CHANGE for real use.
+      WAF_CAPTURE_TOKEN: ${WAF_CP_API_TOKEN:-changeme-shared-token}
+      # Other optional enterprise secrets go here too, e.g.:
+      #   WAF_REDIS_URL: redis://redis:6379
+      #   CF_API_TOKEN: "..."
+      #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION: "..."
     volumes:
       - ./config.compose.toml:/etc/waf/config.toml:ro
       - managed-rules:/etc/waf/rules

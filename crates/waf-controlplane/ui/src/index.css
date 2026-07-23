@@ -1052,6 +1052,62 @@ button.ghost.danger:hover {
 }
 
 /* ── Print (compliance) ─────────────────────────────────────────── */
+/* ── Captured request panel (request-capture drill-down) ─────────── */
+.cap-reveal {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+.cap-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--rejected) 40%, var(--line-2));
+  background: color-mix(in srgb, var(--rejected) 8%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+}
+.cap-banner code {
+  margin-left: 0.3rem;
+  color: var(--ink);
+}
+.cap-h {
+  margin: 0 0 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.cap-body-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.cap-body-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.cap-body {
+  margin: 0.5rem 0 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 0.75rem 0.9rem;
+  background: #0c0f16;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--ink);
+}
+
 @media print {
   .sidebar,
   .context-bar,

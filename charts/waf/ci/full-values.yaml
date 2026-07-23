@@ -55,6 +55,16 @@ apiSchema:
   enabled: true
   specConfigMap: myapp-openapi
 
+capture:
+  enabled: true
+  controlPlaneUrl: "http://waf-controlplane.waf.svc.cluster.local:9600"
+  redaction:
+    headers: [authorization, cookie, set-cookie]
+    bodyFields: [password, token, secret]
+  tokenSecret:
+    name: waf-capture-token
+    key: token
+
 tls:
   enabled: true
   certManager:

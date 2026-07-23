@@ -21,6 +21,11 @@ scrape_interval_seconds = 15                 # how often to scrape node /metrics
 # api_token    = "change-me"                 # prefer WAF_CP_API_TOKEN (governance-off bearer)
 # ui_dir       = "…/ui/dist"                 # DEV override; production embeds the UI (leave unset)
 
+# Request-capture retention (hard-delete). Independent of — and deliberately SHORTER than —
+# retention_days: captured requests may hold raw secrets, so the reaper prunes them aggressively.
+[controlplane.captures]
+retention_hours = 168                        # 7 days (0 = keep forever, not recommended)
+
 # WAF nodes whose /metrics to scrape (pull side). Node identity is set here, never by the core.
 [[controlplane.nodes]]
 name        = "edge-1"
@@ -44,6 +49,10 @@ Two independent paths, use either or both:
   per-request verdict and score breakdown that powers Events and the drill-down.
 - **Pull — metrics.** List nodes under `[[controlplane.nodes]]`; the scraper polls their Prometheus
   `/metrics` on `scrape_interval_seconds` for volumes and latency.
+- **Push — request captures (optional).** When a node has [request capture](03-waf-configuration.md#request-capture)
+  enabled, its shipper posts each full denied request to `POST /ingest/captures` (bearer-authenticated,
+  idempotent) on a side-channel. These are stored separately, pruned by `[controlplane.captures]`, and
+  surfaced in the drill-down — see below.
 
 ## The dashboard
 
@@ -65,6 +74,14 @@ Manage views behind the bearer token.
   score as stacked per-rule contributions colored by severity, with the outcome flagged; below it, the
   request metadata and a **score breakdown** table listing every rule that contributed (module, rule
   id, severity, points). This is how you see *why* a request was blocked.
+- **Captured request** (when [request capture](03-waf-configuration.md#request-capture) is on and you
+  have the `ViewCaptures` permission) — the panel on the drill-down that shows *what* was blocked: the
+  full request headers, cookies and body. It is **reveal-on-click** because the content may hold raw
+  secrets and every reveal is written to the audit log. Once revealed it shows a redaction/truncation
+  banner (which names were stripped node-side), the request line, headers/cookies tables, and the body
+  with a **Text / Hex** toggle plus copy and download. If a capture has not arrived yet (it ships a
+  moment after the verdict), was dropped under load, or the request was denied before inspection, the
+  panel says so — use **Try again** for the timing case.
 - **Alerts** — recently fired alerts (newest first) and the configured alert rules.
 
 ### Manage

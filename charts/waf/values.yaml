@@ -127,6 +127,36 @@ apiSchema:
   mountPath: /etc/waf/openapi.json
   violationSeverity: critical
 
+# ── Request capture (enterprise.capture) — full denied requests → control-plane ─
+# Buffers the FULL denied request (headers/cookies/body) OFF the datapath in a bounded
+# ring, then ships it on a side-channel to the control-plane for the event drill-down.
+# Zero data-plane core changes. RAW by default → redact sensitive names below AND keep
+# control-plane retention short (charts/waf-controlplane: captures.retentionHours).
+# Viewing a capture is RBAC-gated (ViewCaptures, operator+) and audited.
+capture:
+  enabled: false
+  # Control-plane base URL; the shipper appends /ingest/captures (same listener as ingest/agent).
+  controlPlaneUrl: "http://waf-controlplane.waf.svc.cluster.local:9600"
+  # Bodies larger than this are truncated + flagged (never block the datapath).
+  maxBodyBytes: 65536
+  # Bounded ring holding unshipped captures (count + bytes + TTL). Overflow drops, never blocks.
+  ring:
+    capacity: 1024
+    bytes: 33554432 # 32 MiB
+    ttlMs: 5000
+  # Shipper outbound queue bound (full ⇒ drop with a metric/log, never backpressure the datapath).
+  queueCapacity: 256
+  # Names replaced with ***REDACTED*** node-side before storing/shipping (case-insensitive).
+  # Empty = raw capture. The redacted value never leaves the node.
+  redaction:
+    headers: [] # e.g. [authorization, cookie, set-cookie]
+    bodyFields: [] # e.g. [password, token, secret, card]
+  # Secret holding the ingest bearer token → env WAF_CAPTURE_TOKEN. Required when enabled
+  # (the control-plane's ingest is bearer-gated); the token itself never lands in the ConfigMap.
+  tokenSecret:
+    name: ""
+    key: token
+
 # ── TLS termination at the WAF (PEM from a Secret; cert-manager optional) ──────
 tls:
   enabled: false

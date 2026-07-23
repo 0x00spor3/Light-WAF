@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 0x00spor3
+# SPDX-License-Identifier: BUSL-1.1
+[package]
+name = "waf-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Request-capture feature for Light WAF — enterprise tier (BSL 1.1). Buffers full denied requests off-datapath and ships them to the control-plane for the event drill-down. Optional, default OFF."
+
+[dependencies]
+# C1: the capture DTO, the bounded ring and the `WafModule`. The `tracing::Layer` verdict-join and
+# the HTTP shipper (C2) add their deps then, so the default-OFF feature grows the tree only as wired.
+serde = { workspace = true }
+# Serialize the captured request to the control-plane wire format + parse/rewrite a JSON body for
+# node-side field redaction.
+serde_json = "1"
+# Body bytes → base64 string (JSON cannot carry raw bytes; the CP stores BYTEA).
+base64 = "0.22"
+# The `WafModule` seam + `RequestContext`/`Decision`/`Phase` the capture module reads (zero core).
+waf-core = { workspace = true }
+# C2 — verdict-join layer + shipper.
+tracing = { workspace = true }
+# The `Layer` trait for the verdict-join layer (reads the `request blocked`/`rejected` events).
+tracing-subscriber = { workspace = true }
+# Bounded hand-off channel (layer → shipper) + retry backoff timer. `sync` = mpsc, `time` = sleep.
+tokio = { workspace = true, features = ["sync", "time"] }
+# HTTP shipper → control-plane `/ingest/captures`. `rustls-no-provider` (no aws-lc-rs/cmake) — the
+# client supplies a `ring`-based rustls ClientConfig, exactly as `waf-threatintel`'s HttpListFeed.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+webpki-roots = "1"
+tokio-rustls = { workspace = true, features = ["ring"] }
+
+[dev-dependencies]
+# Build raw `RequestContext`s through the same test builder the corpus/detection suites use.
+waf-core = { workspace = true, features = ["testkit"] }
+# Drive the verdict-join layer with a real `tracing` event in tests.
+tokio = { workspace = true, features = ["macros", "rt"] }

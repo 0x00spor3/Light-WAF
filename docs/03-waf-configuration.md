@@ -358,4 +358,42 @@ config    = "block=/admin"
 Sign with `minisign -Sm plugin.wasm` (→ `plugin.wasm.minisig`); the `trusted_keys` entry is the base64
 line from the `.pub`.
 
+### Request capture
+
+Capture the **full denied request** (method/path/query, headers, cookies, body) so the control-plane
+event drill-down can show exactly what was blocked — not just the metadata the decision-log carries.
+Optional, **off by default**, and it does **not** touch the data path: a pure observer buffers each
+request in a bounded ring off-path, and a background shipper posts the captured denied requests to the
+control plane on a **dedicated side-channel** (never the decision-log/Vector — the body never travels
+in logs). Overflow is dropped, never back-pressured onto the proxy.
+
+It is **raw by default**, so treat it like a secret store: redact sensitive names here, keep the
+control-plane retention short (see [§4](04-control-plane.md)), and know that viewing a capture is
+RBAC-gated (`ViewCaptures`, operator+) and written to the signed audit log.
+
+```toml
+[enterprise.capture]
+enabled          = true
+controlplane_url = "http://waf-controlplane:9600"  # the shipper appends /ingest/captures
+token_env        = "WAF_CAPTURE_TOKEN"             # env holding the ingest bearer — never the token here
+max_body_bytes   = 65536                            # bodies over this are truncated + flagged
+ring_capacity    = 1024                             # ring bounds: entries …
+ring_bytes       = 33554432                         #   … total bytes (32 MiB) …
+ring_ttl_ms      = 5000                             #   … and TTL before an unshipped capture is evicted
+queue_capacity   = 256                              # shipper backlog; full ⇒ drop (never block the proxy)
+
+# Names replaced with ***REDACTED*** node-side (case-insensitive). Empty = raw. The redacted VALUE
+# never leaves the node — only the redacted names are reported, to drive the UI banner.
+[enterprise.capture.redaction]
+headers     = ["cookie", "authorization", "set-cookie"]
+body_fields = ["password", "token", "secret", "card"]
+```
+
+The ingest bearer comes from the environment (`WAF_CAPTURE_TOKEN`), matching the control plane's
+`WAF_CP_API_TOKEN` (ingest is bearer-gated). Enabling capture without a `controlplane_url` is
+boot-fatal (a capture that can never ship is a silent misconfiguration).
+
+**Scope:** connection-phase rejects (rate limit) and parser-limit `400`s happen *before* inspection, so
+those events keep metadata only — there is no captured body for them.
+
 Next: [Control plane & dashboard](04-control-plane.md).

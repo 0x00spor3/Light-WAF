@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
+use waf_capture::{CaptureConfig, RedactionConfig};
 use waf_core::Severity;
 use waf_marketplace::WasmOptions;
 use waf_modules_premium::{
@@ -183,6 +184,8 @@ pub struct EnterpriseConfig {
     pub bot_detection: BotDetectionSection,
     /// `[enterprise.wasm]` — signed WASM plugin loader (§4-C).
     pub wasm: WasmSection,
+    /// `[enterprise.capture]` — request-capture feature (full denied requests → control-plane).
+    pub capture: CaptureSection,
 }
 
 impl Default for EnterpriseConfig {
@@ -198,8 +201,93 @@ impl Default for EnterpriseConfig {
             api_schema: ApiSchemaEnforcementSection::default(),
             bot_detection: BotDetectionSection::default(),
             wasm: WasmSection::default(),
+            capture: CaptureSection::default(),
         }
     }
+}
+
+/// `[enterprise.capture]` — Request Capture (optional, default OFF). Buffers the FULL denied request
+/// (headers/body) off the datapath and ships it to the control-plane for the event drill-down. Zero
+/// core changes (a `WafModule` fills a bounded ring, a `tracing::Layer` joins the verdict, a shipper
+/// POSTs to `/ingest/captures` — landing in C1–C2). Capture is **raw by default**; the redaction
+/// sub-table strips named headers/body-fields node-side. Retention (hard-delete) is a control-plane
+/// concern and is configured there, not here. The bearer token comes from the environment
+/// (`token_env`), never this file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CaptureSection {
+    pub enabled: bool,
+    /// Control-plane base URL (e.g. `http://controlplane:8080`); the shipper appends `/ingest/captures`.
+    pub controlplane_url: String,
+    /// Env var holding the ingest bearer token (never the token itself).
+    pub token_env: String,
+    /// Cap on captured body bytes (larger → truncated + flagged).
+    pub max_body_bytes: usize,
+    /// Ring bound by entry count.
+    pub ring_capacity: usize,
+    /// Ring bound by total bytes.
+    pub ring_bytes: usize,
+    /// Ring entry time-to-live (ms) before an unshipped capture is evicted.
+    pub ring_ttl_ms: u64,
+    /// Bound on the shipper's outbound queue (full ⇒ drop, never block the datapath).
+    pub queue_capacity: usize,
+    /// `[enterprise.capture.redaction]` — header/body-field names to strip node-side.
+    pub redaction: RedactionSection,
+}
+
+impl Default for CaptureSection {
+    fn default() -> Self {
+        // Mirror `CaptureConfig::default()` so the TOML defaults and the typed defaults never drift.
+        let d = CaptureConfig::default();
+        Self {
+            enabled: d.enabled,
+            controlplane_url: d.controlplane_url,
+            token_env: d.token_env,
+            max_body_bytes: d.max_body_bytes,
+            ring_capacity: d.ring_capacity,
+            ring_bytes: d.ring_bytes,
+            ring_ttl_ms: d.ring_ttl.as_millis() as u64,
+            queue_capacity: d.queue_capacity,
+            redaction: RedactionSection::default(),
+        }
+    }
+}
+
+impl CaptureSection {
+    /// Build the typed [`CaptureConfig`]. Boot-fatal (returns `Err`) when enabled without a
+    /// control-plane URL — a capture module that can never ship is a silent misconfiguration.
+    pub fn to_config(&self) -> Result<CaptureConfig, String> {
+        if self.enabled && self.controlplane_url.trim().is_empty() {
+            return Err(
+                "[enterprise.capture] enabled = true requires a non-empty controlplane_url".into(),
+            );
+        }
+        Ok(CaptureConfig {
+            enabled: self.enabled,
+            controlplane_url: self.controlplane_url.clone(),
+            token_env: self.token_env.clone(),
+            max_body_bytes: self.max_body_bytes,
+            ring_capacity: self.ring_capacity,
+            ring_bytes: self.ring_bytes,
+            ring_ttl: Duration::from_millis(self.ring_ttl_ms),
+            queue_capacity: self.queue_capacity,
+            redaction: RedactionConfig {
+                headers: self.redaction.headers.clone(),
+                body_fields: self.redaction.body_fields.clone(),
+            },
+        })
+    }
+}
+
+/// `[enterprise.capture.redaction]` — names stripped node-side before a capture is stored/shipped.
+/// Empty (the default) = raw capture. Both lists match case-insensitively.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct RedactionSection {
+    /// Header names to replace with `***REDACTED***` (e.g. `authorization`, `cookie`, `set-cookie`).
+    pub headers: Vec<String>,
+    /// Body field / form parameter names to replace with `***REDACTED***` (e.g. `password`, `token`).
+    pub body_fields: Vec<String>,
 }
 
 /// `[enterprise.wasm]` — load Proxy-Wasm plugins ONLY after verifying a minisign signature against
@@ -1229,5 +1317,75 @@ redis_url = "redis://localhost:6379"
         assert_eq!(f.enterprise.redis_url.as_deref(), Some("redis://localhost:6379"));
         assert!(f.enterprise.pool_size.is_none());
         assert!(f.enterprise.fail_open);
+    }
+
+    #[test]
+    fn capture_defaults_off_and_raw() {
+        let f = EnterpriseFile::from_toml_str(
+            "[proxy]\nlisten=\"127.0.0.1:8080\"\nbackend=\"http://x:3000\"\n[waf]\nmode=\"blocking\"\n",
+        )
+        .expect("parses");
+        let cap = &f.enterprise.capture;
+        assert!(!cap.enabled, "request-capture default OFF");
+        let cfg = cap.to_config().expect("disabled config always builds");
+        assert!(!cfg.enabled);
+        assert!(cfg.redaction.is_empty(), "default is raw capture");
+        assert_eq!(cfg.token_env, "WAF_CAPTURE_TOKEN");
+        assert_eq!(cfg.ring_ttl, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn reads_capture_section_with_redaction_and_builds_config() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.capture]
+enabled = true
+controlplane_url = "http://controlplane:8080"
+token_env = "MY_CAPTURE_TOKEN"
+max_body_bytes = 131072
+ring_capacity = 512
+ring_bytes = 16777216
+ring_ttl_ms = 3000
+queue_capacity = 128
+[enterprise.capture.redaction]
+headers = ["Authorization", "Cookie"]
+body_fields = ["password", "token"]
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        let cfg = f.enterprise.capture.to_config().expect("builds");
+        assert!(cfg.enabled);
+        assert_eq!(cfg.controlplane_url, "http://controlplane:8080");
+        assert_eq!(cfg.token_env, "MY_CAPTURE_TOKEN");
+        assert_eq!(cfg.max_body_bytes, 131072);
+        assert_eq!(cfg.ring_capacity, 512);
+        assert_eq!(cfg.ring_bytes, 16_777_216);
+        assert_eq!(cfg.ring_ttl, Duration::from_millis(3000));
+        assert_eq!(cfg.queue_capacity, 128);
+        assert!(cfg.redaction.header_redacted("authorization"));
+        assert!(cfg.redaction.header_redacted("cookie"));
+        assert!(cfg.redaction.field_redacted("PASSWORD"));
+        assert!(!cfg.redaction.is_empty());
+    }
+
+    #[test]
+    fn capture_enabled_without_url_is_rejected() {
+        let toml = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+backend = "http://127.0.0.1:3000"
+[waf]
+mode = "blocking"
+[enterprise.capture]
+enabled = true
+"#;
+        let f = EnterpriseFile::from_toml_str(toml).expect("parses");
+        assert!(
+            f.enterprise.capture.to_config().is_err(),
+            "enabled capture without controlplane_url must be boot-fatal"
+        );
     }
 }

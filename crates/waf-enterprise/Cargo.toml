@@ -28,6 +28,9 @@ waf-crs-curated = { path = "../waf-crs-curated", version = "0.1.0" }
 waf-modules-premium = { path = "../waf-modules-premium", version = "0.1.0" }
 # §4-C signed WASM plugin loader (verify minisign signature → OPEN WasmModule::from_bytes).
 waf-marketplace = { path = "../waf-marketplace", version = "0.1.0" }
+# Request Capture feature (optional, default OFF): buffers full denied requests off-datapath and
+# ships them to the control-plane drill-down. C0 wires the `[enterprise.capture]` config only.
+waf-capture = { path = "../waf-capture", version = "0.1.0" }
 # The OPEN CRS engine — the enterprise binary builds a `CrsModule` from the curated content
 # (`waf-crs-curated`) and injects it via `.add_module()`.
 waf-detection.workspace = true

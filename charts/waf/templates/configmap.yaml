@@ -83,6 +83,22 @@ data:
     violation_severity = {{ .Values.apiSchema.violationSeverity | quote }}
     {{- end }}
 
+    {{- if .Values.capture.enabled }}
+    [enterprise.capture]
+    enabled          = true
+    controlplane_url = {{ required "capture.controlPlaneUrl is required when capture.enabled" .Values.capture.controlPlaneUrl | quote }}
+    token_env        = "WAF_CAPTURE_TOKEN"
+    max_body_bytes   = {{ .Values.capture.maxBodyBytes | int64 }}
+    ring_capacity    = {{ .Values.capture.ring.capacity | int64 }}
+    ring_bytes       = {{ .Values.capture.ring.bytes | int64 }}
+    ring_ttl_ms      = {{ .Values.capture.ring.ttlMs | int64 }}
+    queue_capacity   = {{ .Values.capture.queueCapacity | int64 }}
+
+    [enterprise.capture.redaction]
+    headers     = {{ .Values.capture.redaction.headers | toJson }}
+    body_fields = {{ .Values.capture.redaction.bodyFields | toJson }}
+    {{- end }}
+
     {{- with .Values.waf.extraConfig }}
 
     {{ . | nindent 4 }}

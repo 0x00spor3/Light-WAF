@@ -117,12 +117,22 @@ fn build_feed_sources(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+    // Registry-based subscriber (was `fmt().json()`): same JSON output the control-plane ingest
+    // parses, but composable so the request-capture `tracing::Layer` (C2) can be added with
+    // `.with(CaptureLayer::new(..))` — it reads the `request blocked`/`request rejected` events to
+    // join the verdict onto the buffered capture. Behaviour is identical while capture is OFF.
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    // The capture layer is installed now (before the config is read) but DISARMED — the ring + shipper
+    // are attached later via `capture_handle.arm(..)` only if `[enterprise.capture]` is enabled. While
+    // disarmed it is a single atomic load per event, so a process that never enables capture pays ~0.
+    let capture_handle = waf_capture::CaptureHandle::new();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().json())
+        .with(waf_capture::CaptureLayer::new(capture_handle.clone()))
         .init();
 
     // Install ONE process-level rustls CryptoProvider before any TLS is built. The dependency
@@ -172,6 +182,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
     let ent = &ent_file.enterprise;
+
+    // ── Request Capture (§ enterprise, optional) — validate the config at boot so a misconfigured
+    // capture (enabled without a control-plane URL) fails fast rather than silently never shipping.
+    // C0 only validates + logs; the ring/module (C1) and the tracing-Layer + shipper (C2) plug in
+    // later. Boot-fatal on an invalid section, consistent with the other enterprise seams.
+    let capture_cfg = match ent.capture.to_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("waf-enterprise: {e}");
+            std::process::exit(2);
+        }
+    };
+    // When enabled: build the shared ring, spawn the HTTP shipper, and arm the capture layer. The
+    // ring is then also handed to the `module_factory` below so the capture `WafModule` and the
+    // verdict-join layer share the SAME buffer. The bearer token comes from the environment.
+    let capture_ring: Option<Arc<waf_capture::CaptureRing>> = if capture_cfg.enabled {
+        let ring = Arc::new(waf_capture::CaptureRing::new(
+            capture_cfg.ring_capacity,
+            capture_cfg.ring_bytes,
+            capture_cfg.ring_ttl,
+        ));
+        let token = std::env::var(&capture_cfg.token_env).ok().filter(|t| !t.is_empty());
+        if token.is_none() {
+            warn!(
+                token_env = %capture_cfg.token_env,
+                "request-capture: no bearer token in env; shipping unauthenticated"
+            );
+        }
+        match waf_capture::CaptureShipper::spawn(&capture_cfg, token) {
+            Ok(sink) => {
+                capture_handle.arm(Arc::clone(&ring), sink);
+                info!(
+                    controlplane_url = %capture_cfg.controlplane_url,
+                    "request-capture enabled (ring + shipper armed)"
+                );
+                Some(ring)
+            }
+            Err(e) => {
+                eprintln!("waf-enterprise: request-capture shipper: {e}");
+                std::process::exit(2);
+            }
+        }
+    } else {
+        None
+    };
 
     // Cluster cert-sharing (SharedCertStore): opt-in via `[tls.acme].cluster`, only for DNS-01
     // with TLS on. It needs Redis (the shared cert store) AND `WAF_CERT_STORE_KEY` (the private
@@ -563,10 +618,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         || ge_cfg.is_some()
         || api_cfg.is_some()
         || bd_cfg.is_some()
-        || wasm_spec.is_some();
+        || wasm_spec.is_some()
+        || capture_ring.is_some();
     if has_factory_modules {
         builder = builder.module_factory(move || {
             let mut mods: Vec<Box<dyn waf_core::WafModule>> = Vec::new();
+            // Request Capture (pure observer, RequestLine/structural): mirrors each request into the
+            // ring shared with the verdict-join layer. Rebuilt on reload with the same ring, so
+            // in-flight captures survive a SIGHUP.
+            if let Some(ring) = &capture_ring {
+                mods.push(Box::new(waf_capture::CaptureModule::new(&capture_cfg, ring.clone())));
+            }
             if let Some((store, cfg)) = &rep_spec {
                 mods.push(Box::new(ReputationModule::new(store.clone(), *cfg)));
             }

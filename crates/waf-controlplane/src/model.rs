@@ -40,6 +40,31 @@ pub struct DecisionEvent {
     pub contributions: Vec<Contribution>,
 }
 
+/// A captured HTTP request — the full denied request (headers/cookies/body) shipped by the node's
+/// request-capture feature, joined to a [`DecisionEvent`] by `request_id` in the drill-down. Mirrors
+/// the node's wire shape (`waf-capture::CapturedRequest`); the control plane never links that crate.
+/// The body arrives base64-encoded (JSON cannot carry raw bytes) and is stored as `BYTEA`. Redaction
+/// and truncation are already applied node-side — the control plane only persists/serves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapturedRequest {
+    pub request_id: String,
+    pub method: String,
+    pub path: String,
+    #[serde(default)]
+    pub query: Option<String>,
+    pub http_version: String,
+    pub headers: Vec<(String, String)>,
+    pub cookies: Vec<(String, String)>,
+    /// Base64 of the (redacted, possibly truncated) body bytes.
+    pub body_b64: String,
+    /// Original body size in bytes, before any truncation.
+    pub body_size: u64,
+    /// True when the stored body was capped node-side.
+    pub body_truncated: bool,
+    /// Names redacted node-side (drives the UI banner). Never carries the redacted values.
+    pub redacted: Vec<String>,
+}
+
 /// A point-in-time count of one decision class scraped from a node's `/metrics`
 /// (`waf_requests_total{decision}`), kept for long-term retention / time-series dashboards.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

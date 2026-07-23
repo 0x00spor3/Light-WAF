@@ -212,6 +212,9 @@ async fn require_tokens(State(s): State<Arc<AppState>>, req: Request, next: Next
 pub(crate) async fn require_rules(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     require(s, Permission::ManageRules, req, next).await
 }
+async fn require_captures(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    require(s, Permission::ViewCaptures, req, next).await
+}
 
 // ── Audit helper ────────────────────────────────────────────────────────────────────────────────
 
@@ -895,6 +898,11 @@ pub fn governed_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let rules_agent = crate::rule_api::agent_routes()
         .route_layer(from_fn_with_state(state.clone(), require_read));
 
+    // Request-capture drill-down (§C4): viewing a full denied request requires ViewCaptures (above
+    // viewer — captures may hold raw secrets) and the view is audited by the handler.
+    let captures = crate::server::capture_routes()
+        .route_layer(from_fn_with_state(state.clone(), require_captures));
+
     Router::new()
         .route("/api/login", post(login))
         .route("/api/auth/oidc/login", get(oidc_login))
@@ -905,6 +913,7 @@ pub fn governed_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(audit_routes)
         .merge(rules_manage)
         .merge(rules_agent)
+        .merge(captures)
 }
 
 #[cfg(test)]

@@ -194,6 +194,88 @@ async fn governance_e2e_env_gated() {
     assert_eq!(verify["ok"], true, "clean chain must verify; got {verify}");
     assert!(verify["count"].as_i64().unwrap() >= 4, "bootstrap + logins + user.create recorded");
 
+    // ── §Request Capture (C4): drill-down is ViewCaptures (operator+), and the view is audited ──────
+    // Admin creates an operator; a full denied request is ingested on the capture side-channel.
+    let bob_created = client
+        .post(format!("{base}/api/users"))
+        .header("Cookie", format!("waf_cp_session={admin_sid}"))
+        .json(&serde_json::json!({"username": "bob", "password": "bobpw", "role": "operator"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bob_created.status().as_u16(), 201, "admin creates operator → 201");
+    let bob_sid = session_from_set_cookie(&login(&client, &base, "bob", "bobpw").await).expect("bob session");
+
+    let cap_id = "cap-req-c4";
+    let ingest_cap = client
+        .post(format!("{base}/ingest/captures?node=edge-1"))
+        .header("Authorization", "Bearer svc-token")
+        .json(&serde_json::json!({
+            "request_id": cap_id,
+            "method": "POST",
+            "path": "/login",
+            "query": serde_json::Value::Null,
+            "http_version": "HTTP/1.1",
+            "headers": [["content-type", "application/x-www-form-urlencoded"]],
+            "cookies": [],
+            "body_b64": "dXNlcj1hZG1pbg==", // "user=admin"
+            "body_size": 10,
+            "body_truncated": false,
+            "redacted": ["password"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ingest_cap.status().as_u16(), 200, "capture ingest (bearer) → 200");
+
+    // A viewer cannot see the captured request (ViewCaptures is operator-and-up).
+    let viewer_cap = client
+        .get(format!("{base}/api/events/{cap_id}/capture"))
+        .header("Cookie", format!("waf_cp_session={alice_sid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(viewer_cap.status().as_u16(), 403, "viewer on capture drill-down → 403");
+
+    // An operator can, and gets the full captured request back.
+    let op_cap = client
+        .get(format!("{base}/api/events/{cap_id}/capture"))
+        .header("Cookie", format!("waf_cp_session={bob_sid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(op_cap.status().as_u16(), 200, "operator on capture drill-down → 200");
+    let cap_body: serde_json::Value = op_cap.json().await.unwrap();
+    assert_eq!(cap_body["request_id"], cap_id);
+    assert_eq!(cap_body["method"], "POST");
+    assert_eq!(cap_body["redacted"][0], "password", "node-side redactions carried through");
+
+    // A request_id with no capture 404s (capture off / evicted / connection-phase denial).
+    let missing_cap = client
+        .get(format!("{base}/api/events/no-such-id/capture"))
+        .header("Cookie", format!("waf_cp_session={bob_sid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing_cap.status().as_u16(), 404, "unknown capture id → 404");
+
+    // The successful view is recorded in the signed audit log (attributable access to sensitive data).
+    let audit_rows: serde_json::Value = client
+        .get(format!("{base}/api/audit?limit=1000"))
+        .header("Cookie", format!("waf_cp_session={admin_sid}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        audit_rows.as_array().unwrap().iter().any(|r| r["action"] == "capture.view"
+            && r["target"] == cap_id
+            && r["actor"] == "bob"),
+        "capture.view by bob audited for {cap_id}; got {audit_rows}",
+    );
+
     // ── §7 rule management (write-path v3): RBAC + publish/current/versions/rollback + convergence ─
     let admin_cookie = format!("waf_cp_session={admin_sid}");
     let alice_cookie = format!("waf_cp_session={alice_sid}");

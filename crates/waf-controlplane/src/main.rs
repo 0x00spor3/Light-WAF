@@ -62,6 +62,15 @@ async fn run() -> waf_controlplane::Result<()> {
     // Background /metrics scraper (no-op if no nodes configured).
     tokio::spawn(run_scraper(store.clone(), config.nodes.clone(), config.scrape_interval_seconds));
 
+    // Background retention reaper: hard-delete telemetry past `retention_days` AND captures past
+    // `captures.retention_hours` (the two windows are independent — captures hold raw request material
+    // and age out faster). `0` on either keeps that data forever.
+    tokio::spawn(run_retention(
+        store.clone(),
+        config.retention_days,
+        config.captures.retention_hours,
+    ));
+
     // Background alert evaluator (v2), only when enabled.
     if config.alerting.enabled {
         info!(rules = config.alerts.len(), "alerting enabled; starting evaluator");
@@ -127,6 +136,29 @@ async fn run() -> waf_controlplane::Result<()> {
     info!(listen = %config.listen, nodes = config.nodes.len(), "control plane HTTP listening (ingest + health)");
     axum::serve(listener, app(state)).await?;
     Ok(())
+}
+
+/// Retention reaper. Every hour, hard-delete aggregate telemetry older than `retention_days` and
+/// captured requests older than `capture_retention_hours`. Runs immediately on the first tick, then
+/// hourly; each prune is `0`-guarded (keep forever) inside the store. Errors are logged, never fatal
+/// (the control plane is off the request path).
+async fn run_retention(store: Store, retention_days: u32, capture_retention_hours: u32) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+    loop {
+        ticker.tick().await;
+        match store.prune_older_than_days(retention_days).await {
+            Ok(n) if n > 0 => info!(rows = n, days = retention_days, "retention: pruned telemetry"),
+            Ok(_) => {}
+            Err(e) => warn!(error = %e, "retention: telemetry prune failed"),
+        }
+        match store.prune_captures_older_than_hours(capture_retention_hours).await {
+            Ok(n) if n > 0 => {
+                info!(rows = n, hours = capture_retention_hours, "retention: pruned captures")
+            }
+            Ok(_) => {}
+            Err(e) => warn!(error = %e, "retention: capture prune failed"),
+        }
+    }
 }
 
 /// Demo-license gate: on a `demo-license` build, verify the license at boot (terminate if invalid or

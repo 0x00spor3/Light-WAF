@@ -11,6 +11,9 @@ data:
     listen = {{ .Values.config.listen | quote }}
     retention_days = {{ .Values.config.retentionDays | int64 }}
 
+    [controlplane.captures]
+    retention_hours = {{ .Values.config.captures.retentionHours | int64 }}
+
     {{- range .Values.config.nodes }}
 
     [[controlplane.nodes]]
