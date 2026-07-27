@@ -61,7 +61,11 @@ for img in ${IMAGES}; do
   # Vulnerability scan (gate on ${SEVERITY})
   report="${DIST}/${img}-${VERSION}.scan.txt"
   if [[ "${SCANNER}" == "trivy" ]]; then
+    # --ignorefile: honour the repo's justified accept-list (same file CI reads), so
+    # the local gate and CI agree. No --ignore-unfixed: unfixed HIGH/CRIT still fail
+    # (distroless keeps these rare; accept them explicitly in .trivyignore instead).
     if trivy image --scanners vuln --severity "${SEVERITY}" \
+         --ignorefile "${ENT_ROOT}/.trivyignore" \
          --exit-code 1 --no-progress "${ref}" | tee "${report}"; then
       echo "  SCAN  → clean (${SEVERITY})"
     else

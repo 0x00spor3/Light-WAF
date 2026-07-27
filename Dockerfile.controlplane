@@ -48,10 +48,16 @@ COPY --from=ui /ui/dist crates/waf-controlplane/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --release --locked -p waf-controlplane --features embed-ui \
-    && cp /build/target/release/waf-controlplane /usr/local/bin/waf-controlplane
+    && cp /build/target/release/waf-controlplane /usr/local/bin/waf-controlplane \
+    && mkdir -p /skel/app
 
 # ── Runtime stage ────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+# Distroless (cc = glibc + libgcc + libssl3 + the CA bundle). The binary is
+# dynamically linked against glibc only (rustls+ring; the Postgres driver is the
+# pure-Rust sqlx-postgres — no libpq/libssl). Dropping the debian base ALSO removes
+# curl (previously present only for the Docker HEALTHCHECK), and with it the whole
+# curl/libcurl4/libssh2/libldap CVE cluster. Pinned by digest.
+FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
 
 ARG VERSION=0.0.0-dev
 ARG VCS_REF=unknown
@@ -64,27 +70,22 @@ LABEL org.opencontainers.image.title="waf-controlplane" \
       org.opencontainers.image.licenses="BUSL-1.1" \
       org.opencontainers.image.vendor="WAF"
 
-# ca-certificates: outbound TLS (OIDC IdP, https /metrics scrape, alert webhooks).
-# curl: only for the container HEALTHCHECK below.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin waf \
-    && mkdir -p /etc/waf /app \
-    && chown -R waf:waf /etc/waf /app
-
+# CA bundle for outbound TLS (OIDC IdP, https /metrics scrape, alert webhooks) ships
+# with distroless at /etc/ssl/certs/ca-certificates.crt — no install needed.
+COPY --from=build --chown=10001:10001 /skel/app /app
 COPY --from=build /usr/local/bin/waf-controlplane /usr/local/bin/waf-controlplane
 
-USER waf
+# Non-root, numeric (no passwd entry needed; matches the uid the charts pin).
+USER 10001:10001
 WORKDIR /app
 
 EXPOSE 9600
 
-# `/healthz` is public (no auth). Adjust the port if you change `listen`.
-HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:9600/healthz || exit 1
+# No Docker HEALTHCHECK: distroless has no curl/shell. Liveness/readiness is done by
+# the Kubernetes httpGet probes against `/healthz` (public, no auth) defined in the
+# chart; for `docker run`, probe http://<host>:9600/healthz from outside the container.
 
 # Config path is argv[1] (or `controlplane.toml`); mount yours at this path. The
 # database URL is best provided via WAF_CP_DATABASE_URL rather than the file.
-ENTRYPOINT ["waf-controlplane"]
+ENTRYPOINT ["/usr/local/bin/waf-controlplane"]
 CMD ["/etc/waf/controlplane.toml"]

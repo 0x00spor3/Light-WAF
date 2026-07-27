@@ -36,10 +36,16 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --release --locked -p waf-enterprise \
-    && cp /build/target/release/waf-enterprise /usr/local/bin/waf-enterprise
+    && cp /build/target/release/waf-enterprise /usr/local/bin/waf-enterprise \
+    && mkdir -p /skel/app
 
 # ── Runtime stage ────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+# Distroless (cc = glibc + libgcc + libstdc++ + libssl3 + the CA bundle) — NO apt,
+# shell, perl, util-linux, ncurses, gzip. The data-plane binary is dynamically
+# linked against glibc ONLY (rustls + ring/aws-lc-rs compile their C statically),
+# so this base is sufficient AND drops the entire Debian base-OS CVE surface that
+# `debian:bookworm-slim` dragged in (none of which the binary used). Pinned by digest.
+FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
 
 # OCI provenance labels — populated by scripts/images/build.sh (VERSION from the
 # enterprise workspace, VCS_REF/BUILD_DATE from the build environment). Kept as
@@ -55,17 +61,16 @@ LABEL org.opencontainers.image.title="waf-enterprise" \
       org.opencontainers.image.licenses="BUSL-1.1" \
       org.opencontainers.image.vendor="WAF"
 
-# ca-certificates: outbound TLS (ACME directory, HTTPS threat-intel feeds, backends).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin waf \
-    && mkdir -p /etc/waf /app \
-    && chown -R waf:waf /etc/waf /app
-
+# The CA bundle for outbound TLS (ACME directory, HTTPS threat-intel feeds, backends)
+# ships with distroless at /etc/ssl/certs/ca-certificates.crt — no install needed.
+# /app is created in the build stage owned by the non-root uid so the process can
+# write there (DNS-01 disk cache); under k8s that path is normally a mounted volume.
+COPY --from=build --chown=10001:10001 /skel/app /app
 COPY --from=build /usr/local/bin/waf-enterprise /usr/local/bin/waf-enterprise
 
-USER waf
+# Non-root, numeric: distroless has no passwd entry for 10001, but the binary does
+# no user lookup, and 10001 matches the uid the Helm charts pin — so no chart change.
+USER 10001:10001
 WORKDIR /app
 
 # The sample config listens on 0.0.0.0:8080 (plain h1/h2c). If you enable TLS
@@ -76,5 +81,5 @@ EXPOSE 8080 8081
 
 # The enterprise binary reuses the core's config resolver, which takes `--config <path>`
 # (or the WAF_CONFIG env var) — NOT a bare positional. Mount your config at this path.
-ENTRYPOINT ["waf-enterprise"]
+ENTRYPOINT ["/usr/local/bin/waf-enterprise"]
 CMD ["--config", "/etc/waf/config.toml"]

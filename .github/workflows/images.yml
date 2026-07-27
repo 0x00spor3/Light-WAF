@@ -1,6 +1,6 @@
 name: Images (build + SBOM + scan)
 
-# K1 of the Kubernetes-native deployment plan. Builds the three enterprise images,
+# K1 of the Kubernetes-native deployment plan. Builds the four enterprise images,
 # generates an SBOM, and runs a vulnerability scan as a GATE (fails on HIGH/CRITICAL).
 #
 # POLICY: this workflow NEVER pushes to a registry — it only builds and verifies.
@@ -19,7 +19,15 @@ on:
     paths:
       - "Dockerfile.*"
       - ".github/workflows/images.yml"
+      - ".trivyignore"
   workflow_dispatch:
+  # Weekly re-scan: CVEs are disclosed against already-shipped packages over time,
+  # so even with digest-pinned bases an unchanged image can turn red. This rebuilds
+  # (amd64 only — see the multiarch job's `if`) and re-runs the vuln gate against a
+  # fresh trivy DB. A failure here means a new CVE landed → bump the base digest to a
+  # patched distroless, or add a justified `.trivyignore` entry.
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
 
 permissions:
   contents: read
@@ -75,13 +83,19 @@ jobs:
           format: spdx-json
           output-file: "${{ matrix.image }}-${{ steps.ver.outputs.version }}.spdx.json"
 
+      # Gate on ALL HIGH/CRITICAL — fixed OR unfixed. Unfixed base-OS CVEs are NOT
+      # silently tolerated: we engineer them away (distroless keeps the OS surface
+      # tiny) or accept them EXPLICITLY via a justified `.trivyignore` entry. This
+      # matches scripts/images/sbom-scan.sh (no --ignore-unfixed); keeping the two
+      # gates aligned is the point — `ignore-unfixed: true` here would have passed
+      # green on the 103 unfixed base CVEs that drove the distroless rebase.
       - name: Vulnerability scan (gate on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ matrix.image }}:${{ steps.ver.outputs.version }}
           scanners: vuln
           severity: HIGH,CRITICAL
-          ignore-unfixed: true
+          trivyignores: .trivyignore
           exit-code: "1"
           format: table
 
@@ -97,6 +111,9 @@ jobs:
   multiarch:
     name: multiarch build (${{ matrix.image }})
     runs-on: ubuntu-latest
+    # The weekly re-scan only needs the amd64 build+gate above; skip the (heavier)
+    # multi-arch validation on scheduled runs.
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:

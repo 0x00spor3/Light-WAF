@@ -1,0 +1,20 @@
+# trivy vulnerability ignore-list — the ONLY sanctioned way to accept a HIGH/CRITICAL
+# finding in a shipped image. Both gates read this file:
+#   - CI:    .github/workflows/images.yml (trivyignores: .trivyignore)
+#   - local: scripts/images/sbom-scan.sh  (--ignorefile <repo>/.trivyignore)
+#
+# POLICY (see scripts/images/RUNBOOK.md "Base-image policy"):
+#   1. Prefer to FIX: bump the distroless base digest to a patched build, or drop the
+#      offending package. The images are distroless — the OS surface is ~10 packages,
+#      so genuinely-unfixable HIGH/CRIT is rare.
+#   2. Only when a CVE is non-applicable or upstream has no fix, add it HERE with:
+#        - the CVE id
+#        - a one-line justification (why it's non-exploitable / unfixable in our use)
+#        - a date + optional expiry so it gets re-reviewed.
+#
+# Format: one `CVE-XXXX-YYYY` per line. Example (kept as a template, NOT active):
+#   # CVE-2023-45853  zlib MiniZip — not compiled into Debian's zlib; unreachable.
+#   #                 (would only appear on a base that ships zlib1g; distroless/cc does not)
+#
+# Currently EMPTY: after the distroless rebase all four images scan 0 HIGH/CRITICAL,
+# so nothing needs accepting. Add entries only with justification.
