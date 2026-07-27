@@ -152,7 +152,12 @@ log "checking control-plane /api/events for the blocked event"
 RID=""
 for i in $(seq 1 30); do
   out="$(cp_get "/api/events?decision=blocked&limit=5")"
-  RID="$(echo "${out}" | grep -oE '"request_id":"[^"]+"' | head -1 | sed 's/.*:"//; s/"$//')"
+  # `|| true` is REQUIRED: under `set -e -o pipefail` a no-match grep (exit 1) — or the
+  # SIGPIPE from `head -1` closing the pipe early — makes this assignment non-zero, which
+  # would kill the whole script on the FIRST empty poll and defeat the retry loop. The
+  # blocked event needs a few seconds to be tailed by the log-shipper and ingested, so an
+  # empty first poll is normal and must be retried, not fatal.
+  RID="$(echo "${out}" | grep -oE '"request_id":"[^"]+"' | head -1 | sed 's/.*:"//; s/"$//' || true)"
   if [[ -n "${RID}" ]]; then
     echo "found blocked event ${RID} after ${i} tries"
     break
