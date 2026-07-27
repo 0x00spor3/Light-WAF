@@ -125,9 +125,20 @@ kubectl rollout status -n waf-system ds/waf-log-shipper --timeout 120s
 
 # ── 7. Drive traffic through the WAF ──────────────────────────────────────────
 curl_in_cluster() { # $1 = path (already url-encoded); prints HTTP status
-  kubectl run "curl-$RANDOM" -n "${NS}" --rm -i --restart=Never -q \
+  # NB: do NOT use `kubectl run -i` here. The curl container exits almost instantly, so kubectl
+  # loses the attach race, warns "couldn't attach ... falling back to streaming logs" and can
+  # emit the captured stdout TWICE (e.g. "200200" instead of "200"), which fails the assertion
+  # below. Run the one-shot pod detached, wait for it to finish, then read the code from its logs.
+  local pod="curl-$RANDOM"
+  kubectl run "${pod}" -n "${NS}" --restart=Never -q \
     --image=curlimages/curl:8.10.1 --command -- \
-    curl -s -o /dev/null -w '%{http_code}' "http://app-waf.${NS}.svc.cluster.local:8080$1"
+    curl -s -o /dev/null -w '%{http_code}' "http://app-waf.${NS}.svc.cluster.local:8080$1" \
+    >/dev/null 2>&1
+  # curl exits 0 whenever it got a response (200 AND 403), so the pod reaches Succeeded either way;
+  # it only fails on a connection error. Reading logs once is deterministic — no doubling.
+  kubectl wait -n "${NS}" --for=jsonpath='{.status.phase}'=Succeeded "pod/${pod}" --timeout=60s >/dev/null 2>&1 || true
+  kubectl logs -n "${NS}" "${pod}" 2>/dev/null | tr -dc '0-9'
+  kubectl delete pod -n "${NS}" "${pod}" --wait=false >/dev/null 2>&1 || true
 }
 
 log "benign request (expect 200)"
