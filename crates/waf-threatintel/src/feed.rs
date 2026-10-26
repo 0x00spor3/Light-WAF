@@ -51,6 +51,9 @@ impl std::error::Error for FeedError {}
 /// A source of IP-reputation entries. Object-safe (async via `async_trait`) so the driver can hold
 /// a `Vec<Box<dyn ReputationFeed>>` of heterogeneous sources.
 #[async_trait]
+// `async_trait` emits `#[must_use]` on the generated methods, whose `Pin<Box<dyn Future>>` return is
+// already must-use; clippy ≥ 1.99 flags that macro output. Nothing is lost: the future stays must-use.
+#[allow(clippy::double_must_use)]
 pub trait ReputationFeed: Send + Sync {
     /// Short label for logs (e.g. the file path or URL).
     fn name(&self) -> &str;

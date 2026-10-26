@@ -36,6 +36,9 @@ pub use route53::Route53Dns;
 /// [`remove_txt`](DnsProvider::remove_txt) deletes **exactly** the record named by the
 /// handle. See the module docs for why (wildcard + apex share one name).
 #[async_trait]
+// `async_trait` emits `#[must_use]` on the generated methods, whose `Pin<Box<dyn Future>>` return is
+// already must-use; clippy ≥ 1.99 flags that macro output. Nothing is lost: the future stays must-use.
+#[allow(clippy::double_must_use)]
 pub trait DnsProvider: Send + Sync {
     /// Publish one TXT `value` at the fully-qualified `name` (already
     /// `_acme-challenge.<base>`). Returns a [`TxtHandle`] identifying the single record just

@@ -63,11 +63,15 @@ struct TempConf {
 
 impl TempConf {
     fn new(contents: &str) -> Self {
+        // pid + counter: parallel tests can read the same `nanos` on a coarse clock (Windows).
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("waf_crs_test_{nanos}.conf"));
+        let path = std::env::temp_dir().join(format!("waf_crs_test_{pid}_{seq}_{nanos}.conf"));
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(contents.as_bytes()).unwrap();
         Self { path }

@@ -16,5 +16,13 @@
 #   # CVE-2023-45853  zlib MiniZip — not compiled into Debian's zlib; unreachable.
 #   #                 (would only appear on a base that ships zlib1g; distroless/cc does not)
 #
-# Currently EMPTY: after the distroless rebase all four images scan 0 HIGH/CRITICAL,
-# so nothing needs accepting. Add entries only with justification.
+# Add entries only with justification. `exp:YYYY-MM-DD` makes trivy report the CVE again
+# after that date, which forces the re-review.
+
+# libssl3 3.0.20 (distroless/cc-debian12 base) — DTLS handshake-retransmission info disclosure.
+# NOT APPLICABLE: no shipped binary links OpenSSL (TLS is rustls + ring/aws-lc-rs, statically
+# compiled; `cargo tree -i openssl-sys` is empty for the linux target) and nothing uses DTLS.
+# Debian ships the fix in 3.0.22-1~deb12u2, but distroless had not rebuilt cc-debian12 yet
+# (the latest digest still carried 3.0.20 when this was added on 2026-10-26).
+# On expiry: bump the distroless digest in the four Dockerfiles and drop this entry.
+CVE-2026-84782 exp:2026-11-16
