@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! DNS provider abstraction for ACME **DNS-01** — publish/remove the `_acme-challenge.<base>`
 //! TXT records the challenge needs. Concrete providers (Cloudflare, a test challtestsrv, …)

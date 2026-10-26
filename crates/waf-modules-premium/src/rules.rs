@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Central `rule_id` registry (G1 marker / G7 anti-double-count) — **structural, not by convention**.
 //!

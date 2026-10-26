@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Cluster-wide log shipper (K5 decision): a Vector DaemonSet reads the WAF pods' stdout
 # (JSON decision-log), keeps the request/decision lines, and POSTs them as NDJSON to the
 # control plane's /ingest/events. Out-of-process, zero datapath — the WAF just logs.

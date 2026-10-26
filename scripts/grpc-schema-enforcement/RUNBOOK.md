@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — gRPC schema-enforcement (§4-B part 2)
 
 Verifies the enterprise gRPC schema-enforcement module (`waf-modules-premium`): each unary gRPC

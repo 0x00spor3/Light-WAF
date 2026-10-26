@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Role-based access control. Three fixed v1 roles and a pure permission matrix; the control plane
 //! maps each protected route to a required [`Permission`] and calls [`Role::allows`].

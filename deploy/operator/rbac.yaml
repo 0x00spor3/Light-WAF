@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # RBAC for waf-operator: watch WafProxy CRs cluster-wide and manage the owned data-plane
 # objects (ConfigMaps, Services, Deployments) in any namespace.
 apiVersion: v1

@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — GraphQL schema-enforcement (§4-B)
 
 Verifies the enterprise GraphQL schema-enforcement module (`waf-modules-premium`): each GraphQL

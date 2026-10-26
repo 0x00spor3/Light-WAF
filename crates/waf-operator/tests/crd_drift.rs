@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 //! Guard against a stale committed CRD: the checked-in deploy/operator/crd.yaml must equal
 //! what `waf-operator crd` generates from the current Rust types. Regenerate with:
 //!   cargo run -p waf-operator -- crd > deploy/operator/crd.yaml

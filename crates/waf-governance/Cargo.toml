@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Governance for the Light WAF control plane — RBAC, local auth, signed audit log (§8, enterprise, BSL 1.1)"
+description = "Governance for the Light WAF control plane — RBAC, local auth, signed audit log (§8, enterprise, Apache-2.0)"
 
 # Control-plane-only, like `waf-controlplane`: this is a LIBRARY the control plane links to add
 # identities, roles, sessions and a tamper-evident audit log. It NEVER touches the datapath and does

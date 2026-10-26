@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — curated premium CRS ruleset (§6)
 
 Verifies the enterprise curated ruleset (`waf-crs-curated`): the premium `SecRule` CONTENT

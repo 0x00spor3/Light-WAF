@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Ecosystem examples (K5)
 
 The WAF-per-workload topology — external traffic reaches the WAF, which forwards clean

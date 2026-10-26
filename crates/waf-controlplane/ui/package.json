@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Web dashboard for the Light WAF control plane (§7). Consumes the read API.",
-  "license": "BUSL-1.1",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

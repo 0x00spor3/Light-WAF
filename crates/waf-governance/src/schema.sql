@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: BUSL-1.1
+-- SPDX-License-Identifier: Apache-2.0
 -- Governance schema (§8). Owned by `waf-governance` and applied idempotently by the control plane
 -- after its own migrations (see `apply_schema`). Idempotent CREATE ... IF NOT EXISTS so it is safe
 -- to run on every boot.

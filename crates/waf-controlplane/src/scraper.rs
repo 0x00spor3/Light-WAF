@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Background `/metrics` scraper. Every `interval` it GETs each node's Prometheus endpoint, extracts
 //! the `waf_requests_total{decision}` counters and stores a per-decision rollup snapshot (long-term

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! End-to-end bite-test for the control plane (§7, Phase 4): a REAL WAF node's telemetry flows all
 //! the way to the drill-down.

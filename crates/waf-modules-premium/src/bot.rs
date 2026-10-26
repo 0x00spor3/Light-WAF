@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Client-integrity / bot detection (§4-A). Native cross-header heuristics that a single regex
 //! cannot express — deliberately NOT the OPEN `scanner` module (which matches offensive-tool names

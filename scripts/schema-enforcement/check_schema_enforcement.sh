@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # check_schema_enforcement.sh — fire a battery of GraphQL operations at a running enterprise WAF and
 # confirm that schema-INVALID operations are BLOCKED (they score `schema-graphql-unknown-field`,

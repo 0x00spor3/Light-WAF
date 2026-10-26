@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 0x00spor3
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 [package]
 name = "waf-capture"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Request-capture feature for Light WAF — enterprise tier (BSL 1.1). Buffers full denied requests off-datapath and ships them to the control-plane for the event drill-down. Optional, default OFF."
+description = "Request-capture feature for Light WAF — enterprise tier (Apache-2.0). Buffers full denied requests off-datapath and ships them to the control-plane for the event drill-down. Optional, default OFF."
 
 [dependencies]
 # C1: the capture DTO, the bounded ring and the `WafModule`. The `tracing::Layer` verdict-join and

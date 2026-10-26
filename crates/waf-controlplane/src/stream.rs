@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Live change notifications for the dashboard (SSE). A tiny in-process pub/sub: the ingest handler
 //! and the alert evaluator publish a lightweight "something changed" notice; the `GET /api/stream`

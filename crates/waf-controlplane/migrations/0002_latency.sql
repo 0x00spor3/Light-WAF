@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 0x00spor3
--- SPDX-License-Identifier: BUSL-1.1
+-- SPDX-License-Identifier: Apache-2.0
 --
 -- Latency histogram snapshots (Phase 3). Each /metrics scrape stores one row per
 -- `waf_request_duration_seconds_bucket{le}` bound (cumulative count ≤ le), tagged with a common

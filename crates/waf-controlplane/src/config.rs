@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Control-plane configuration (`controlplane.toml`). Secrets (database URL, ingest/API token) are
 //! read from the environment in preference to the file, so the file can be committed safely.

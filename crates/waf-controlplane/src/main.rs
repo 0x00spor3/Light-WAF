@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Light WAF control-plane service (§7). Loads config, connects to Postgres + migrates, starts the
 //! background `/metrics` scraper, and serves the HTTP surface (ingest endpoint + health; the read
@@ -38,9 +38,6 @@ async fn run() -> waf_controlplane::Result<()> {
     // The `reqwest` scrape client is built with `rustls-no-provider`, so install ONE process-level
     // ring provider (mirrors the other enterprise crates) — needed only if a node's /metrics is https.
     let _ = rustls::crypto::ring::default_provider().install_default();
-
-    // Demo builds gate startup on a signed, time-limited license (no-op otherwise).
-    demo_license::enforce();
 
     let path = std::env::args().nth(1).unwrap_or_else(|| "controlplane.toml".to_string());
     let config = ControlPlaneConfig::load(&path)?;
@@ -159,18 +156,4 @@ async fn run_retention(store: Store, retention_days: u32, capture_retention_hour
             Err(e) => warn!(error = %e, "retention: capture prune failed"),
         }
     }
-}
-
-/// Demo-license gate: on a `demo-license` build, verify the license at boot (terminate if invalid or
-/// expired) and spawn a watchdog that stops the process when it later expires. A plain build is a no-op.
-#[cfg(feature = "demo-license")]
-mod demo_license {
-    pub fn enforce() {
-        waf_license::enforce_boot();
-        tokio::spawn(waf_license::watchdog(std::time::Duration::from_secs(900)));
-    }
-}
-#[cfg(not(feature = "demo-license"))]
-mod demo_license {
-    pub fn enforce() {}
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # check_api_schema_enforcement.sh — fire a battery of HTTP requests at a running enterprise WAF and
 # confirm OpenAPI positive-security is enforced: a request to an endpoint/method the app's spec does

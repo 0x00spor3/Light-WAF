@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # Generate an SBOM and run a vulnerability scan for the locally-built enterprise
 # images. K1 supply-chain gate. Operates on images already in the local docker

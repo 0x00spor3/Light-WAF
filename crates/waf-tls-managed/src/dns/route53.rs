@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! [`Route53Dns`] — a [`DnsProvider`] over AWS Route 53, via the official `aws-sdk-route53`
 //! (correct SigV4 signing + endpoint resolution).

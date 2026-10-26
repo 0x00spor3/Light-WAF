@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! L1 seam integration (no network): when a `ManagedTlsCertSource` exposes an ACME
 //! `resolver()`, the core's `build_server_config` must (a) use the resolver and NOT call

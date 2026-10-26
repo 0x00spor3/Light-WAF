@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! In-memory login brute-force throttle (v2). Per-key (username) sliding-window failure counting: at
 //! or above `max_failures` within `window`, the key is locked for `lockout`. A success clears it.

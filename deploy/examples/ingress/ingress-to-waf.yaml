@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # External entrypoint: route a host to the WAF Service (which then forwards to the app).
 # TLS terminates at the ingress here (cert-manager issues the cert); the WAF sees http.
 apiVersion: networking.k8s.io/v1

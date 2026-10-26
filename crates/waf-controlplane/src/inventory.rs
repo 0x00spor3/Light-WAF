@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! API attack-surface inventory (§4-B pt3 discovery). The control plane persists only **denied**
 //! requests (`decision_events` = blocked/rejected), so this is an inventory of the endpoints that

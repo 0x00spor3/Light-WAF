@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 //! The `WafProxy` custom resource: a declarative request to protect a target Service
 //! with a WAF data-plane Deployment. The operator reconciles it into a ConfigMap +
 //! Deployment + Service (see `render`). No routing lives in the core — one CR ⇒ one WAF

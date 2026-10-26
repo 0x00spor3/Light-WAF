@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 // E2 — session mode (governance ON): username/password login rejects bad creds, admits the admin
 // (with the right role + admin nav), and logs out. No SSO button when OIDC is not configured.

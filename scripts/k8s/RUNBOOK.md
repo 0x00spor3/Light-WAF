@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — Kubernetes deployment (K6)
 
 End-to-end verification of the Kubernetes-native path. The WAF-per-workload topology:

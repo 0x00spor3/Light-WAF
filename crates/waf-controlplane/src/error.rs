@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Control-plane error type. One variant per failure surface (config vs database vs (de)serialize),
 //! so a caller/operator can tell a bad config from a dead database.

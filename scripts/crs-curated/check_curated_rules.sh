@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # check_curated_rules.sh — fire a battery of curated-ruleset payloads (native categories + named
 # CVEs) at a running enterprise WAF and confirm each is BLOCKED, while a benign request passes.

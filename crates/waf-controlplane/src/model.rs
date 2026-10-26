@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Control-plane data model — DTOs that mirror the OPEN telemetry contract, kept DECOUPLED from
 //! `waf-core`. The decision-log JSON schema (frozen by the core's shape test) is the contract; the

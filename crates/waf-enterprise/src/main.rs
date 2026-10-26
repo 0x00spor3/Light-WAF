@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Light WAF — ENTERPRISE binary.
 //!
@@ -142,9 +142,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // — which is exactly the DNS-01 ACME client on a background worker. Pin `ring`, the provider
     // the core already uses. `install_default` errors only if one is already set; ignore that.
     let _ = rustls::crypto::ring::default_provider().install_default();
-
-    // Demo builds gate startup on a signed, time-limited license (no-op otherwise).
-    demo_license::enforce();
 
     // Identical config resolution to the OPEN binary — no duplication.
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -782,18 +779,4 @@ async fn serve_health(
             let _ = stream.shutdown().await;
         });
     }
-}
-
-/// Demo-license gate: on a `demo-license` build, verify the license at boot (terminate if invalid or
-/// expired) and spawn a watchdog that stops the process when it later expires. A plain build is a no-op.
-#[cfg(feature = "demo-license")]
-mod demo_license {
-    pub fn enforce() {
-        waf_license::enforce_boot();
-        tokio::spawn(waf_license::watchdog(std::time::Duration::from_secs(900)));
-    }
-}
-#[cfg(not(feature = "demo-license"))]
-mod demo_license {
-    pub fn enforce() {}
 }

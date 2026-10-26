@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 0x00spor3
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 [package]
 name = "waf-marketplace"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Signed WASM plugin loader for Light WAF — enterprise tier (BSL 1.1). §4-C: verify a minisign signature before delegating to the OPEN Proxy-Wasm runtime."
+description = "Signed WASM plugin loader for Light WAF — enterprise tier (Apache-2.0). §4-C: verify a minisign signature before delegating to the OPEN Proxy-Wasm runtime."
 
 [dependencies]
 # The OPEN Proxy-Wasm runtime — after verifying the signature we delegate to `WasmModule::from_bytes`.

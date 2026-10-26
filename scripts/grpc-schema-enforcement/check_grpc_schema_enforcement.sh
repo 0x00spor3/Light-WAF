@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # check_grpc_schema_enforcement.sh — fire a battery of raw gRPC frames at a running enterprise WAF
 # and confirm an unknown-method call is BLOCKED (schema-grpc-unknown-method, Critical) while

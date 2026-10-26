@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # Minimal reference log shipper for the control plane (§7). Tails the WAF's JSON decision-log and
 # POSTs each new line to the control plane's /ingest/events endpoint, tagged with a node name.

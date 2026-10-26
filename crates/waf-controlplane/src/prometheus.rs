@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Minimal parser for the OPEN `/metrics` text exposition. We only need what the control plane
 //! stores as rollups: the `waf_requests_total{decision="…"}` counters. Hand-rolled (the format is

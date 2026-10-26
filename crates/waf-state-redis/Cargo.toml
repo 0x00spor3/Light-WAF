@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Distributed (Redis) rate-limit StateStore for Light WAF — enterprise tier (BSL 1.1)"
+description = "Distributed (Redis) rate-limit StateStore for Light WAF — enterprise tier (Apache-2.0)"
 
 [dependencies]
 waf-core.workspace = true

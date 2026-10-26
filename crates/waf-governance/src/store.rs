@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Postgres persistence for governance (operates on the control plane's `&PgPool`). Runtime queries
 //! (no compile-time `query!`), so the crate builds with no database; the integration tests are

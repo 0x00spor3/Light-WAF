@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Premium detection modules (enterprise, §4). This crate hosts logic-driven premium `WafModule`s
 //! injected via the core's `.add_module()` seam — starting with **GraphQL schema-enforcement**

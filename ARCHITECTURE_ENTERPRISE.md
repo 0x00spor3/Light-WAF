@@ -1,7 +1,6 @@
 # ARCHITECTURE.md — WAF Enterprise Tier
 
-> Documento di riferimento per il tier **enterprise** (a pagamento, licenza
-> source-available BSL 1.1 / Elastic 2.0). Da rileggere all'inizio di ogni sessione.
+> Documento di riferimento per il tier **enterprise** (Apache-2.0). Da rileggere all'inizio di ogni sessione.
 > Presuppone la conoscenza del core (`ARCHITECTURE.md`) e del confine (`BOUNDARY.md`).
 >
 > **Regola-guida ereditata da `BOUNDARY.md`.** Il core è il **datapath di sicurezza**

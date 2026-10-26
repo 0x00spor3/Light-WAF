@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 // E3+ — SSE live refresh (token mode). End-to-end proof that the "notify-then-pull" stream works
 // against the REAL backend: with the Events view open, ingest a new decision event straight into the

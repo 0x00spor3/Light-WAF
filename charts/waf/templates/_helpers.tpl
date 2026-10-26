@@ -1,4 +1,4 @@
-{{/* SPDX-License-Identifier: BUSL-1.1 */}}
+{{/* SPDX-License-Identifier: Apache-2.0 */}}
 
 {{- define "waf.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}

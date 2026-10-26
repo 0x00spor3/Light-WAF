@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Managed TLS for Light WAF — the ENTERPRISE implementation of the core's
 //! `waf_proxy::tls::TlsCertSource` seam (BOUNDARY.md §3.2/§4).

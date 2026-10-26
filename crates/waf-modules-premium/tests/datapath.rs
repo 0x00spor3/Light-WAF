@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! STEP-0 datapath bite-test: the schema-enforcement module, loaded as a `WafModule`, actually
 //! BLOCKS a schema-invalid GraphQL operation on the REAL pipeline — and the SAME request through a

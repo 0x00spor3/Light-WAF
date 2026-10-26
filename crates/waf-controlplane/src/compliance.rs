@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Compliance evidence reports (§8). A period-scoped, **signed** bundle of evidence assembled from
 //! data the system already holds — access control (governance), the tamper-evident audit log, and the

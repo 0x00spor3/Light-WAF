@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Governance for the Light WAF control plane (§8): **RBAC**, **local authentication** and a
 //! **tamper-evident signed audit log**. This is a control-plane **library** — it never touches the

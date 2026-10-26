@@ -58,7 +58,7 @@ LABEL org.opencontainers.image.title="waf-node-agent" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
-      org.opencontainers.image.licenses="BUSL-1.1" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.vendor="WAF"
 
 # Static busybox + the applets the reload path uses. `--install`-style explicit

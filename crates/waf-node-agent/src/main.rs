@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Light WAF node-agent binary (§7 write-path v3). Loads config, then polls the control plane forever:
 //! each cycle pulls the current ruleset, and on a new version pre-validates → writes the managed file
@@ -35,9 +35,6 @@ async fn run() -> Result<(), String> {
     // reqwest is built with `rustls-no-provider`; install ONE process-level ring provider (mirrors
     // the other enterprise crates) — needed only if the control-plane URL is https.
     let _ = rustls::crypto::ring::default_provider().install_default();
-
-    // Demo builds gate startup on a signed, time-limited license (no-op otherwise).
-    demo_license::enforce();
 
     let path = std::env::args().nth(1).unwrap_or_else(|| "node-agent.toml".to_string());
     let config = AgentConfig::load(&path)?;
@@ -76,18 +73,4 @@ async fn run() -> Result<(), String> {
         }
         tokio::time::sleep(interval).await;
     }
-}
-
-/// Demo-license gate: on a `demo-license` build, verify the license at boot (terminate if invalid or
-/// expired) and spawn a watchdog that stops the process when it later expires. A plain build is a no-op.
-#[cfg(feature = "demo-license")]
-mod demo_license {
-    pub fn enforce() {
-        waf_license::enforce_boot();
-        tokio::spawn(waf_license::watchdog(std::time::Duration::from_secs(900)));
-    }
-}
-#[cfg(not(feature = "demo-license"))]
-mod demo_license {
-    pub fn enforce() {}
 }

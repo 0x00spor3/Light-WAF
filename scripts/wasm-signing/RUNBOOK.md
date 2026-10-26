@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — signed WASM plugin loader (§4-C)
 
 Verifies the enterprise signed-plugin loader (`waf-marketplace`): a Proxy-Wasm plugin is loaded ONLY

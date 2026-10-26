@@ -1,7 +1,7 @@
 # Light WAF — Enterprise tier
 
-Source-available (BSL 1.1) implementations of the **at-scale** seams that the OPEN
-core (Apache-2.0) leaves as traits. See [`../BOUNDARY.md`](../BOUNDARY.md) §2/§4:
+Apache-2.0 implementations of the **at-scale** seams that the OPEN
+core (also Apache-2.0) leaves as traits. See [`../BOUNDARY.md`](../BOUNDARY.md) §2/§4:
 the core defines the extension points, this tier provides the distributed/governed
 implementations — **injected via `Proxy::builder` without forking the core**.
 

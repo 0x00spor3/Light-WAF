@@ -4,21 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Light WAF enterprise binary: wires the at-scale builder seams (Redis StateStore, …) — BSL 1.1"
+description = "Light WAF enterprise binary: wires the at-scale builder seams (Redis StateStore, …) — Apache-2.0"
 
 [[bin]]
 name = "waf-enterprise"
 path = "src/main.rs"
 
-[features]
-# Cut a time-limited DEMO build: gate startup on a signed, expiring license (all features stay
-# unlocked). OFF by default — the normal enterprise binary carries no license logic at all.
-demo-license = ["dep:waf-license"]
-
 [dependencies]
 waf-core.workspace = true
-# Demo license gate (behind the `demo-license` feature). Zero-core, enterprise-only.
-waf-license = { path = "../waf-license", version = "0.1.0", optional = true }
 waf-proxy.workspace = true
 waf-state-redis = { path = "../waf-state-redis", version = "0.1.0" }
 waf-tls-managed = { path = "../waf-tls-managed", version = "0.1.0" }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 //! Kubernetes operator for Light WAF (K4). Reconciles a `WafProxy` custom resource into a
 //! WAF data-plane Deployment (+ ConfigMap + Service) in front of a target Service — the
 //! declarative, native UX for the WAF-per-workload model. No routing in the core: one CR

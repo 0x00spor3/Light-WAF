@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! SIEM forwarder (§9, S2/S3): the delivery engine. It polls new stored events per `(destination,
 //! stream)` cursor, formats a batch (via the pluggable `SiemFormatter`) and POSTs it to the sink.

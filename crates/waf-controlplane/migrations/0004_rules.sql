@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 0x00spor3
--- SPDX-License-Identifier: BUSL-1.1
+-- SPDX-License-Identifier: Apache-2.0
 --
 -- Rule management (§7 write-path, v3). The control plane versions ONE managed SecRule `.conf` file:
 -- each publish appends an immutable row to `rule_versions`; the singleton `rule_current` selects which

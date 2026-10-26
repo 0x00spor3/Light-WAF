@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! OIDC SSO provider (§8 v2). Authorization Code + PKCE against a discovered IdP; the id_token is
 //! verified (JWKS signature + nonce + audience + expiry) by `openidconnect`, then the configured

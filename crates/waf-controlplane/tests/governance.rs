@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! End-to-end bite-test for governance (§8, G8-3): the real control-plane router with governance
 //! enabled, driven over HTTP.

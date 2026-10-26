@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Rule-management HTTP layer (§7 write-path, v3): version / publish / rollback the ONE managed
 //! SecRule `.conf`, expose the current version + convergence to the per-node agents, and take their

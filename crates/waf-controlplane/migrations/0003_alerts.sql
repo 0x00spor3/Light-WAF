@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 0x00spor3
--- SPDX-License-Identifier: BUSL-1.1
+-- SPDX-License-Identifier: Apache-2.0
 --
 -- Alerts (v2). One row per fired alert: the evaluator inserts a row when a rule's (per-group) count
 -- of denied events crosses its threshold (deduped by cooldown). Read back via GET /api/alerts.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 //! The reconcile loop: watch `WafProxy` CRs and server-side-apply the owned data-plane
 //! objects (ConfigMap + Deployment + Service). Owner references make deletion cascade, so
 //! removing a WafProxy tears its WAF down. The rendering itself lives in `render` (pure).

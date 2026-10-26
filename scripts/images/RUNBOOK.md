@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — container images & supply-chain (K1)
 
 K1 of the **Kubernetes-native deployment** plan (enterprise-only). Produces the three

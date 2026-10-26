@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # waf-operator — install & usage (K4)
 
 The operator turns a **`WafProxy`** custom resource into a WAF data-plane (ConfigMap +

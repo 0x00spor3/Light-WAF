@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! gRPC schema-enforcement (§4-B part 2). Validates each unary gRPC request message (protobuf)
 //! against the app's REAL compiled schema (a `FileDescriptorSet` `.bin` from `protoc`/`buf`): the

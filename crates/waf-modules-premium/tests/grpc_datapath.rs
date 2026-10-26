@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! STEP-0 datapath bite-test (gRPC): the schema-enforcement module, loaded as a `WafModule`, BLOCKS
 //! an unknown-method gRPC request on the REAL pipeline — and the SAME request with no module passes

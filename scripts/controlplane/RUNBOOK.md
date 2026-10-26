@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — control plane (§7)
 
 Verifies the control plane (`waf-controlplane`): a **separate service** (never on the WAF data port,

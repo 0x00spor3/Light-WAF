@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: BUSL-1.1
+-- SPDX-License-Identifier: Apache-2.0
 --
 -- Request Capture (enterprise, optional). Full denied requests shipped by a node's request-capture
 -- feature (`waf-capture`), joined to `decision_events` by `request_id` in the drill-down. This is

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Postgres store for the control plane. Runtime queries (no compile-time `query!` macro) so the
 //! crate builds with no database; only the env-gated integration test needs a live Postgres.

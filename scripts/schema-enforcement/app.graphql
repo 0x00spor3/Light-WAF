@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Sample app schema for the schema-enforcement live-wire check (see RUNBOOK.md).
 # Point [enterprise.schema_enforcement].schema_path at this file. A query that references anything
 # NOT declared here (unknown field/type/argument, missing subselection, undefined variable) is a

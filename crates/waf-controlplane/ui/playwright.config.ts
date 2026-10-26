@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 // E2E harness for the control-plane SPA. Runs against the REAL backend: two `waf-controlplane`
 // binaries (built with `embed-ui`) — one in token mode (governance OFF) and one in session mode

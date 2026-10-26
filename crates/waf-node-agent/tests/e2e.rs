@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! End-to-end bite-test for the §7 write-path (R3-1): a rule published in the control plane reaches a
 //! REAL WAF node through the agent and starts blocking.

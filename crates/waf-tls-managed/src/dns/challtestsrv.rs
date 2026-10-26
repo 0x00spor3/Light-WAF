@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! [`ChallTestSrvDns`] — a [`DnsProvider`] backed by Let's Encrypt's `pebble-challtestsrv`
 //! mock DNS, used ONLY for local/CI DNS-01 testing against Pebble. It POSTs to the

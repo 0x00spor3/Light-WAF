@@ -4,20 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Per-node rule-management agent for Light WAF — pulls the current ruleset from the control plane, pre-validates it, writes the managed .conf and reloads the WAF (§7 write-path v3, enterprise, BSL 1.1)"
+description = "Per-node rule-management agent for Light WAF — pulls the current ruleset from the control plane, pre-validates it, writes the managed .conf and reloads the WAF (§7 write-path v3, enterprise, Apache-2.0)"
 
 # The agent links `waf-detection` (OPEN) ONLY to PRE-VALIDATE a ruleset with the real seclang parser
 # before it ever touches the WAF — it does NOT sit on the datapath. It writes a file the core already
 # loads (`[modules.crs].files`) and triggers the core's existing SIGHUP reload (validate-then-swap).
 # Zero-core: nothing here changes the core; the write path is a file + a reload command.
-[features]
-# Cut a time-limited DEMO build: gate startup on a signed, expiring license. OFF by default.
-demo-license = ["dep:waf-license"]
-
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }
-# Demo license gate (behind the `demo-license` feature). Zero-core, enterprise-only.
-waf-license = { path = "../waf-license", optional = true }
 serde = { workspace = true }
 serde_json = "1"
 toml = { workspace = true }

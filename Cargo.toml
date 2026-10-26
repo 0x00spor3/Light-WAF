@@ -1,4 +1,4 @@
-# Light WAF — ENTERPRISE tier (source-available, BSL 1.1).
+# Light WAF — ENTERPRISE tier (Apache-2.0).
 #
 # This is a DETACHED workspace (its own [workspace] root, like `examples/` and
 # `fuzz/`): it is NOT a member of the root OPEN workspace, so `cargo build/test
@@ -24,14 +24,13 @@ members = [
     "crates/waf-governance",
     "crates/waf-node-agent",
     "crates/waf-enterprise",
-    "crates/waf-license",
     "crates/waf-operator",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "BUSL-1.1"
+license = "Apache-2.0"
 authors = ["0x00spor3"]
 
 [workspace.dependencies]

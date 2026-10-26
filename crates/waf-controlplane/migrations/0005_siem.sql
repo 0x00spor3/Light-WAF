@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 0x00spor3
--- SPDX-License-Identifier: BUSL-1.1
+-- SPDX-License-Identifier: Apache-2.0
 --
 -- SIEM export cursors (§9). The forwarder PUSHes stored events (decision_events / gov_audit_log /
 -- alerts) to configured SIEM sinks. Delivery is at-least-once: the cursor advances ONLY after a

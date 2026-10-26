@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Flux: a GitRepository source + a HelmRelease that deploys the chart from the repo path
 # (the charts are not published to a public Helm repo — Git is the source of truth).
 apiVersion: source.toolkit.fluxcd.io/v1

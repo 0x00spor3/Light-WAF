@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Example: protect the `myapp` Service in namespace `prod` with a WAF. Applying this
 # makes the operator create a ConfigMap + Deployment + Service named `myapp-waf` in
 # `prod`, forwarding clean traffic to myapp.prod.svc.cluster.local:8080.

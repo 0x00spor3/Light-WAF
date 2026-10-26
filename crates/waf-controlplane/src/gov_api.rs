@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Governance HTTP layer (§8): local-auth login/logout, the current-principal endpoint, admin user
 //! management and the signed audit-log endpoints — plus the auth+RBAC middleware that gates the read

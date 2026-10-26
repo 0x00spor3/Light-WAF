@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Light WAF — **per-node rule-management agent** (§7 write-path v3, enterprise BSL 1.1).
 //!

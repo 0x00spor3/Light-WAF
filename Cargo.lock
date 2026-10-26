@@ -5587,7 +5587,6 @@ dependencies = [
  "tracing-subscriber",
  "waf-core",
  "waf-governance",
- "waf-license",
  "waf-proxy",
 ]
 
@@ -5636,7 +5635,6 @@ dependencies = [
  "waf-core",
  "waf-crs-curated",
  "waf-detection",
- "waf-license",
  "waf-marketplace",
  "waf-modules-premium",
  "waf-proxy",
@@ -5659,20 +5657,6 @@ dependencies = [
  "thiserror 2.0.19",
  "time",
  "tokio",
-]
-
-[[package]]
-name = "waf-license"
-version = "0.1.0"
-dependencies = [
- "hex",
- "ring",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "time",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -5719,7 +5703,6 @@ dependencies = [
  "waf-controlplane",
  "waf-core",
  "waf-detection",
- "waf-license",
  "waf-proxy",
 ]
 

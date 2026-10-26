@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # ACME (Let's Encrypt) ClusterIssuer using HTTP-01 solved by the nginx ingress. Reference it
 # from the ingress (cert-manager.io/cluster-issuer) OR from the waf chart
 # (tls.certManager.issuerRef) when the WAF terminates TLS itself.

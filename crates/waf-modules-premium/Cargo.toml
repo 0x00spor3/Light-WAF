@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 0x00spor3
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 [package]
 name = "waf-modules-premium"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Premium detection modules for Light WAF — enterprise tier (BSL 1.1). §4-B GraphQL schema-enforcement."
+description = "Premium detection modules for Light WAF — enterprise tier (Apache-2.0). §4-B GraphQL schema-enforcement."
 
 [dependencies]
 # The premium modules are injected via the core's `.add_module()` seam (BOUNDARY §4) — same

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! SIEM forwarder e2e (§9, S2): the forwarder pushes stored decision events to a SIEM sink and only
 //! advances the cursor on a 2xx ack — so a failing sink loses NOTHING (at-least-once).

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Decision-log ingestion. A log shipper POSTs the OPEN JSON decision-log (NDJSON). Two line kinds
 //! matter, correlated by `request_id`:

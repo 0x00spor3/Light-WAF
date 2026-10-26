@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Node-agent configuration (`node-agent.toml`). The service token is a secret and is read from the
 //! environment in preference to the file, so the file can be committed safely.

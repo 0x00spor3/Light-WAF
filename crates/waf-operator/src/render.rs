@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 //! Pure functions: a `WafProxySpec` (+ owner identity) → the owned Kubernetes objects
 //! (ConfigMap, Deployment, Service). No cluster access here, so this is unit-testable in
 //! isolation — the reconcile loop just server-side-applies whatever these return.

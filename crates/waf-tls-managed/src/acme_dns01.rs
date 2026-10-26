@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! ACME **DNS-01** driver (enterprise). `rustls-acme` is TLS-ALPN-01 only, so DNS-01 runs on
 //! [`instant-acme`](instant_acme), used **purely as a protocol client**: it yields the issued

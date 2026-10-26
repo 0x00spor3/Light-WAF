@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 // E2 — RBAC: a viewer (`alice`, seeded in global-setup) sees only the read views, none of the admin
 // nav, and is blocked by the backend when navigating straight to an admin route. The nav gating is

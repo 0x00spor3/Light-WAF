@@ -1,4 +1,4 @@
-# waf-governance (enterprise, BSL 1.1)
+# waf-governance (enterprise, Apache-2.0)
 
 Governance for the Light WAF control plane (`ARCHITECTURE_ENTERPRISE.md` §8): **RBAC**, **local
 authentication** and a **tamper-evident signed audit log**.

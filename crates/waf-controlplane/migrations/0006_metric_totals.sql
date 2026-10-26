@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: BUSL-1.1
+-- SPDX-License-Identifier: Apache-2.0
 --
 -- Reset-aware lifetime totals. `waf_requests_total{decision}` and the latency histogram buckets are
 -- Prometheus COUNTERS: cumulative since the WAF process started, and reset to zero when it restarts.

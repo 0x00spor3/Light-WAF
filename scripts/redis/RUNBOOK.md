@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — env-gated tests for §3 (distributed state on Redis)
 
 Proves ARCHITECTURE_ENTERPRISE **§3** (+ the §6 feed that populates it) against a real Redis:

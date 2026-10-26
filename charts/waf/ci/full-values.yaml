@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # CI test values — exercises every optional path of the chart at once
 # (agent sidecar + shared PID, TLS via cert-manager, shared Redis, OpenAPI schema,
 # PodMonitor, HPA, PDB, private-registry image, http /healthz probes).

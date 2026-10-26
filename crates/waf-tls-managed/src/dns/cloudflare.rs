@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! [`CloudflareDns`] — a real [`DnsProvider`] over the Cloudflare DNS API. It satisfies the
 //! frozen additive contract by creating each TXT as its OWN record and deleting it **by

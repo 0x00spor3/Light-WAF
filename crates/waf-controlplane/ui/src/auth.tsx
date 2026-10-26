@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, clearToken, getToken, setToken, UnauthorizedError, verifyToken, type Me, type Role } from "./api";

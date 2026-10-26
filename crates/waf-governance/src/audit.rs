@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Tamper-evident audit log primitives: a SHA-256 **hash chain** (each record commits to the
 //! previous record's hash) with an **Ed25519 signature** over each record's hash. Altering or

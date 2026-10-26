@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # verify_shared_cert.sh — prove the multi-node cert-sharing (SharedCertStore) works: two WAF
 # nodes on the same host must serve the SAME certificate (same SHA-256 fingerprint), because in

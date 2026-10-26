@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! mTLS / managed-PKI client-certificate verification — the L2 enterprise seam
 //! (`TlsCertSource::client_verifier`). Builds a rustls `WebPkiClientVerifier` from a

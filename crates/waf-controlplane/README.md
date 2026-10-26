@@ -1,4 +1,4 @@
-# waf-controlplane (enterprise, BSL 1.1)
+# waf-controlplane (enterprise, Apache-2.0)
 
 Control plane for Light WAF (`ARCHITECTURE_ENTERPRISE.md` §7). A **separate service** — never on
 the WAF data port — that consumes the **OPEN telemetry** and persists it for long-term retention,

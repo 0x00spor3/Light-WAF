@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — OpenAPI positive-security (§4-B part 3)
 
 Verifies the enterprise API-security module (`waf-modules-premium`): each REST/JSON request under a

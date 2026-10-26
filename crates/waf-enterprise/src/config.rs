@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Enterprise-only configuration, read from the SAME TOML file as the OPEN
 //! `waf_core::Config`.

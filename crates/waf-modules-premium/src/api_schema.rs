@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! API Security — OpenAPI **positive-security** (§4-B pt3). Validate each incoming REST/JSON request
 //! against the app's REAL OpenAPI spec: a path/method/parameter/body shape the app's own contract

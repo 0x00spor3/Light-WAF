@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 //! The shipped example CR (deploy/operator/sample-wafproxy.yaml) must deserialize into the
 //! generated `WafProxy` type — a guard that the docs/sample and the CRD schema stay in sync.
 

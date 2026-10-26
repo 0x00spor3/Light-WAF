@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! HTTP surface (axum). Ingest endpoint (Phase 2) + the read API (Phase 3): cluster status,
 //! decision volumes, latency quantiles, event search and the per-request drill-down.

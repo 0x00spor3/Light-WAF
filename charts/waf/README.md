@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # waf — data-plane Helm chart
 
 Deploys the **WAF data-plane** (`waf-enterprise`) in the **WAF-per-workload** model: one

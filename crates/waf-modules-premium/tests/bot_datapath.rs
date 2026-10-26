@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! STEP-0 datapath bite-test (§4-A): the bot-detection module, loaded as a `WafModule`, BLOCKS a
 //! browser-impersonation request on the REAL pipeline — and the SAME request WITH the browser's

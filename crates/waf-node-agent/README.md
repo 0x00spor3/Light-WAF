@@ -1,4 +1,4 @@
-# waf-node-agent (enterprise, BSL 1.1)
+# waf-node-agent (enterprise, Apache-2.0)
 
 Per-node **rule-management agent** for Light WAF (`ARCHITECTURE_ENTERPRISE.md` §7, write-path v3). It is
 the pull side of the write path: it polls the control plane for the current managed ruleset, and when a

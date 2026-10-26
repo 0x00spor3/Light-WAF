@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Datapath bite-test: the curated ruleset, loaded as a `WafModule`, actually BLOCKS on the real
 //! pipeline — and the SAME request with no curated module passes (control). This proves the module

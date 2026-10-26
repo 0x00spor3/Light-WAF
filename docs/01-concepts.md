@@ -1,5 +1,5 @@
 <!-- SPDX-FileCopyrightText: 2026 0x00spor3
-     SPDX-License-Identifier: BUSL-1.1 -->
+     SPDX-License-Identifier: Apache-2.0 -->
 
 # 1. Concepts
 
@@ -84,7 +84,7 @@ Light WAF ships in two layers that build into one binary:
   (SQLi, XSS, RCE, path traversal, SSRF, LDAP/NoSQL/SSTI/…), the CRS rule engine, TLS termination
   from a file, and single-node rate limiting. A WAF built only from the core is a complete,
   standalone product.
-- **Enterprise tier** (BSL 1.1, this subtree) — the *at-scale* and *governed* capabilities layered on
+- **Enterprise tier** (Apache-2.0, this subtree) — the *at-scale* and *governed* capabilities layered on
   top through the core's extension points, **without forking the core**: cluster-wide rate limiting
   and IP reputation (Redis), managed ACME TLS, curated premium CRS content, GraphQL/gRPC schema
   enforcement, bot detection, signed WASM plugins — and the three off-datapath services (control

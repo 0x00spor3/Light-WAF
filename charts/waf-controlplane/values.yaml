@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Default values for the `waf-controlplane` chart.
 
 # ── Image (set a private registry prefix; never published publicly) ───────────
@@ -77,14 +77,19 @@ config:
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # If existingSecret is set, the Deployment loads ALL WAF_CP_* env from it (the chart
 # creates no Secret). Otherwise the chart creates a Secret from the values below.
+# apiToken / bootstrapAdminPassword left EMPTY ⇒ a random value is generated on first
+# install and REUSED on upgrade (read back from the existing Secret via `lookup`); the
+# install NOTES print how to retrieve it. There are deliberately no well-known defaults.
+# GitOps / `helm template` (no cluster access ⇒ `lookup` is empty ⇒ a new value on every
+# render): set these explicitly or use existingSecret.
 secrets:
   existingSecret: ""
   # apiToken: bearer for ingest + read API (agents reuse it as WAF_AGENT_TOKEN).
-  apiToken: "changeme-shared-token"
+  apiToken: ""
   # auditKey: 64 hex chars (32-byte Ed25519 seed) for the signed audit log.
   auditKey: ""
   # bootstrapAdminPassword: initial local admin password (governance).
-  bootstrapAdminPassword: "changeme-admin"
+  bootstrapAdminPassword: ""
   # oidcClientSecret: only if config.governance.oidc.enabled.
   oidcClientSecret: ""
   # alertWebhook: optional generic webhook URL for fired alerts.
@@ -107,7 +112,10 @@ postgres:
     enabled: false
     image: postgres:16
     user: waf
-    password: waf
+    # Empty ⇒ generated on first install, reused on upgrade, stored in the
+    # `<release>-…-postgres-auth` Secret. Must be set explicitly when the database URL
+    # comes from your own Secret (secrets.existingSecret / database.existingSecret).
+    password: ""
     database: waf_cp
     storage: 8Gi
     storageClassName: ""

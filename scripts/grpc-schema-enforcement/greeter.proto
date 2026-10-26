@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Sample app schema for the gRPC schema-enforcement live-wire check (see RUNBOOK.md).
 // Compile to a FileDescriptorSet the module loads:
 //   protoc --include_imports --descriptor_set_out=app.bin greeter.proto

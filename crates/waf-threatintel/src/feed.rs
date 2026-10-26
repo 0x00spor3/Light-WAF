@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! The threat-intel **feed** (ARCHITECTURE_ENTERPRISE §6): the write side that *populates* the
 //! `rep:<ip>` keyspace the [`ReputationModule`](crate::ReputationModule) reads. A [`ReputationFeed`]

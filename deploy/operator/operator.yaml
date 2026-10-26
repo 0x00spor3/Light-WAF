@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # The operator Deployment. Set the image to YOUR private registry (never published
 # publicly). Apply crd.yaml + rbac.yaml first.
 apiVersion: apps/v1

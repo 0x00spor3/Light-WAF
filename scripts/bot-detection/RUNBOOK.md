@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — client-integrity / bot detection (§4-A)
 
 Verifies the enterprise bot-detection module (`waf-modules-premium`): native cross-header heuristics

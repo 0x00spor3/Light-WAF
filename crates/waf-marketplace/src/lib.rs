@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Signed WASM plugin loader (§4-C). The OPEN Proxy-Wasm runtime (`waf-wasm`) loads UNSIGNED plugins
 //! from `[modules.wasm]` (skip-on-error). This tier adds the **trust gate**: verify a detached

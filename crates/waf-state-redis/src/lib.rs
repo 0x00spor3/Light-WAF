@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Distributed rate-limit [`StateStore`] backed by Redis — the ENTERPRISE
 //! implementation of the core's `waf_core::StateStore` seam (BOUNDARY.md §2.1/§4).

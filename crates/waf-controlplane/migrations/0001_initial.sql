@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 0x00spor3
--- SPDX-License-Identifier: BUSL-1.1
+-- SPDX-License-Identifier: Apache-2.0
 --
 -- Control-plane schema v1 (§7). Populated by the ingestion pipeline (Phase 2) from the OPEN
 -- telemetry: decision_events from the JSON decision-log, metric_rollups from /metrics scrapes.

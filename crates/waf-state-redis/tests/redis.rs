@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Integration tests for the distributed Redis StateStore. These need a live
 //! Redis and are ENV-GATED on `WAF_REDIS_URL` (skipped with a note otherwise),

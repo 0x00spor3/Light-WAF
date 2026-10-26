@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Gateway API variant: an HTTPRoute attaches to an existing Gateway and routes the host to
 # the WAF Service. (This is upstream routing to the WAF — NOT the WAF acting as a Gateway
 # controller itself; that needs multi-backend routing in the core, a strategic follow-on.)

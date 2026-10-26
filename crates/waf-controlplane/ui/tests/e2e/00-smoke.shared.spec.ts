@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 // E1 smoke: the SPA is served and the public API responds. Runs in BOTH projects (token + session),
 // each against its own backend (baseURL), so the whole harness — two binaries, embed-ui, Postgres,

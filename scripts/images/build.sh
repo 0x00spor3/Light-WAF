@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # Build the three enterprise container images (data-plane, node-agent, control-plane)
 # reproducibly, with OCI provenance labels and semver tags derived from the enterprise

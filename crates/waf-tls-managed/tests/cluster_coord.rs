@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Cluster coordination bite-tests (Step 4) — the load-bearing property of the multi-node cert
 //! design: **exactly one node issues, the others converge**, and a dead leader's lock **expires**

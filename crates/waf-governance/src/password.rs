@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Password hashing (argon2id). Hashes are PHC strings (algorithm + params + random salt embedded),
 //! so verification needs only the stored string.

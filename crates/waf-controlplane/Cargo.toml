@@ -4,16 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Control plane for Light WAF — dashboard/API over the OPEN telemetry (§7, enterprise, BSL 1.1)"
+description = "Control plane for Light WAF — dashboard/API over the OPEN telemetry (§7, enterprise, Apache-2.0)"
 
 [features]
 # Embed the built web UI (`ui/dist`) into the binary for a single-binary production deploy. Requires
 # `npm run build` in `ui/` first (the folder must exist at compile time). OFF by default, so a plain
 # `cargo build`/CI needs no Node toolchain and no `dist/`.
 embed-ui = ["dep:rust-embed", "dep:mime_guess"]
-
-# Cut a time-limited DEMO build: gate startup on a signed, expiring license. OFF by default.
-demo-license = ["dep:waf-license"]
 
 # DELIBERATELY does NOT depend on `waf-core`: the control plane is a SEPARATE service that consumes
 # the OPEN telemetry *contract* (the decision-log JSON schema + the Prometheus metrics ABI), not the
@@ -59,8 +56,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # Governance (§8): RBAC + local auth + signed audit log. A sibling library; it owns its tables on the
 # same Postgres (applied via `apply_schema`) and never touches the datapath.
 waf-governance = { path = "../waf-governance" }
-# Demo license gate (behind the `demo-license` feature). Zero-core, enterprise-only.
-waf-license = { path = "../waf-license", optional = true }
 # OIDC SSO (§8 v2): Authorization Code + PKCE, discovery + JWKS id_token verification. Uses its own
 # reqwest for the IdP calls (discovery/token/JWKS); the ring provider installed in main covers TLS.
 openidconnect = { version = "3", features = ["reqwest"] }

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Argo CD Application deploying the waf data-plane chart from your Git repo. Point repoURL at
 # your fork and set the image to your private registry via Helm values.
 apiVersion: argoproj.io/v1alpha1

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # End-to-end test on a kind cluster (K6). Proves the whole Kubernetes-native path:
 #   build → kind-load → deploy control-plane (+ bundled Postgres) → deploy a test app →

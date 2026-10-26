@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! SIEM export (§9): normalize the control plane's stored events into a versioned, **ECS-like** event
 //! and serialize a batch for a sink. This module is PURE (mapping + framing); the forwarder (cursor,

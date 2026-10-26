@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Curated premium CRS/ModSecurity ruleset content for Light WAF — enterprise tier (BSL 1.1)"
+description = "Curated premium CRS/ModSecurity ruleset content for Light WAF — enterprise tier (Apache-2.0)"
 
 [dependencies]
 # Content-only: the ruleset is embedded via include_str!, so the library has NO runtime deps.

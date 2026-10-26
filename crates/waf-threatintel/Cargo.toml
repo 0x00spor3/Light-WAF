@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Threat intelligence for Light WAF — cluster-wide IP-reputation WafModule (enterprise, BSL 1.1)"
+description = "Threat intelligence for Light WAF — cluster-wide IP-reputation WafModule (enterprise, Apache-2.0)"
 
 [dependencies]
 waf-core = { workspace = true }

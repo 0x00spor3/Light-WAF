@@ -1,0 +1,16 @@
+Light WAF — Enterprise components
+Copyright 2026 0x00spor3
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text, or visit
+http://www.apache.org/licenses/LICENSE-2.0
+
+Originally released under the Business Source License 1.1 and relicensed
+under Apache-2.0 by the sole copyright holder in 2026.
+
+------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------
+This software depends on third-party Rust crates, each distributed under
+its own license (predominantly MIT and Apache-2.0). The authoritative,
+versioned list of dependencies is in Cargo.toml / Cargo.lock.

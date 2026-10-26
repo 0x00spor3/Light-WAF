@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 // C5 — Request-capture drill-down UI: an operator can reveal the full captured request (headers,
 // cookies, body) of a denied event, and sees the node-side redaction banner; a viewer never gets the

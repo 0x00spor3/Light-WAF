@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Alert evaluator (v2). A background loop that, every `eval_interval`, evaluates each configured
 //! rule against the stored `decision_events`: when a rule's (per-group) count of denied events in

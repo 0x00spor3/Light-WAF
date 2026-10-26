@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — live multi-node cert-sharing (SharedCertStore), Step 5
 
 Proves the multi-node seam end-to-end: two WAF nodes, `[tls.acme].cluster = true`, one shared

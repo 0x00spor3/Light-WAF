@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # waf-controlplane — control-plane Helm chart
 
 Deploys the **WAF control plane** (`waf-controlplane`): the dashboard/API over the OPEN
@@ -14,7 +14,8 @@ Images are never published to a public registry (see `scripts/images/RUNBOOK.md`
 `image.repository` at **your** private registry. Provide a database one of three ways
 (precedence: `database.existingSecret` → `postgres.bundled` → `database.url`).
 
-Turnkey (bundled Postgres — dev/demo):
+Turnkey (bundled Postgres — dev/demo). The API token, the bootstrap admin password and the
+Postgres password are **generated** on first install (the NOTES print how to read them back):
 
 ```sh
 helm install waf-cp ./charts/waf-controlplane \
@@ -22,10 +23,7 @@ helm install waf-cp ./charts/waf-controlplane \
   --set image.repository=registry.internal:5000/waf-controlplane \
   --set postgres.bundled.enabled=true \
   --set postgres.bundled.image=registry.internal:5000/postgres:16 \
-  --set postgres.bundled.password=$(openssl rand -hex 16) \
-  --set secrets.apiToken=$(openssl rand -hex 24) \
-  --set secrets.auditKey=$(openssl rand -hex 32) \
-  --set secrets.bootstrapAdminPassword=$(openssl rand -hex 12)
+  --set secrets.auditKey=$(openssl rand -hex 32)
 ```
 
 Production (managed Postgres via a Secret carrying `WAF_CP_DATABASE_URL`):
@@ -65,6 +63,25 @@ carrying all `WAF_CP_*` keys) or let the chart build one from `secrets.*`:
 | `WAF_CP_OIDC_CLIENT_SECRET` | `secrets.oidcClientSecret` | if OIDC on |
 | `WAF_CP_ALERT_WEBHOOK` | `secrets.alertWebhook` | optional |
 | `WAF_CP_SIEM_AUTH_*` | `extraEnvFrom` (your Secret) | optional |
+
+### No well-known defaults
+
+`secrets.apiToken`, `secrets.bootstrapAdminPassword` and `postgres.bundled.password` default
+to **empty**. An empty value is resolved at render time:
+
+1. the value already stored in the cluster's Secret, if any (so `helm upgrade` keeps it);
+2. otherwise a random one (40 / 24 / 32 alphanumeric chars) on first install.
+
+An explicit value always wins. The bundled Postgres password lives in its own
+`<release>-waf-controlplane-postgres-auth` Secret (the StatefulSet reads it via
+`secretKeyRef`, never inline). If the database URL comes from **your** Secret
+(`secrets.existingSecret` / `database.existingSecret`) and Postgres is bundled, set
+`postgres.bundled.password` explicitly — the chart fails the render otherwise, because it
+cannot make a generated password match a URL it does not own.
+
+**GitOps / `helm template`:** without cluster access Helm's `lookup` returns nothing, so an
+empty value would be regenerated on every render (Argo CD would rotate the token on each
+sync). In that setup set the values explicitly, or use `secrets.existingSecret`.
 
 ## Bundled Postgres / Redis
 

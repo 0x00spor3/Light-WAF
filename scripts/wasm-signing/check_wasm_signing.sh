@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 #
 # check_wasm_signing.sh — confirm a signature-VERIFIED WASM plugin is active on a running enterprise
 # WAF: the plugin (the B3 example denylist filter) blocks 403 on its `X-Block` kill-switch, and a

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! STEP-5 bite-test (§4-C), **env-gated** on `WAF_WASM_FIXTURE` = a path to a REAL Proxy-Wasm plugin
 //! `.wasm` (e.g. `examples/wasm-plugin/target/wasm32-unknown-unknown/release/waf_wasm_example.wasm`).

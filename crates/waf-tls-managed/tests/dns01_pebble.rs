@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Live DNS-01 probe against Pebble + `pebble-challtestsrv` (the Step-0 / R4 vertical slice).
 //!

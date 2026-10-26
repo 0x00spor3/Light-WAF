@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! [`SharedCertStore`] — the THIRD capability on the same [`RedisStore`] pool (after
 //! `StateStore` and `ReputationStore`): a cluster-wide store for ACME-managed TLS certs plus a

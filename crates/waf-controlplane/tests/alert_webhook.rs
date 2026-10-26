@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! Alerting webhook e2e (v2, V2-4): a rule crossing its threshold → the evaluator stores an alert
 //! AND POSTs it to the configured webhook. A local axum receiver captures the POST, so the whole

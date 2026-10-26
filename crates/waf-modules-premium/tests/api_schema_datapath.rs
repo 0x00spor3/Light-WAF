@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! A4 datapath bite-test: the OpenAPI positive-security module, loaded as a `WafModule`, actually
 //! runs on the REAL pipeline and contributes to the SAME cumulative anomaly score — an unknown route

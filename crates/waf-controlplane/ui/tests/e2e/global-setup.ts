@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 // Runs once before the E2E suite: wait for both backends, then seed deterministic data via the API
 // (idempotent — safe to re-run against the same throwaway Postgres). Assumes a fresh/throwaway DB so

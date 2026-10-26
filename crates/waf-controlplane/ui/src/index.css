@@ -1,5 +1,5 @@
 /* SPDX-FileCopyrightText: 2026 0x00spor3
-   SPDX-License-Identifier: BUSL-1.1
+   SPDX-License-Identifier: Apache-2.0
 
    LightWAF control-plane design system — "The Threshold".
    A WAF inspects every request, accumulates rule scores, and stops the request when the total

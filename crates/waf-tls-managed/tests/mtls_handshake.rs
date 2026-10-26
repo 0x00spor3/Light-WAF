@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 
 //! mTLS proof on a real (in-memory) TLS handshake, through the core's
 //! `build_server_config` — i.e. exercising the `client_verifier()` seam end to end.
