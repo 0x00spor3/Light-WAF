@@ -1,0 +1,296 @@
+# SPDX-License-Identifier: Apache-2.0
+# Default values for the `waf` data-plane chart (WAF-per-workload model).
+# One WAF Deployment fronts ONE upstream Service: set `waf.backend` to your app.
+
+# ── Image ────────────────────────────────────────────────────────────────────
+# repository is left WITHOUT a registry host on purpose: set it to YOUR private
+# registry (e.g. registry.internal:5000/waf-enterprise). The images are never
+# published to a public registry — see scripts/images/RUNBOOK.md.
+image:
+  repository: waf-enterprise
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 2
+
+# ── WAF configuration (rendered into the config.toml ConfigMap) ───────────────
+waf:
+  listen: "0.0.0.0:8080"
+  # REQUIRED: the upstream Service this WAF protects.
+  backend: "http://myapp.default.svc.cluster.local:80"
+  mode: blocking # blocking | detection
+  blockThreshold: 3
+  paranoiaLevel: 3
+  severityScores:
+    critical: 6
+    error: 4
+    warning: 3
+    notice: 2
+  limits:
+    max_body_size: 1048576
+    max_header_size: 8192
+    max_headers: 100
+    max_params: 100
+    max_cookies: 50
+    max_json_depth: 20
+  resilience:
+    on_upstream_error: fail_closed
+    on_internal_error: fail_open
+    on_config_error: fail_open
+    on_parser_limit: fail_closed
+    upstream_timeout_ms: 30000
+  # Detection modules — name: enabled. Mirrors config.compose.toml defaults.
+  modules:
+    sqli: true
+    xss: true
+    path_traversal: true
+    rce: true
+    lfi_rfi: true
+    ssrf: true
+    ldap: true
+    nosql: true
+    mail: true
+    ssti: true
+    scanner: true
+    ssi: true
+    xxe: true
+    header_injection: true
+    request_smuggling: true
+  # enterprise.crs_curated — the premium curated CRS module (no external file).
+  crsCurated: true
+  # Managed SecRule file maintained by the agent sidecar (§7 write-path). Defaults
+  # ON whenever the agent is enabled; needs a shared emptyDir + an init seed.
+  managedRules:
+    enabled: false # auto-forced true when agent.enabled
+    path: /etc/waf/rules/managed.conf
+  # Raw TOML appended verbatim to the end of config.toml — escape hatch for anything
+  # not templated above (e.g. [modules.<x>] tuning).
+  extraConfig: ""
+
+# ── Metrics (/metrics on a separate listener) ─────────────────────────────────
+metrics:
+  enabled: true
+  listen: "0.0.0.0:9090"
+  port: 9090
+  podMonitor:
+    enabled: false # requires the Prometheus Operator CRDs
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+  # Alerting rules over the WAF metrics ABI (waf_up / waf_requests_total /
+  # waf_request_duration_seconds). Requires the Prometheus Operator CRDs.
+  prometheusRule:
+    enabled: false
+    labels: {} # e.g. release: kube-prometheus-stack
+    # Thresholds (tune per workload):
+    blockRatioPercent: 50 # warn if blocked/total > this for 10m
+    upstreamErrorRate: 1 # req/s of decision=upstream_error over 5m
+    internalErrorRate: 0 # any decision=internal_error over 5m is a WAF bug
+    latencyP99Seconds: 1.0 # p99 request-handling latency ceiling
+    badRequestRate: 5 # req/s of decision=bad_request over 5m
+  # Ship a Grafana dashboard as a ConfigMap the Grafana sidecar auto-loads.
+  grafanaDashboard:
+    enabled: false
+    labels:
+      grafana_dashboard: "1"
+
+# ── NetworkPolicy (default-deny posture for the WAF pods) ─────────────────────
+networkPolicy:
+  enabled: false
+  # Sources allowed to reach the http port. Empty = allow from anywhere (still only
+  # the WAF port). Each item is a NetworkPolicyPeer (namespaceSelector/podSelector/ipBlock).
+  ingressFrom: []
+  # Sources allowed to scrape the metrics port (e.g. the monitoring namespace).
+  metricsFrom: []
+  # Extra egress peers (e.g. the upstream backend, Redis, control-plane). DNS is always
+  # allowed. If your backend selector is hard to express, set allowAllEgress: true.
+  egressTo: []
+  allowAllEgress: false
+
+# ── Rate limiting (optional; needs shared Redis for >1 replica) ───────────────
+rateLimit:
+  enabled: false
+  key: client_ip
+  requests: 100
+  window_seconds: 60
+  burst: 100
+  action: block # block | score
+  score: 5
+  max_tracked_keys: 100000
+
+# ── OpenAPI positive-security (enterprise.api_schema) ─────────────────────────
+apiSchema:
+  enabled: false
+  # Name of a ConfigMap holding the spec under key `openapi.json`; mounted read-only.
+  specConfigMap: ""
+  mountPath: /etc/waf/openapi.json
+  violationSeverity: critical
+
+# ── Request capture (enterprise.capture) — full denied requests → control-plane ─
+# Buffers the FULL denied request (headers/cookies/body) OFF the datapath in a bounded
+# ring, then ships it on a side-channel to the control-plane for the event drill-down.
+# Zero data-plane core changes. RAW by default → redact sensitive names below AND keep
+# control-plane retention short (charts/waf-controlplane: captures.retentionHours).
+# Viewing a capture is RBAC-gated (ViewCaptures, operator+) and audited.
+capture:
+  enabled: false
+  # Control-plane base URL; the shipper appends /ingest/captures (same listener as ingest/agent).
+  controlPlaneUrl: "http://waf-controlplane.waf.svc.cluster.local:9600"
+  # Bodies larger than this are truncated + flagged (never block the datapath).
+  maxBodyBytes: 65536
+  # Bounded ring holding unshipped captures (count + bytes + TTL). Overflow drops, never blocks.
+  ring:
+    capacity: 1024
+    bytes: 33554432 # 32 MiB
+    ttlMs: 5000
+  # Shipper outbound queue bound (full ⇒ drop with a metric/log, never backpressure the datapath).
+  queueCapacity: 256
+  # Names replaced with ***REDACTED*** node-side before storing/shipping (case-insensitive).
+  # Empty = raw capture. The redacted value never leaves the node.
+  redaction:
+    headers: [] # e.g. [authorization, cookie, set-cookie]
+    bodyFields: [] # e.g. [password, token, secret, card]
+  # Secret holding the ingest bearer token → env WAF_CAPTURE_TOKEN. Required when enabled
+  # (the control-plane's ingest is bearer-gated); the token itself never lands in the ConfigMap.
+  tokenSecret:
+    name: ""
+    key: token
+
+# ── TLS termination at the WAF (PEM from a Secret; cert-manager optional) ──────
+tls:
+  enabled: false
+  # Secret (type kubernetes.io/tls) providing tls.crt + tls.key, mounted at mountPath.
+  secretName: ""
+  mountPath: /etc/waf/tls
+  certManager:
+    enabled: false
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer # ClusterIssuer | Issuer
+    dnsNames: []
+    duration: ""
+    renewBefore: ""
+
+# ── Rule-management agent sidecar (§7) ────────────────────────────────────────
+agent:
+  enabled: false
+  image:
+    repository: waf-node-agent
+    tag: "" # defaults to .Chart.AppVersion
+  controlPlaneUrl: "http://waf-controlplane.waf.svc.cluster.local:9600"
+  nodeName: "" # defaults to the pod name (metadata.name) via env
+  pollIntervalSeconds: 15
+  # k8s shareProcessNamespace ⇒ the WAF is not PID 1; signal it by name.
+  reloadCommand: "kill -HUP $(pidof waf-enterprise)"
+  # Secret holding the control-plane service token → env WAF_AGENT_TOKEN.
+  tokenSecret:
+    name: ""
+    key: token
+  resources: {}
+
+# ── Shared cluster state (Redis) for rate-limit/reputation/cert across replicas ─
+redis:
+  # Secret holding the Redis URL → env WAF_REDIS_URL. Required for correct counts
+  # with replicaCount > 1 (otherwise state is per-pod).
+  urlSecret:
+    name: ""
+    key: url
+
+# Extra env / envFrom for the WAF container (e.g. cloud creds for managed TLS:
+# CF_API_TOKEN, AWS_ACCESS_KEY_ID/…). Prefer secretRef via extraEnvFrom.
+extraEnv: []
+extraEnvFrom: []
+
+# ── Service ───────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+  # Expose the metrics port on the Service too (PodMonitor scrapes pods directly,
+  # so this is optional).
+  exposeMetrics: false
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# ── Autoscaling / disruption ──────────────────────────────────────────────────
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 0 # 0 = disabled
+
+pdb:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: "" # set one OR the other
+
+# ── Security contexts (non-root uid 10001, read-only rootfs, drop caps) ───────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# ── Graceful shutdown ─────────────────────────────────────────────────────────
+# Interim drain: a preStop sleep lets the pod leave Service endpoints before the
+# WAF is signalled, so in-flight requests finish. Replaced by an in-process drain
+# once the K0 `Proxy::run(shutdown)` seam lands.
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 5
+
+# ── Health endpoint (K0) ──────────────────────────────────────────────────────
+# The enterprise binary serves /healthz (liveness) and /readyz (readiness) on this port,
+# separate from the data port. On SIGTERM /readyz flips to 503 so k8s stops routing while
+# in-flight requests drain (the core-0.5.4 graceful-drain seam).
+health:
+  enabled: true
+  port: 8081
+
+# ── Probes ────────────────────────────────────────────────────────────────────
+# Default: HTTP against the health endpoint (/healthz + /readyz). Set type=tcp to fall back
+# to a TCP check on the data port (e.g. an older image without the health listener).
+probes:
+  type: http # http | tcp
+  livenessPath: /healthz
+  readinessPath: /readyz
+  liveness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 3
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# ── Scheduling ────────────────────────────────────────────────────────────────
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+# Spread replicas across nodes by default (soft).
+topologySpreadConstraints: []

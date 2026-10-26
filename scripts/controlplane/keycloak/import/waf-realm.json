@@ -1,0 +1,72 @@
+{
+  "realm": "waf",
+  "enabled": true,
+  "sslRequired": "none",
+  "loginWithEmailAllowed": true,
+  "registrationAllowed": false,
+  "clients": [
+    {
+      "clientId": "waf-cp",
+      "name": "WAF Control Plane",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "waf-cp-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:9600/*"
+      ],
+      "webOrigins": [
+        "http://localhost:9600"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:9600/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
+          }
+        }
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "name": "waf-admins"
+    }
+  ],
+  "users": [
+    {
+      "username": "kim",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "kim@example.com",
+      "firstName": "Kim",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "kimpw",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/waf-admins"
+      ]
+    }
+  ]
+}

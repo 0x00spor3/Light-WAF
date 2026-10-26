@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# RBAC for waf-operator: watch WafProxy CRs cluster-wide and manage the owned data-plane
+# objects (ConfigMaps, Services, Deployments) in any namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: waf-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: waf-operator
+  namespace: waf-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: waf-operator
+rules:
+  - apiGroups: ["waf.io"]
+    resources: ["wafproxies"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["waf.io"]
+    resources: ["wafproxies/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps", "services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: waf-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: waf-operator
+subjects:
+  - kind: ServiceAccount
+    name: waf-operator
+    namespace: waf-system

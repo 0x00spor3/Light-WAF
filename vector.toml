@@ -1,0 +1,50 @@
+# Vector — log shipper for the WAF decision-log (§7). Reads the WAF container's stdout (JSON
+# tracing lines) via the Docker API, keeps only the request/decision lines, and POSTs them as
+# NDJSON to the control plane's /ingest/events. Out-of-process, zero datapath cost: the control
+# plane never reaches into the WAF; the WAF just logs, Vector forwards (replaces forward_logs.sh).
+#
+# Env (set by docker-compose.node.yml): WAF_CP_URL, WAF_CP_INGEST_TOKEN, NODE_NAME.
+
+# Read the WAF container's logs over the Docker API. The label filter targets ONLY the `waf`
+# compose service, so Vector never ships echo/agent/its-own logs (no feedback loop).
+[sources.waf]
+type = "docker_logs"
+include_labels = ["com.docker.compose.service=waf"]
+
+# Turn each container log line back into the WAF's original JSON object, and keep only the lines
+# the ingestor correlates (they carry `fields.request_id`: `→ request` + `request blocked/rejected`).
+[transforms.decisions]
+type = "remap"
+inputs = ["waf"]
+drop_on_abort = true
+source = '''
+parsed, err = parse_json(.message)
+if err != null {
+    abort
+}
+. = object(parsed) ?? {}
+if !exists(.fields.request_id) {
+    abort
+}
+'''
+
+# Ship to the control plane's ingest endpoint as newline-delimited JSON (NDJSON), bearer-authed.
+# Vector's buffering/retry handles backpressure and control-plane blips that the shell reference can't.
+[sinks.control_plane]
+type = "http"
+inputs = ["decisions"]
+uri = "${WAF_CP_URL}/ingest/events?node=${NODE_NAME}"
+method = "post"
+
+[sinks.control_plane.encoding]
+codec = "json"
+
+[sinks.control_plane.framing]
+method = "newline_delimited"
+
+[sinks.control_plane.request.headers]
+Authorization = "Bearer ${WAF_CP_INGEST_TOKEN}"
+
+[sinks.control_plane.batch]
+max_events = 50
+timeout_secs = 1

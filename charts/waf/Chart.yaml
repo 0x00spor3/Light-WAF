@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: waf
+description: >-
+  WAF data-plane (enterprise tier) — a reverse-proxy Deployment that protects a single
+  upstream Service ("WAF-per-workload"), with an optional rule-management agent sidecar.
+type: application
+# Chart version — bump on chart changes. appVersion tracks the enterprise image version.
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - waf
+  - security
+  - reverse-proxy
+home: https://github.com/0x00spor3/Light-WAF
+sources:
+  - https://github.com/0x00spor3/Light-WAF
+maintainers:
+  - name: WAF
+annotations:
+  category: Security

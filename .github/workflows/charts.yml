@@ -1,0 +1,70 @@
+name: Charts (lint + kubeconform)
+
+# K2/K3 of the Kubernetes-native deployment plan. Lints the Helm charts and validates
+# the rendered manifests (default + CI values) against the Kubernetes + CRD schemas.
+# Pure static validation — no cluster, no push.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "charts/**"
+      - ".github/workflows/charts.yml"
+  pull_request:
+    paths:
+      - "charts/**"
+      - ".github/workflows/charts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-template:
+    name: helm lint + kubeconform
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chart: [waf, waf-controlplane]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL -o /tmp/kc.tgz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kc.tgz -C /usr/local/bin kubeconform
+
+      - name: helm lint (default)
+        run: helm lint charts/${{ matrix.chart }}
+
+      - name: helm lint (CI values)
+        run: |
+          for f in charts/${{ matrix.chart }}/ci/*.yaml; do
+            [ -e "$f" ] || continue
+            echo "== lint -f $f =="
+            helm lint charts/${{ matrix.chart }} -f "$f"
+          done
+
+      - name: kubeconform (default + CI values)
+        env:
+          # Kubernetes core schemas + the datree CRD catalog (PodMonitor, Certificate, …).
+          CRD: "https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
+        run: |
+          set -euo pipefail
+          validate() {
+            echo "== kubeconform: $1 =="
+            helm template rel charts/${{ matrix.chart }} ${2:-} \
+              | kubeconform -strict -summary \
+                  -schema-location default -schema-location "$CRD"
+          }
+          validate default
+          for f in charts/${{ matrix.chart }}/ci/*.yaml; do
+            [ -e "$f" ] || continue
+            validate "$(basename "$f")" "-f $f"
+          done

@@ -1,0 +1,14 @@
+# Keep the Docker build context small and reproducible: never ship build artifacts,
+# node_modules, or a stale UI bundle (the control-plane image rebuilds ui/dist itself).
+target/
+**/target/
+**/node_modules/
+crates/waf-controlplane/ui/dist/
+crates/waf-controlplane/ui/playwright-report/
+crates/waf-controlplane/ui/test-results/
+crates/waf-controlplane/ui/design-preview/
+**/*.log
+.git/
+.gitignore
+Dockerfile*
+.dockerignore

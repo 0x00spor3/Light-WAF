@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+# Argo CD Application deploying the waf data-plane chart from your Git repo. Point repoURL at
+# your fork and set the image to your private registry via Helm values.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: myapp-waf
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://git.example.com/your-org/waf.git
+    targetRevision: main
+    path: charts/waf
+    helm:
+      values: |
+        image:
+          repository: registry.internal:5000/waf-enterprise
+        waf:
+          backend: http://myapp.prod.svc.cluster.local:8080
+        metrics:
+          podMonitor:
+            enabled: true
+          prometheusRule:
+            enabled: true
+          grafanaDashboard:
+            enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

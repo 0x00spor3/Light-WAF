@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: Apache-2.0
+# CI test values — exercises every optional path: bundled Postgres + Redis, OIDC SSO,
+# Ingress+TLS, PDB, API inventory, extra SIEM env, private-registry image.
+image:
+  repository: registry.internal:5000/waf-controlplane
+  tag: "0.1.0"
+
+replicaCount: 2
+
+config:
+  retentionDays: 60
+  nodes:
+    - name: edge-1
+      metricsUrl: http://myapp-waf.prod.svc.cluster.local:9090/metrics
+    - name: edge-2
+      metricsUrl: http://other-waf.prod.svc.cluster.local:9090/metrics
+  alerting:
+    enabled: true
+    evalIntervalSeconds: 10
+  governance:
+    enabled: true
+    bootstrapAdmin: admin
+    oidc:
+      enabled: true
+      issuerUrl: https://keycloak.example.com/realms/waf
+      clientId: waf-cp
+      redirectUrl: https://waf-cp.example.com/api/auth/oidc/callback
+      roleClaim: groups
+      roleMap:
+        - claim: waf-admins
+          role: admin
+        - claim: waf-viewers
+          role: viewer
+  apiInventory:
+    enabled: true
+    specConfigMap: myapp-openapi
+  extraConfig: |
+    [controlplane.siem]
+    enabled = true
+    stream = "decision"
+    format = "ecs"
+    destination = "https://siem.example.com/ingest"
+
+secrets:
+  apiToken: "s3cr3t-token"
+  auditKey: "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+  bootstrapAdminPassword: "str0ng-admin-pw"
+  oidcClientSecret: "waf-cp-oidc-secret"
+  alertWebhook: "https://hooks.example.com/waf-alerts"
+
+postgres:
+  bundled:
+    enabled: true
+    image: registry.internal:5000/postgres:16
+    password: str0ng-db-pw
+    storage: 20Gi
+
+redis:
+  bundled:
+    enabled: true
+    image: registry.internal:5000/redis:7
+
+extraEnvFrom:
+  - secretRef:
+      name: waf-cp-siem-auth
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: waf-cp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: waf-cp-tls
+      hosts:
+        - waf-cp.example.com
+
+pdb:
+  enabled: true
+  minAvailable: 1

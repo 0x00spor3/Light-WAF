@@ -23,6 +23,7 @@ cargo run -p waf-proxy -- --config examples/balanced.toml
 |---|---|
 | [`behind-cdn.toml`](behind-cdn.toml) | The WAF sits **behind a CDN / LB / reverse proxy** (Cloudflare, ALB, nginx). Enables safe client-IP resolution from `X-Forwarded-For` (fail-safe: trusted only when the peer is in `trusted_proxies`). Replace the placeholder CIDRs with your proxy's real ranges. |
 | [`api-json.toml`](api-json.toml) | A **JSON / REST API backend**. Tunes the defensive limits for API-shaped traffic (bigger bodies, deeper nesting, more fields). A JSON-transport GraphQL query is inspected the same way. HTTP/2 is served (Phase 12); **gRPC** is supported (`[modules.grpc]`, opt-in) — the protobuf fields are inspected by the content modules and structural caps apply. |
+| [`enterprise.toml`](enterprise.toml) | The **enterprise binary** (`cargo run -p waf-enterprise -- --config examples/enterprise.toml`): the same core sections plus the `[enterprise]` tables — Redis-backed distributed state, managed ACME TLS, threat intel, curated CRS, schema enforcement, bot detection, signed WASM plugins, request capture. See [`crates/waf-enterprise`](../crates/waf-enterprise/README.md). |
 
 ## TLS termination (`[tls]`)
 

@@ -1,0 +1,30 @@
+[package]
+name = "waf-threatintel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Threat intelligence for Light WAF — cluster-wide IP-reputation WafModule (enterprise, Apache-2.0)"
+
+[dependencies]
+waf-core = { workspace = true }
+# The ReputationStore/ReputationWriter seams + Reputation live with the Redis impl; consumed here.
+waf-state-redis = { path = "../waf-state-redis" }
+tracing = { workspace = true }
+# Object-safe async trait for `dyn ReputationFeed` (feed sources).
+async-trait = "0.1"
+# The feed driver is a background task (spawn + periodic sleep).
+tokio = { workspace = true, features = ["rt", "time"] }
+# HTTP for the HttpListFeed. `rustls-no-provider` so reqwest does NOT pull its own crypto provider
+# (no aws-lc-rs/cmake); the client supplies a `ring`-based rustls ClientConfig (the core's provider).
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+# Public CA roots + the ring provider for the HTTPS client's rustls config (mirrors CloudflareDns).
+webpki-roots = "1"
+tokio-rustls = { workspace = true, features = ["ring"] }
+
+[dev-dependencies]
+# Run the module through the real pipeline (bite-test: on the datapath, contributes to score).
+waf-pipeline = { workspace = true }
+waf-core = { workspace = true, features = ["testkit"] }
+# Async test runtime for the FileFeed/HttpListFeed unit tests.
+tokio = { workspace = true, features = ["rt", "macros"] }

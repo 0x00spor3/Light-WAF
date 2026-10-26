@@ -1,0 +1,81 @@
+# syntax=docker/dockerfile:1
+# ─────────────────────────────────────────────────────────────────────────────
+# waf-node-agent — per-node rule-management agent (§7 write-path v3).
+#
+# It polls the control plane, pre-validates the current ruleset, writes the managed
+# .conf and runs a reload command. It has NO inbound port (it is a client).
+#
+# Build context = the repository root (the whole workspace):
+#
+#   docker build -f Dockerfile.node-agent -t waf-node-agent:latest .
+#
+#   docker run --rm \
+#     -v "$PWD/node-agent.toml:/etc/waf/node-agent.toml:ro" \
+#     -e WAF_AGENT_TOKEN=svc-... \
+#     waf-node-agent:latest
+#
+# NOTE: `managed_file` (the .conf it writes) and `reload_command` (how it tells the
+# WAF to reload) must be reachable from the container — typically the agent shares a
+# volume with the WAF and the reload is a signal/command against that shared node.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM rust:1-bookworm AS build
+
+# The agent uses rustls+ring only (no aws-lc-rs), so the base toolchain
+# (build-essential/perl) plus ca-certificates for the crates.io fetch is enough.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --locked -p waf-node-agent \
+    && cp /build/target/release/waf-node-agent /usr/local/bin/waf-node-agent \
+    && mkdir -p /skel/app
+
+# ── Runtime stage ────────────────────────────────────────────────────────────
+# UNLIKE the data-plane / control-plane images, this one CANNOT be full-distroless:
+# the agent runs the configured `reload_command` through `sh` (run_reload_command:
+# `Command::new("sh").arg("-c")`), and the k8s reload is `kill -HUP $(pidof
+# waf-enterprise)` — so it needs sh + pidof + cat + kill. We start from the SAME
+# distroless/cc base (glibc + CA bundle, none of debian-slim's perl/util-linux/
+# ncurses/gzip/acl) and add ONLY a single static busybox providing those applets.
+# A lone static binary carries no dpkg metadata, so it adds nothing to the OS CVE
+# surface trivy scans. Both bases pinned by digest.
+FROM busybox:musl@sha256:8635836765b0c4c43970660219739baa58b0883c2e429e4b8918f7dd1519455c AS busybox
+
+FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
+
+ARG VERSION=0.0.0-dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="waf-node-agent" \
+      org.opencontainers.image.description="Per-node rule-management agent (§7 write-path)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="WAF"
+
+# Static busybox + the applets the reload path uses. `--install`-style explicit
+# symlinks (via the busybox multiplexer, which dispatches on argv[0]) give
+# /bin/sh, /bin/pidof, /bin/cat, /bin/kill without needing a package manager.
+COPY --from=busybox /bin/busybox /bin/busybox
+RUN ["/bin/busybox", "sh", "-c", "for a in sh pidof cat kill ln; do /bin/busybox ln -s /bin/busybox /bin/$a; done"]
+
+# CA bundle (for an https control-plane URL) ships with distroless at
+# /etc/ssl/certs/ca-certificates.crt — no install needed.
+COPY --from=build --chown=10001:10001 /skel/app /app
+COPY --from=build /usr/local/bin/waf-node-agent /usr/local/bin/waf-node-agent
+
+# Non-root, numeric (no passwd entry needed; matches the uid the charts pin).
+USER 10001:10001
+WORKDIR /app
+
+# Config path is argv[1] (default `node-agent.toml`); mount yours at this path.
+ENTRYPOINT ["/usr/local/bin/waf-node-agent"]
+CMD ["/etc/waf/node-agent.toml"]

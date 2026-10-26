@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# External entrypoint: route a host to the WAF Service (which then forwards to the app).
+# TLS terminates at the ingress here (cert-manager issues the cert); the WAF sees http.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp
+  namespace: prod
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["myapp.example.com"]
+      secretName: myapp-tls
+  rules:
+    - host: myapp.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # The WAF Service (charts/waf release name or the WafProxy name), NOT the app.
+                name: myapp-waf
+                port:
+                  number: 8080

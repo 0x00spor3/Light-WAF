@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+# The operator Deployment. Set the image to YOUR private registry (never published
+# publicly). Apply crd.yaml + rbac.yaml first.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waf-operator
+  namespace: waf-system
+  labels:
+    app.kubernetes.io/name: waf-operator
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: waf-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: waf-operator
+    spec:
+      serviceAccountName: waf-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          # CHANGE ME → registry.internal:5000/waf-operator:1.0.0
+          image: waf-operator:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RUST_LOG
+              value: info
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

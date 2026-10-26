@@ -1,0 +1,123 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: wafproxies.waf.io
+spec:
+  group: waf.io
+  names:
+    categories: []
+    kind: WafProxy
+    plural: wafproxies
+    shortNames:
+    - wafp
+    singular: wafproxy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .spec.replicas
+      name: Replicas
+      type: integer
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for WafProxySpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              apiSchemaSpecRef:
+                description: Name of a ConfigMap (same namespace) holding `openapi.json` for positive-security enforcement. When set, it is mounted and `[enterprise.api_schema]` is enabled.
+                nullable: true
+                type: string
+              backend:
+                description: The upstream this WAF protects — a Service reference or a raw URL.
+                properties:
+                  service:
+                    nullable: true
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        description: Defaults to the WafProxy's namespace.
+                        nullable: true
+                        type: string
+                      port:
+                        default: 80
+                        format: uint16
+                        minimum: 0.0
+                        type: integer
+                    required:
+                    - name
+                    type: object
+                  url:
+                    nullable: true
+                    type: string
+                type: object
+              blockThreshold:
+                default: 3
+                description: Score at/above which a request is blocked.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              crsCurated:
+                default: true
+                description: Enable the premium curated-CRS module.
+                type: boolean
+              image:
+                description: Container image for the WAF data-plane (from your private registry).
+                type: string
+              mode:
+                default: blocking
+                description: Enforcement mode.
+                enum:
+                - blocking
+                - detection
+                type: string
+              modules:
+                additionalProperties:
+                  type: boolean
+                default: {}
+                description: Detection modules to force on/off (name → enabled). Unlisted modules keep the image defaults.
+                type: object
+              paranoiaLevel:
+                default: 3
+                description: CRS paranoia level (1–4).
+                format: uint8
+                minimum: 0.0
+                type: integer
+              replicas:
+                default: 2
+                description: Desired data-plane replicas.
+                format: int32
+                type: integer
+            required:
+            - backend
+            - image
+            type: object
+          status:
+            nullable: true
+            properties:
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              ready:
+                nullable: true
+                type: boolean
+            type: object
+        required:
+        - spec
+        title: WafProxy
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

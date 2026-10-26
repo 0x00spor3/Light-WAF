@@ -5,6 +5,13 @@ This product is licensed under the Apache License, Version 2.0.
 See the LICENSE file for the full license text, or visit
 http://www.apache.org/licenses/LICENSE-2.0
 
+The enterprise components (crates waf-state-redis, waf-tls-managed,
+waf-threatintel, waf-crs-curated, waf-modules-premium, waf-marketplace,
+waf-controlplane, waf-capture, waf-governance, waf-node-agent,
+waf-enterprise, waf-operator, and the Helm charts) were originally released
+under the Business Source License 1.1 and were relicensed under Apache-2.0
+by the sole copyright holder in 2026.
+
 ------------------------------------------------------------------------
 Third-party components
 ------------------------------------------------------------------------

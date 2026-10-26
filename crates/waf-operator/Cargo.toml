@@ -1,0 +1,33 @@
+[package]
+name = "waf-operator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Kubernetes operator for Light WAF — reconciles a WafProxy CR into a data-plane Deployment in front of a target Service (K4, enterprise, Apache-2.0)"
+
+# DELIBERATELY does NOT depend on waf-core / waf-proxy: the operator is a control-plane
+# component that GENERATES manifests (it never inspects traffic). It renders the same
+# data-plane shape as charts/waf, driven by a CR. Zero datapath.
+[dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
+serde = { workspace = true }
+serde_json = "1"
+serde_yaml = "0.9"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = "2"
+futures = "0.3"
+schemars = "0.8"
+kube = { version = "0.99", default-features = false, features = [
+    "client",
+    "runtime",
+    "derive",
+    "rustls-tls",
+] }
+k8s-openapi = { version = "0.24", features = ["v1_31"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# Parse the rendered config.toml in tests to prove it is well-formed + carries the right values.
+toml = { workspace = true }
