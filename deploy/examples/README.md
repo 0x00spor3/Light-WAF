@@ -24,5 +24,5 @@ Observability (K5, shipped in `charts/waf`): enable `metrics.podMonitor`,
 `metrics.prometheusRule`, and `metrics.grafanaDashboard`. The dashboard JSON also lives at
 `charts/waf/dashboards/waf-overview.json` for manual import.
 
-All example manifests use placeholders (`myapp`, `registry.internal:5000`, `example.com`) —
-edit before applying.
+All example manifests use placeholders (`myapp`, `example.com`) — edit before applying. Images
+default to the release images on GHCR (`ghcr.io/0x00spor3/...`).

@@ -63,12 +63,13 @@ ARG VERSION=0.0.0-dev
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 LABEL org.opencontainers.image.title="waf-controlplane" \
-      org.opencontainers.image.description="Control-plane dashboard/API over the OPEN telemetry" \
+      org.opencontainers.image.description="Light WAF control plane: telemetry, dashboard, API and governance" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.vendor="WAF"
+      org.opencontainers.image.source="https://github.com/0x00spor3/Light-WAF" \
+      org.opencontainers.image.vendor="Light WAF"
 
 # CA bundle for outbound TLS (OIDC IdP, https /metrics scrape, alert webhooks) ships
 # with distroless at /etc/ssl/certs/ca-certificates.crt — no install needed.

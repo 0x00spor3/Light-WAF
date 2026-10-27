@@ -69,7 +69,7 @@ spec:
                 description: Enable the premium curated-CRS module.
                 type: boolean
               image:
-                description: Container image for the WAF data-plane (from your private registry).
+                description: Container image for the WAF data-plane (e.g. ghcr.io/0x00spor3/waf-enterprise:1.0.0).
                 type: string
               mode:
                 default: blocking

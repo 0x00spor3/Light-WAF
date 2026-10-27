@@ -8,8 +8,8 @@ metadata:
   name: myapp-waf
   namespace: prod
 spec:
-  # CHANGE ME → your private registry
-  image: registry.internal:5000/waf-enterprise:1.0.0
+  # The release image on GHCR; point it at your own build or a mirror if you use one.
+  image: ghcr.io/0x00spor3/waf-enterprise:1.0.0
   backend:
     service:
       name: myapp

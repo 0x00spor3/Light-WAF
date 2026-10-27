@@ -10,8 +10,9 @@ Internet ─▶ Ingress / Gateway ─▶ Service (WAF) ─▶ [waf-enterprise] �
                               Vector DaemonSet ─▶ control-plane /ingest/events ─▶ dashboard
 ```
 
-Everything is enterprise-only and off the datapath except the WAF Deployment itself. Images
-are never pushed to a public registry — build locally and `kind load` / push to a private one.
+Everything is off the datapath except the WAF Deployment itself. A real cluster pulls the
+release images from GHCR (`ghcr.io/0x00spor3/...`, the chart defaults); the kind e2e builds
+the images locally and `kind load`s them.
 
 ## A. Automated e2e on kind
 
@@ -30,12 +31,12 @@ Requires `docker`, `kind`, `kubectl`, `helm`. Also runs in CI (`.github/workflow
 ## B. Manual install (real cluster)
 
 ```sh
-# 1. Build + push to YOUR private registry (never public):
-REGISTRY=registry.internal:5000 scripts/images/build.sh
+# 1. Images: the charts pull the release images from ghcr.io by default. To use your own
+#    build instead, push it to a private registry and add --set image.repository=… below:
+#    REGISTRY=registry.internal:5000 scripts/images/build.sh
 
 # 2. Control plane (managed Postgres in prod; bundled shown here for brevity):
 helm install waf-cp charts/waf-controlplane -n waf --create-namespace \
-  --set image.repository=registry.internal:5000/waf-controlplane \
   --set postgres.bundled.enabled=true \
   --set secrets.apiToken=$(openssl rand -hex 24) \
   --set secrets.auditKey=$(openssl rand -hex 32) \
@@ -43,7 +44,6 @@ helm install waf-cp charts/waf-controlplane -n waf --create-namespace \
 
 # 3. WAF in front of your app:
 helm install myapp-waf charts/waf -n prod --create-namespace \
-  --set image.repository=registry.internal:5000/waf-enterprise \
   --set waf.backend=http://myapp.prod.svc.cluster.local:8080
 
 # 4. Log shipper (edit WAF_CP_URL + the ingest token Secret first):

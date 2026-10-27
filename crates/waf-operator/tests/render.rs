@@ -79,10 +79,23 @@ fn config_toml_module_override_and_detection_mode() {
     s.modules.insert("graphql".into(), true); // extra, non-default module
     let cfg = render::config_toml(&s, "prod");
     let v: toml::Value = toml::from_str(&cfg).unwrap();
-    assert_eq!(v["waf"]["mode"].as_str(), Some("detection"));
+    assert_eq!(v["waf"]["mode"].as_str(), Some("detection-only"));
     assert_eq!(v["modules"]["sqli"]["enabled"].as_bool(), Some(false));
     assert_eq!(v["modules"]["xss"]["enabled"].as_bool(), Some(true));
     assert_eq!(v["modules"]["graphql"]["enabled"].as_bool(), Some(true));
+}
+
+/// The rendered config must be accepted by the WAF's own config type, in both modes —
+/// a value the WAF rejects (e.g. `mode = "detection"`) would crash-loop every pod.
+#[test]
+fn config_toml_parses_as_waf_config() {
+    for mode in [Mode::Blocking, Mode::Detection] {
+        let mut s = spec();
+        s.mode = mode;
+        let cfg = render::config_toml(&s, "prod");
+        let parsed: Result<waf_core::Config, _> = toml::from_str(&cfg);
+        assert!(parsed.is_ok(), "rendered config rejected by waf-core: {:?}\n{cfg}", parsed.err());
+    }
 }
 
 #[test]
