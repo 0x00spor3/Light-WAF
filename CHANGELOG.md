@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/) — from 1.0.0 the public API (`WafModule`,
 `StateStore`, `TlsCertSource`, `ProxyBuilder`, the config schema) is covered by it.
 
-## [1.0.0] — unreleased
+## [1.0.0] — 2026-10-27
 
 The first release of Light WAF as a single open-source project: the core and the components
 (previously a separately licensed repository) now live in one workspace, under one license, on
