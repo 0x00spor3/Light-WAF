@@ -100,7 +100,7 @@ With `enabled = false` there is no client authentication — exactly the OPEN be
 
 ```toml
 [waf]
-mode            = "blocking"   # "blocking" (enforce) | "detection" (observe only)
+mode            = "blocking"   # "blocking" (enforce) | "detection-only" (observe only)
 block_threshold = 5            # deny when the anomaly score reaches this
 paranoia_level  = 1            # 1..=4 — higher activates more (and noisier) rules
 ```

@@ -64,8 +64,8 @@ A finished request carries one verdict. The ones you will see in the dashboard a
 The `[waf].mode` switch decides whether the WAF enforces or only observes:
 
 - **`blocking`** (recommended for production) — denied verdicts return an error to the client.
-- **`detection`** — nothing is blocked; verdicts are computed and logged/exported but every request
-  is forwarded. Use this to tune a new ruleset against live traffic before enforcing.
+- **`detection-only`** — nothing is blocked; verdicts are computed and logged/exported but every
+  request is forwarded. Use this to tune a new ruleset against live traffic before enforcing.
 
 ## Resilience posture: what happens when *the WAF* is in trouble
 
