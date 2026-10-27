@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-# The operator Deployment. Set the image to YOUR private registry (never published
-# publicly). Apply crd.yaml + rbac.yaml first.
+# The operator Deployment, using the release image on GHCR (point it at your own build
+# or a mirror if you use one). Apply crd.yaml + rbac.yaml first.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,8 +28,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: operator
-          # CHANGE ME → registry.internal:5000/waf-operator:1.0.0
-          image: waf-operator:1.0.0
+          image: ghcr.io/0x00spor3/waf-operator:1.0.0
           imagePullPolicy: IfNotPresent
           env:
             - name: RUST_LOG

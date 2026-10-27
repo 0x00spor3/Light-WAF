@@ -5,6 +5,32 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/) — from 1.0.0 the public API (`WafModule`,
 `StateStore`, `TlsCertSource`, `ProxyBuilder`, the config schema) is covered by it.
 
+## [Unreleased]
+
+### Added
+
+- **Container images on the GitHub Container Registry.** A release tag now publishes the four
+  images — `ghcr.io/0x00spor3/waf-enterprise`, `waf-controlplane`, `waf-node-agent`,
+  `waf-operator` — as multi-arch (amd64 + arm64) images tagged `<version>`, `<major>.<minor>`
+  and `latest`, only after every image passes the vulnerability scan. The images carry the
+  `org.opencontainers.image.source` label linking them to this repository.
+
+### Changed
+
+- The `waf` and `waf-controlplane` Helm charts, the operator manifests and the GitOps examples
+  default to the GHCR images. Installs that set `image.repository` explicitly are unaffected.
+
+### Fixed
+
+- `waf-operator`: a `WafProxy` with `mode: detection` rendered `mode = "detection"` into the
+  WAF config, which the WAF rejects (the value is `detection-only`), so the data-plane pods failed
+  to start. The CR value is unchanged; it now renders `detection-only`. A test parses the rendered
+  config with the WAF's own config type.
+- `waf` chart: `waf.mode=detection` (the value the chart documented) produced the same invalid
+  config. It now maps to `detection-only`; the documented values are `blocking` and
+  `detection-only`.
+- Docs: the observe-only mode is `detection-only`, not `detection`.
+
 ## [1.0.0] — 2026-10-27
 
 The first release of Light WAF as a single open-source project: the core and the components

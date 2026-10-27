@@ -19,7 +19,8 @@ data:
     upstream_timeout_ms = {{ .Values.waf.resilience.upstream_timeout_ms | int64 }}
 
     [waf]
-    mode = {{ .Values.waf.mode | quote }}
+    {{- /* `detection` (the WafProxy CR spelling) is accepted as an alias of the WAF's `detection-only`. */}}
+    mode = {{ if eq .Values.waf.mode "detection" }}"detection-only"{{ else }}{{ .Values.waf.mode | quote }}{{ end }}
     block_threshold = {{ .Values.waf.blockThreshold | int64 }}
     paranoia_level = {{ .Values.waf.paranoiaLevel | int64 }}
 

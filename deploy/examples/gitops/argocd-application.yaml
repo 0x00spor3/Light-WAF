@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-# Argo CD Application deploying the waf data-plane chart from your Git repo. Point repoURL at
-# your fork and set the image to your private registry via Helm values.
+# Argo CD Application deploying the waf data-plane chart straight from the Light WAF
+# repository, pinned to a release tag. The chart pulls the matching release image from GHCR;
+# set image.repository to use your own build or a mirror.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -9,13 +10,13 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://git.example.com/your-org/waf.git
-    targetRevision: main
+    repoURL: https://github.com/0x00spor3/Light-WAF.git
+    targetRevision: v1.0.0
     path: charts/waf
     helm:
       values: |
         image:
-          repository: registry.internal:5000/waf-enterprise
+          repository: ghcr.io/0x00spor3/waf-enterprise
         waf:
           backend: http://myapp.prod.svc.cluster.local:8080
         metrics:

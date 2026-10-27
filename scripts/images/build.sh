@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Build the three enterprise container images (data-plane, node-agent, control-plane)
-# reproducibly, with OCI provenance labels and semver tags derived from the enterprise
-# workspace version. K1 of the Kubernetes-native deployment plan.
+# Build the four container images (data-plane, node-agent, control-plane, operator)
+# reproducibly, with OCI provenance labels and semver tags derived from the workspace
+# version. K1 of the Kubernetes-native deployment plan.
 #
-# HARD RULE (enforced below, no override): this script NEVER pushes to a PUBLIC
-# registry. Default output is LOCAL only. Pushing is opt-in and restricted to a
-# PRIVATE registry — the final public publish, if any, is a manual operator action.
+# RULE (enforced below, no override): this script NEVER pushes to a PUBLIC registry.
+# The official images on ghcr.io are published only by CI (.github/workflows/images.yml)
+# from a release tag, after the vulnerability gate. Default output here is LOCAL only;
+# pushing is opt-in and restricted to a PRIVATE registry (your own build or a mirror).
 #
-#   ./build.sh                       # build all three for the host arch, load into local docker
+#   ./build.sh                       # build all four for the host arch, load into local docker
 #   IMAGES=waf-enterprise ./build.sh # build just one (space-separated list)
 #   MULTIARCH=1 ./build.sh           # build linux/amd64+arm64 → local OCI tarballs in dist/ (no registry)
 #   REGISTRY=registry.internal:5000 ./build.sh   # ALSO push to a PRIVATE registry (must not be public)
@@ -45,8 +46,9 @@ declare -A DOCKERFILES=(
 IMAGES="${IMAGES:-waf-enterprise waf-node-agent waf-controlplane waf-operator}"
 
 # ── Guard: refuse PUBLIC registries outright (no override) ───────────────────────
-# The memory rule is executable here, not just documented. Known public indexes are
-# rejected; a REGISTRY without a host[:port] (i.e. a bare Docker Hub namespace) is too.
+# Public images come only from the CI release workflow, never from a workstation. Known
+# public indexes are rejected; a REGISTRY without a host[:port] (i.e. a bare Docker Hub
+# namespace) is too.
 assert_private_registry() {
   local reg="$1"
   local host="${reg%%/*}"
@@ -54,7 +56,8 @@ assert_private_registry() {
     docker.io|index.docker.io|registry-1.docker.io|ghcr.io|quay.io|\
     public.ecr.aws|gcr.io|*.gcr.io|registry.gitlab.com|registry.hub.docker.com)
       echo "error: REGISTRY '${reg}' is a PUBLIC registry — refused by policy." >&2
-      echo "       This script only pushes to a private registry; publish publicly by hand." >&2
+      echo "       This script only pushes to a private registry; the public images are" >&2
+      echo "       published by CI (.github/workflows/images.yml) from a release tag." >&2
       exit 1 ;;
   esac
   # A private registry host must be qualified: contain a '.' or ':' (host:port) or be localhost.

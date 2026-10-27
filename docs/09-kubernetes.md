@@ -11,8 +11,11 @@ The unit of deployment is **WAF-per-workload**: one WAF `Deployment` fronts **on
 (set as the backend). It is *not* a cluster-wide ingress controller — that would need multi-backend
 routing in the core, which is a deliberate non-goal for now.
 
-> Images are **never pushed to a public registry**. Build them and load them into your cluster, or push
-> to *your* private registry. See [`scripts/images/RUNBOOK.md`](../scripts/images/RUNBOOK.md).
+> **Images.** Multi-arch images (amd64 + arm64) are published on the GitHub Container Registry:
+> `ghcr.io/0x00spor3/waf-enterprise`, `waf-controlplane`, `waf-node-agent` and `waf-operator`,
+> tagged with the release version. The charts and the operator manifests use them by default, at
+> the chart's `appVersion`. To run your own build or a mirror, see
+> [`scripts/images/RUNBOOK.md`](../scripts/images/RUNBOOK.md).
 
 ## What you deploy
 
@@ -26,16 +29,18 @@ routing in the core, which is a deliberate non-goal for now.
 
 ## Install with Helm
 
+The charts live in the repository; install them from a checkout:
+
 ```sh
+git clone https://github.com/0x00spor3/Light-WAF && cd Light-WAF
+
 # 1. Control plane (managed Postgres in prod; bundled shown for a quick start):
 helm install waf-cp charts/waf-controlplane -n waf --create-namespace \
-  --set image.repository=registry.internal:5000/waf-controlplane \
   --set postgres.bundled.enabled=true \
   --set secrets.apiToken=<ingest-token>
 
 # 2. The WAF in front of your app:
 helm install myapp-waf charts/waf -n prod --create-namespace \
-  --set image.repository=registry.internal:5000/waf-enterprise \
   --set waf.backend=http://myapp.prod.svc.cluster.local:8080
 ```
 

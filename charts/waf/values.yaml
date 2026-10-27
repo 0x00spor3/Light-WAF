@@ -3,11 +3,11 @@
 # One WAF Deployment fronts ONE upstream Service: set `waf.backend` to your app.
 
 # ── Image ────────────────────────────────────────────────────────────────────
-# repository is left WITHOUT a registry host on purpose: set it to YOUR private
-# registry (e.g. registry.internal:5000/waf-enterprise). The images are never
-# published to a public registry — see scripts/images/RUNBOOK.md.
+# The release image on the GitHub Container Registry (multi-arch: amd64 + arm64).
+# To run your own build or a mirror, point this at your registry — see
+# scripts/images/RUNBOOK.md.
 image:
-  repository: waf-enterprise
+  repository: ghcr.io/0x00spor3/waf-enterprise
   tag: "" # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 imagePullSecrets: []
@@ -19,7 +19,7 @@ waf:
   listen: "0.0.0.0:8080"
   # REQUIRED: the upstream Service this WAF protects.
   backend: "http://myapp.default.svc.cluster.local:80"
-  mode: blocking # blocking | detection
+  mode: blocking # blocking | detection-only (observe and log, never block)
   blockThreshold: 3
   paranoiaLevel: 3
   severityScores:
@@ -176,7 +176,7 @@ tls:
 agent:
   enabled: false
   image:
-    repository: waf-node-agent
+    repository: ghcr.io/0x00spor3/waf-node-agent
     tag: "" # defaults to .Chart.AppVersion
   controlPlaneUrl: "http://waf-controlplane.waf.svc.cluster.local:9600"
   nodeName: "" # defaults to the pod name (metadata.name) via env

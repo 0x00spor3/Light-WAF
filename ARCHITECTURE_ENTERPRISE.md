@@ -727,9 +727,9 @@ require multi-backend routing in the core (a strategic follow-on), and until it 
 promised**.
 
 ### Components
-- **Images** (`Dockerfile.*` + `scripts/images/`): multi-arch builds, SBOM + scan, OCI labels. CI
-  only builds and verifies; it never pushes to a registry — publishing is a deliberate manual
-  step (like `cargo publish`).
+- **Images** (`Dockerfile.*` + `scripts/images/`): multi-arch builds, SBOM + scan, OCI labels.
+  CI publishes to `ghcr.io/0x00spor3/<image>` only for a release tag, and only after the
+  vulnerability gate passed for all four images; every other run builds and verifies only.
 - **Data-plane chart** `charts/waf`: Deployment + optional agent sidecar
   (`shareProcessNamespace`, reload via `kill -HUP $(pidof waf-enterprise)` — under Kubernetes the
   WAF is NOT PID 1), a ConfigMap that renders `config.toml`, Service,

@@ -10,9 +10,11 @@ on startup — no separate Job.
 
 ## Install
 
-Images are never published to a public registry (see `scripts/images/RUNBOOK.md`); point
-`image.repository` at **your** private registry. Provide a database one of three ways
-(precedence: `database.existingSecret` → `postgres.bundled` → `database.url`).
+The chart pulls the release image from the GitHub Container Registry
+(`ghcr.io/0x00spor3/waf-controlplane`, multi-arch, UI embedded), tagged with the chart's
+`appVersion`. To run your own build or a mirror, set `image.repository` (see
+`scripts/images/RUNBOOK.md`). Provide a database one of three ways (precedence:
+`database.existingSecret` → `postgres.bundled` → `database.url`).
 
 Turnkey (bundled Postgres — dev/demo). The API token, the bootstrap admin password and the
 Postgres password are **generated** on first install (the NOTES print how to read them back):
@@ -20,9 +22,7 @@ Postgres password are **generated** on first install (the NOTES print how to rea
 ```sh
 helm install waf-cp ./charts/waf-controlplane \
   --namespace waf --create-namespace \
-  --set image.repository=registry.internal:5000/waf-controlplane \
   --set postgres.bundled.enabled=true \
-  --set postgres.bundled.image=registry.internal:5000/postgres:16 \
   --set secrets.auditKey=$(openssl rand -hex 32)
 ```
 
@@ -30,7 +30,6 @@ Production (managed Postgres via a Secret carrying `WAF_CP_DATABASE_URL`):
 
 ```sh
 helm install waf-cp ./charts/waf-controlplane -n waf \
-  --set image.repository=registry.internal:5000/waf-controlplane \
   --set database.existingSecret=waf-cp-db \
   --set secrets.existingSecret=waf-cp-env    # carries the WAF_CP_* env
 ```

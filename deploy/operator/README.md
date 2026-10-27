@@ -8,19 +8,18 @@ one upstream**. It is control-plane only (it generates manifests; it never inspe
 
 ## Install
 
-Images are never published to a public registry — build them (`scripts/images/build.sh`,
-which now includes `waf-operator`) and push to **your** private registry, then edit the image
-refs below.
+The manifests use the release images on the GitHub Container Registry
+(`ghcr.io/0x00spor3/waf-operator` and `ghcr.io/0x00spor3/waf-enterprise`). To run your own
+build or a mirror (`scripts/images/build.sh`), edit the image refs below.
 
 ```sh
 # 1. CRD + RBAC + operator
 kubectl apply -f deploy/operator/crd.yaml
 kubectl apply -f deploy/operator/rbac.yaml
-# edit operator.yaml → set image to registry.internal:5000/waf-operator:<ver>
 kubectl apply -f deploy/operator/operator.yaml
 
 # 2. Protect an app
-# edit sample-wafproxy.yaml → set spec.image + spec.backend
+# edit sample-wafproxy.yaml → set spec.backend (and spec.image to the release you want)
 kubectl apply -f deploy/operator/sample-wafproxy.yaml
 
 kubectl get wafproxy -A          # Mode / Replicas / Ready
@@ -33,9 +32,9 @@ Deleting the `WafProxy` cascades to its ConfigMap/Deployment/Service (owner refe
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `image` | — (required) | WAF data-plane image (private registry) |
+| `image` | — (required) | WAF data-plane image, e.g. `ghcr.io/0x00spor3/waf-enterprise:1.0.0` |
 | `backend.service` / `backend.url` | — (required) | upstream: a Service ref (→ cluster-local URL) or a raw URL |
-| `mode` | `blocking` | `blocking` or `detection` |
+| `mode` | `blocking` | `blocking` or `detection` (rendered as the WAF's `detection-only`: observe and log, never block) |
 | `paranoiaLevel` | `3` | 1–4 |
 | `blockThreshold` | `3` | score to block |
 | `replicas` | `2` | data-plane replicas |

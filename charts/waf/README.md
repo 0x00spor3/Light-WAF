@@ -8,13 +8,13 @@ the core — a strategic follow-on). K2 of the Kubernetes-native deployment plan
 
 ## Install
 
-Images are never published to a public registry (see `scripts/images/RUNBOOK.md`); point
-`image.repository` at **your** private registry.
+The chart pulls the release image from the GitHub Container Registry
+(`ghcr.io/0x00spor3/waf-enterprise`, multi-arch), tagged with the chart's `appVersion`. To run
+your own build or a mirror, set `image.repository` (see `scripts/images/RUNBOOK.md`).
 
 ```sh
 helm install myapp-waf ./charts/waf \
   --namespace prod --create-namespace \
-  --set image.repository=registry.internal:5000/waf-enterprise \
   --set waf.backend=http://myapp.prod.svc.cluster.local:8080
 ```
 
@@ -38,9 +38,11 @@ In-cluster the WAF is then reachable at
 
 | Key | Default | Notes |
 |-----|---------|-------|
-| `image.repository` | `waf-enterprise` | **set your private registry prefix** |
+| `image.repository` | `ghcr.io/0x00spor3/waf-enterprise` | override for your own build or a mirror |
+| `image.tag` | `""` | defaults to the chart's `appVersion` |
+| `agent.image.repository` | `ghcr.io/0x00spor3/waf-node-agent` | rule-management sidecar image |
 | `waf.backend` | placeholder | **required** — the upstream Service URL |
-| `waf.mode` | `blocking` | `blocking` or `detection` |
+| `waf.mode` | `blocking` | `blocking` or `detection-only` (`detection` is accepted as an alias) |
 | `waf.paranoiaLevel` | `3` | CRS paranoia level |
 | `waf.modules.*` | all `true` | detection modules on/off |
 | `waf.extraConfig` | `""` | raw TOML appended to `config.toml` |

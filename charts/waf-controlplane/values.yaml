@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Default values for the `waf-controlplane` chart.
 
-# ── Image (set a private registry prefix; never published publicly) ───────────
+# ── Image (the release image on GHCR; override to use your own build/mirror) ──
 image:
-  repository: waf-controlplane
+  repository: ghcr.io/0x00spor3/waf-controlplane
   tag: "" # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 imagePullSecrets: []
@@ -106,7 +106,7 @@ database:
   url: "postgres://waf:changeme@postgres:5432/waf_cp"
 
 # Optional in-chart Postgres (DEV/DEMO convenience). Production: use a managed DB
-# and set database.existingSecret. Image repo overridable to a private registry.
+# and set database.existingSecret. The image can point at a mirror in your registry.
 postgres:
   bundled:
     enabled: false

@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct WafProxySpec {
-    /// Container image for the WAF data-plane (from your private registry).
+    /// Container image for the WAF data-plane (e.g. ghcr.io/0x00spor3/waf-enterprise:1.0.0).
     pub image: String,
 
     /// The upstream this WAF protects — a Service reference or a raw URL.
@@ -90,10 +90,12 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// The `[waf].mode` value the WAF accepts. The CR spells the observe-only mode
+    /// `detection`; the WAF config calls it `detection-only`.
     pub fn as_config(&self) -> &'static str {
         match self {
             Mode::Blocking => "blocking",
-            Mode::Detection => "detection",
+            Mode::Detection => "detection-only",
         }
     }
 }

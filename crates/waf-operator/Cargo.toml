@@ -33,3 +33,6 @@ k8s-openapi = { version = "0.24", features = ["v1_31"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # Parse the rendered config.toml in tests to prove it is well-formed + carries the right values.
 toml = { workspace = true }
+# Tests only: check the rendered config against the WAF's real config type. The operator
+# binary itself still does not link waf-core (see above).
+waf-core = { workspace = true }
