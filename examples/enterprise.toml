@@ -1,0 +1,314 @@
+[proxy]
+listen = "0.0.0.0:8080"
+backend = "http://127.0.0.1:8000"
+
+# Terminazione TLS sul listener (Fase 12). DEFAULT OFF → il listener serve in chiaro
+# (h1 + h2c), esattamente come prima. Quando enabled=true il listener serve SOLO TLS
+# (h1/h2 negoziati via ALPN); NIENTE fallback a chiaro sulla stessa porta. Un cert
+# illeggibile con enabled=true = errore FATALE al boot (fail-closed, niente downgrade).
+# Termination base, cert-da-file = core/OPEN (BOUNDARY §3.2). ACME/rotation/mTLS-PKI =
+# enterprise (stesso seam TlsCertSource). Vedi ARCHITECTURE §9.
+[tls]
+enabled   = false
+cert_path = "/etc/waf/tls/cert.pem"   # catena PEM (leaf per primo)
+key_path  = "/etc/waf/tls/key.pem"    # chiave PEM (PKCS#8 / PKCS#1 / SEC1)
+alpn      = ["h2", "http/1.1"]         # h2-ready (gRPC-over-TLS futuro); h1-only ripiega a http/1.1
+
+# ── ENTERPRISE: TLS gestito (waf-tls-managed) ───────────────────────────────────
+# Sotto-tabelle lette SOLO dall'enterprise (EnterpriseFile); le chiavi OPEN di [tls]
+# qui sopra restano di waf_core::Config. Iniettate via il seam TlsCertSource (core 0.2:
+# resolver()/client_verifier()) → NIENTE fork del core.
+#
+# Certificati ACME gestiti (rotazione HITLESS senza ricostruire l'acceptor). Quando
+# enabled=true la sorgente cert è ACME → cert_path/key_path di [tls] sono IGNORATI.
+# [tls].enabled governa comunque l'on/off del TLS; con tls-alpn-01 il listener annuncia
+# l'ALPN `acme-tls/1` per la challenge sulla stessa porta.
+[tls.acme]
+enabled       = false
+domains       = ["waf.example.com"]      # SAN del certificato (dns-01 supporta i wildcard "*.example.com")
+email         = "ops@example.com"        # account ACME (contatto)
+strategy      = "tls-alpn-01"            # "tls-alpn-01" (default) | "dns-01" (wildcard, dietro NAT)
+cache_dir     = "acme-cache"             # persistenza account/cert tra i restart
+staging       = true                      # true = CA di staging (evita i rate-limit di LE prod)
+# directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"  # o un Pebble di test
+# provider      = "cloudflare"            # solo per strategy = "dns-01": "cloudflare" | "route53"
+# cluster       = false                    # MULTI-NODO (solo dns-01): true = i nodi si coordinano via
+#                                          # Redis (SharedCertStore) → UN nodo emette per il cluster,
+#                                          # gli altri convergono. Richiede [enterprise].redis_url +
+#                                          # env `WAF_CERT_STORE_KEY` (cifra la chiave privata a riposo).
+
+# DNS-01 (solo con strategy = "dns-01"). Pubblica il TXT `_acme-challenge.<dominio>` via API
+# del provider, poi attende la propagazione sugli NS AUTORITATIVI prima di far validare la CA.
+# I SEGRETI del provider NON stanno qui, ma in env:
+#   - cloudflare → `CF_API_TOKEN`
+#   - route53    → `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ opz. `AWS_SESSION_TOKEN`, `AWS_REGION`)
+# La strategia è GLOBALE al blocco [tls.acme] → ALPN e DNS-01 sono mutuamente esclusivi.
+[tls.acme.dns]
+zone_id                  = ""             # id zona del provider (zona Cloudflare o hosted-zone id Route53)
+propagation_timeout_secs = 120            # attesa max comparsa TXT sugli NS autoritativi
+poll_interval_secs       = 5
+grace_secs               = 10             # delay di cortesia dopo il primo match (più vantage point)
+renewal_days             = 60             # rinnovo periodico (cert LE ~90gg)
+
+# mTLS / managed-PKI: richiede e verifica il certificato CLIENT (client_verifier()).
+# enabled=false ⇒ nessuna autenticazione client, esattamente come il core OPEN.
+[tls.mtls]
+enabled = false
+ca_path = "/etc/waf/clients-ca.pem"      # bundle PEM delle CA client fidate
+
+[waf]
+mode = "blocking"
+block_threshold = 5
+paranoia_level = 1          # 1..=4 — higher activates more (noisier) rules
+
+# Comportamento quando È IL WAF in difficoltà — policy ESPLICITA per-scenario.
+# (Il vecchio waf.fail_open è stato rimosso: usa questa sezione.)
+[resilience]
+on_upstream_error   = "fail_closed"   # origin giù/timeout -> 502 (closed) | 503 (open, retryable)
+on_internal_error   = "fail_open"     # panic/bug di un modulo NON deve abbattere il sito
+on_config_error     = "fail_open"     # reload invalido (P3) -> tieni last-good config
+on_parser_limit     = "fail_closed"   # normalization fallita -> 400 (closed) | inoltra non-ispezionato (open)
+upstream_timeout_ms = 30000           # tetto round-trip upstream (no hang del worker)
+
+# Point weight per severity class. Each matched rule contributes its severity's
+# weight to the cumulative anomaly score; the request blocks at block_threshold.
+# Config C2 (Fase 7 / Pilastro 2): critical raised 5 -> 6 so a single high-confidence
+# rule blocks with own-merit margin >= 1, while weak signals stay sub-threshold
+# (accumulation-only). Matches the waf-core production default.
+# Source of truth / rationale: ARCHITECTURE §7.
+[waf.severity_scores]
+critical = 6
+error    = 4
+warning  = 3
+notice   = 2
+
+# Rate limiting L7 (on_connection). Token bucket per key.
+# NB: key = "client_ip" è la PEER socket addr; dietro un LB/CDN coincide con
+# l'IP del proxy → throttle collettivo. XFF + trusted-proxy è estensione nota (§8).
+[rate_limit]
+enabled          = true
+key              = "client_ip"
+requests         = 100        # token per finestra
+window_seconds   = 60
+burst            = 100        # capacità bucket (default = requests)
+action           = "block"    # "block" -> 429 | "score" -> contributo allo score
+score            = 5          # punti se action = "score"
+max_tracked_keys = 100000     # cap memoria; sweep evince i bucket idle
+
+# Risoluzione SICURA dell'IP client (condivisa da rate limit, logging e futura
+# Geo/IP-reputation). L'IP risolto è derivato UNA volta e finisce in
+# ctx.client_ip. Fail-safe: con trusted_proxies vuoto l'header XFF è SEMPRE
+# ignorato e si usa la peer addr (un deploy non configurato non è spoofabile).
+[network]
+trusted_proxies  = []               # CIDR dei TUOI proxy/LB/CDN, es. ["10.0.0.0/8","::1"]
+client_ip_header = "X-Forwarded-For"
+trusted_hops     = 1                 # quanti hop fidarsi contando da DESTRA (mai il primo IP)
+
+[limits]
+max_body_size    = 1048576   # 1 MiB
+max_header_size  = 8192      # 8 KiB per header
+max_headers      = 100
+max_params       = 100
+max_cookies      = 50
+max_json_depth   = 20
+
+[modules.sqli]
+enabled = true
+
+[modules.xss]
+enabled = true
+
+[modules.path_traversal]
+enabled = true
+
+[modules.rce]
+enabled = true
+
+[modules.lfi_rfi]
+enabled = true
+
+[modules.ssrf]
+enabled = true
+
+# ── moduli detection Fase 10a/10b (firme inequivocabili per categoria) ──────────
+[modules.ldap]
+enabled = true
+
+[modules.nosql]
+enabled = true
+
+[modules.mail]
+enabled = true
+
+[modules.ssti]
+enabled = true
+
+# Fingerprint di scanner/tool sul solo User-Agent (sqlmap/nuclei/… + domini OOB).
+[modules.scanner]
+enabled = true
+
+# Server-Side Includes injection (<!--#exec|include|…).
+[modules.ssi]
+enabled = true
+
+# XML External Entity (<!ENTITY / <!DOCTYPE…SYSTEM / encoding="UTF-7").
+[modules.xxe]
+enabled = true
+
+[modules.header_injection]
+enabled = true
+
+# Validazione del FRAMING HTTP (CL/TE) — controllo strutturale, NON content-inspection.
+# Default true: bassissimo falso-positivo (scatta solo su framing illegale/ambiguo).
+[modules.request_smuggling]
+enabled = true
+
+# Protezioni STRUTTURALI GraphQL (Fase 11) — come request_smuggling, NON content-inspection:
+# cap DoS/abuse sulla FORMA dell'operazione GraphQL (depth/alias/field/directive/batch) +
+# policy introspection, via parse lessicale. DEFAULT OFF: endpoint-specifico, i cap vanno
+# tarati per app. Ispeziona JSON `query`/GET `?query=` solo sui `paths`, e ogni body
+# `application/graphql`.
+[modules.graphql]
+enabled             = false
+paths               = ["/graphql"]
+max_depth           = 15            # max nesting del selection-set (paren-aware)
+max_aliases         = 30            # cap alias-bomb
+max_fields          = 1000          # proxy di complessità (conteggio selezioni)
+max_directives      = 50
+max_batch           = 10            # max operazioni in una richiesta batch
+block_introspection = false         # blocca __schema/__type → 403
+
+# Protezioni STRUTTURALI gRPC — come graphql, NON content-inspection: il CONTENUTO dei campi
+# protobuf è ispezionato dai moduli normali via §6 (de-framing + estrazione leaf), questo modulo
+# applica cap DoS sulla FORMA del messaggio + policy compressi. DEFAULT OFF: endpoint-specifico,
+# cap da tarare. Identifica application/grpc*.
+# NB: gRPC gira su HTTP/2, che è SEMPRE servito (h2c in chiaro via auto::Builder, oppure h2 su TLS
+# se [tls] è attivo). TLS NON è richiesto dal modulo gRPC: i due flag sono indipendenti.
+[modules.grpc]
+enabled           = false
+max_message_bytes = 4194304          # 4 MiB — cap dimensione totale payload ispezionabile
+max_fields        = 4096             # cap field-bomb
+max_depth         = 16               # cap depth-bomb (nesting sub-message)
+on_compressed     = "reject"         # payload compresso = opaco: "reject" (fail-closed) | "passthrough"
+
+[modules.crs]
+enabled = true
+files   = ["test.conf"]
+
+# ── ENTERPRISE: StateStore distribuito su Redis (waf-state-redis) ───────────────
+# Rate-limit cluster-wide: i nodi WAF condividono UN solo budget via Redis (try_acquire
+# atomico server-side), iniettato col seam StateStore. Assente ⇒ store in-memory single-node.
+[enterprise]
+redis_url = "redis://10.0.0.5:6379"   # connessione Redis; override con env WAF_REDIS_URL (vince l'env)
+pool_size = 32                         # dimensione pool connessioni
+fail_open = true                       # errore Redis a RUNTIME: true=allow (fail-open) | false=deny.
+                                       # Redis irraggiungibile al BOOT = sempre fatale (a prescindere)
+
+# ── ENTERPRISE: IP-reputation cluster-wide (waf-threatintel) ────────────────────
+# Modulo premium in Phase::Connection che legge la reputazione dell'IP client dallo STESSO
+# Redis (keyspace `rep:<ip>`, popolato dal feed threat-intel) e contribuisce allo STESSO
+# anomaly score cumulativo (severity→points dalla pipeline, niente punteggi hardcoded).
+# RICHIEDE redis_url. fail→Unknown (feed giù = nessuna opinione, la pipeline ispeziona comunque).
+# DEFAULT OFF. La severità decide se un IP "malicious" da solo supera block_threshold.
+[enterprise.reputation]
+enabled            = false
+malicious_severity = "critical"        # critical | error | warning | notice
+suspicious_severity = "warning"
+
+# ── ENTERPRISE: feed threat-intel che POPOLA la reputazione (waf-threatintel §6) ─
+# Task in background che scarica liste di IP e scrive `rep:<ip>` nello STESSO Redis (ciò che
+# il modulo reputation qui sopra legge). SINGLE-WRITER: solo UN nodo per ciclo scrive (lock
+# distribuito), così N nodi non ripetono lo stesso fetch. RICHIEDE redis_url. DEFAULT OFF.
+# Semantica TTL: le entry scadono (entry_ttl); un IP de-listato invecchia da solo, un feed
+# giù fa scadere tutto → Unknown (fail-safe). Il verdetto è PER-SORGENTE (il contenuto dice
+# QUALI ip, mai QUANTO gravi). CIDR non supportati in v1 (skip-con-warn, solo IP esatti).
+[enterprise.reputation.feed]
+enabled              = false
+refresh_interval_secs = 300            # secondi tra un ciclo e il successivo
+# entry_ttl_secs     = 900             # TTL di ogni entry; assente ⇒ 3× refresh (una finestra sicura)
+lock_ttl_secs        = 90              # TTL del lock single-writer per-ciclo (~ worst-case fetch+write)
+
+# Sorgenti (0..N). kind = "file" (path locale) | "http" (URL HTTPS). verdict = malicious | suspicious.
+# [[enterprise.reputation.feed.sources]]
+# kind     = "http"
+# location = "https://example.com/blocklist.txt"
+# verdict  = "malicious"
+#
+# [[enterprise.reputation.feed.sources]]
+# kind     = "file"
+# location = "/etc/waf/greylist.txt"
+# verdict  = "suspicious"
+
+# ── ENTERPRISE: ruleset CRS curato premium (waf-crs-curated §6) ──────────────────
+# Carica il CONTENUTO CRS curato (firme premium CVE/app/evasion: Log4Shell, Spring4Shell,
+# SSRF cloud-metadata, webshell, .git/.env exposure, …) come WafModule via il motore CRS
+# OPEN. È ADDITIVO ai moduli nativi (conta nello STESSO score cumulativo → con CRS attivo
+# il tuning di soglia è dell'operatore). Nessun Redis. DEFAULT OFF. Nota: come i moduli
+# premium, non sopravvive a SIGHUP (finché il core non espone module_factory).
+[enterprise.crs_curated]
+enabled = false
+
+# ── ENTERPRISE: GraphQL schema-enforcement (waf-modules-premium, §4-B) ───────────
+# Valida OGNI operazione GraphQL contro lo SCHEMA REALE dell'app (file SDL .graphql):
+# un campo/tipo/argomento NON nello schema = query che il client reale non manda mai =
+# segnale di probing → contribuisce allo STESSO score cumulativo (governance dello schema,
+# NON detection baseline; l'injection nei valori resta al §6, i cap DoS al modulo GraphQL OPEN).
+# Additivo, nessun Redis. DEFAULT OFF. schema_path è OBBLIGATORIO quando enabled (boot-fatal se
+# manca/è invalido). Nessun hot-reload in v1 (drift schema → restart; come gli altri moduli premium
+# non sopravvive a SIGHUP finché il core non espone module_factory).
+[enterprise.schema_enforcement]
+enabled = false
+# schema_path = "/etc/waf/app.graphql"     # file SDL dell'app (obbligatorio se enabled)
+# paths = ["/graphql"]                       # endpoint GraphQL su cui gating JSON/GET (app/graphql = any-path)
+# parse_error_severity = "warning"           # body non-GraphQL (client rotto / probing generico)
+# unknown_field_severity = "critical"        # query valida ma fuori-schema (probing mirato)
+
+# ── ENTERPRISE: gRPC schema-enforcement (waf-modules-premium, §4-B parte 2) ──────
+# Valida OGNI messaggio gRPC (protobuf) contro il DESCRITTORE REALE dell'app (FileDescriptorSet
+# .bin da `protoc`/`buf build -o app.bin`): il `:path` (/pkg.Service/Method) seleziona l'input-type
+# e il messaggio viene decodificato contro di esso. Metodo inesistente o messaggio indecodificabile
+# = probing → STESSO score cumulativo. Riconosciuto via Content-Type application/grpc* (niente paths).
+# Additivo, nessun Redis. DEFAULT OFF. descriptor_path OBBLIGATORIO se enabled (boot-fatal se manca/
+# invalido). Solo unary; no hot-reload v1 (drift → restart). NB: protobuf tollera by-design i campi
+# sconosciuti → flag_unknown_fields è OPT-IN (default off) per non generare FP quando un client usa
+# un .proto più nuovo della copia del WAF.
+[enterprise.grpc_schema_enforcement]
+enabled = false
+# descriptor_path = "/etc/waf/app.bin"       # FileDescriptorSet compilato (obbligatorio se enabled)
+# flag_unknown_fields = false                 # opt-in: segnala campi fuori descrittore (top-level)
+# unknown_method_severity = "critical"        # :path non nel descrittore (probing mirato)
+# decode_error_severity  = "warning"          # messaggio che non decodifica (malformato)
+# unknown_field_severity = "notice"           # usato solo con flag_unknown_fields
+
+# ── ENTERPRISE: client-integrity / bot detection (waf-modules-premium, §4-A) ─────
+# Heuristiche NATIVE cross-header (non UA-tool-matching, che è il modulo `scanner` OPEN, né contenuto
+# firma, che è CRS-curated). v1 = browser-impersonation (S1): una UA che dichiara un browser MODERNO
+# (Chrome/Edge/Firefox versione a 3 cifre; Safari escluso) MA senza NESSUN header `sec-fetch-*` =
+# client che si spaccia per browser (un bot via curl/requests non manda Fetch-Metadata). I client
+# non-browser (curl/SDK) non dichiarano un browser → non scattano. Additivo (Scores), mai Reject.
+# Nessun file, nessun Redis. DEFAULT OFF. FP-source = browser vecchi/edge o proxy che strippano header
+# → si tara con la severità.
+[enterprise.bot_detection]
+enabled = false
+# browser_impersonation_severity = "critical"   # UA-browser-moderna senza Sec-Fetch-*
+
+# ── ENTERPRISE: signed WASM plugin loader (waf-marketplace, §4-C) ────────────────
+# Il runtime Proxy-Wasm è OPEN (`[modules.wasm]`, carica .wasm NON firmati skip-on-error). Qui si
+# aggiunge il GATE DI FIDUCIA: si verifica una firma STACCATA minisign (ed25519) del .wasm contro
+# `trusted_keys` PRIMA di caricarlo. Un plugin firmato che NON verifica = BOOT-FATAL (fail-closed;
+# postura diversa dall'OPEN: firma-che-non-verifica = indistinguibile da manomissione). DEFAULT OFF.
+# `exclusive = true` = rifiuta al boot una config con `[modules.wasm]` OPEN popolato (enforcement del
+# lockdown, non convenzione). Firma: `minisign -Sm plugin.wasm` → plugin.wasm.minisig; la chiave da
+# mettere in trusted_keys è la RIGA base64 del .pub.
+[enterprise.wasm]
+enabled = false
+# exclusive = false                              # true = vieta i plugin OPEN non firmati
+# trusted_keys = ["RWQ...base64-minisign-pubkey..."]
+# pool_size = 4
+# fuel_per_request = 10000000
+# max_memory_bytes = 16777216
+# checkout_timeout_ms = 100
+# [[enterprise.wasm.plugins]]
+# wasm_path = "/etc/waf/denylist.wasm"
+# sig_path  = "/etc/waf/denylist.wasm.minisig"
+# config    = "block=/admin"

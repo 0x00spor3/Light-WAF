@@ -1,0 +1,45 @@
+{{ include "wafcp.fullname" . }} — WAF control plane deployed.
+
+  Governance : {{ if .Values.config.governance.enabled }}on (admin: {{ .Values.config.governance.bootstrapAdmin }}){{ else }}off (token mode){{ end }}
+  SSO (OIDC) : {{ if and .Values.config.governance.enabled .Values.config.governance.oidc.enabled }}on ({{ .Values.config.governance.oidc.issuerUrl }}){{ else }}off{{ end }}
+  Database   : {{ if .Values.database.existingSecret }}external (secret {{ .Values.database.existingSecret }}){{ else if .Values.postgres.bundled.enabled }}bundled ({{ include "wafcp.postgresFullname" . }}){{ else }}external (database.url){{ end }}
+  Redis      : {{ if .Values.redis.bundled.enabled }}bundled ({{ include "wafcp.redisFullname" . }}:6379){{ else }}not bundled{{ end }}
+
+Reach the dashboard/API in-cluster:
+  http://{{ include "wafcp.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+{{- if .Values.ingress.enabled }}
+
+Ingress:
+  {{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+  {{- end }}
+{{- end }}
+
+Agents/log-shippers authenticate to /ingest/events + the read API with the bearer token
+in WAF_CP_API_TOKEN (secret {{ include "wafcp.secretName" . }}).
+{{- include "wafcp.resolveSecrets" . }}
+{{- $auto := .Values._wafcpAutoManaged }}
+{{- if $auto }}
+
+Generated credentials (random on first install, kept on upgrade). Retrieve with:
+{{- range $auto }}
+{{- if eq . "POSTGRES_PASSWORD" }}
+  kubectl -n {{ $.Release.Namespace }} get secret {{ include "wafcp.postgresAuthSecret" $ }} -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d; echo
+{{- else }}
+  kubectl -n {{ $.Release.Namespace }} get secret {{ include "wafcp.secretName" $ }} -o jsonpath='{.data.{{ . }}}' | base64 -d; echo
+{{- end }}
+{{- end }}
+{{- if has "WAF_CP_BOOTSTRAP_ADMIN_PASSWORD" $auto }}
+  (login as "{{ .Values.config.governance.bootstrapAdmin }}" with WAF_CP_BOOTSTRAP_ADMIN_PASSWORD, then change it)
+{{- end }}
+{{- end }}
+{{- if and (not .Values.secrets.existingSecret) (not .Values.secrets.auditKey) .Values.config.governance.enabled }}
+
+ℹ  secrets.auditKey is empty: set 64 hex chars for a stable signed-audit key (else the audit
+   signer uses an ephemeral key that changes on restart).
+{{- end }}
+{{- if .Values.postgres.bundled.enabled }}
+
+ℹ  Bundled Postgres is a dev/demo convenience — for production use a managed database via
+   database.existingSecret.
+{{- end }}

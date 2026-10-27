@@ -262,13 +262,14 @@ cargo run  -p waf-corpus --example regression_gate                       # relat
 ## License
 
 Light WAF is open source under the **Apache License, Version 2.0** — see
-[`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). The open-source vs. enterprise boundary
-(what is core vs. paid, and why) is normatively documented in [`BOUNDARY.md`](BOUNDARY.md).
+[`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). This covers the whole repository: the core and
+the enterprise components (distributed state, managed TLS, control plane, governance,
+Kubernetes operator, Helm charts) alike. How the enterprise components plug into the core's
+extension points is documented in [`BOUNDARY.md`](BOUNDARY.md) and
+[`ARCHITECTURE_ENTERPRISE.md`](ARCHITECTURE_ENTERPRISE.md).
 
 ## Contributing
 
 Contributions are welcome. Every commit must be signed off under the
 [Developer Certificate of Origin](https://developercertificate.org/) (`git commit -s`), and
-contributors accept the [Contributor License Agreement](CLA.md) — which lets the project be
-offered under both its open-source license and its enterprise license. See `BOUNDARY.md` §6
-for the governance rationale.
+contributors accept the [Contributor License Agreement](CLA.md).

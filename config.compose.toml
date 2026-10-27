@@ -1,0 +1,135 @@
+# WAF config tailored for docker-compose (see docker-compose.node.yml). A minimal, self-contained
+# setup: plain HTTP in front, the bundled `echo` service as the upstream, native detection modules on,
+# and the CRS engine pointed at the shared managed file the node-agent maintains. No TLS, no Redis
+# (leaving out the [enterprise] block keeps this bootable without a Redis to connect to).
+[proxy]
+listen = "0.0.0.0:8080"
+backend = "http://echo:80"
+
+[resilience]
+on_upstream_error   = "fail_closed"   # origin giù/timeout -> 502 (closed) | 503 (open, retryable)
+on_internal_error   = "fail_open"     # panic/bug di un modulo NON deve abbattere il sito
+on_config_error     = "fail_open"     # reload invalido (P3) -> tieni last-good config
+on_parser_limit     = "fail_closed"   # normalization fallita -> 400 (closed) | inoltra non-ispezionato (open)
+upstream_timeout_ms = 30000           # tetto round-trip upstream (no hang del worker)
+
+[waf]
+mode = "blocking"
+block_threshold = 3
+paranoia_level = 3
+
+[waf.severity_scores]
+critical = 6
+error    = 4
+warning  = 3
+notice   = 2
+
+
+[limits]
+max_body_size    = 1048576   # 1 MiB
+max_header_size  = 8192      # 8 KiB per header
+max_headers      = 100
+max_params       = 100
+max_cookies      = 50
+max_json_depth   = 20
+
+[modules.sqli]
+enabled = true
+
+[modules.xss]
+enabled = true
+
+[modules.path_traversal]
+enabled = true
+
+[modules.rce]
+enabled = true
+
+[modules.lfi_rfi]
+enabled = true
+
+[modules.ssrf]
+enabled = true
+
+# ── moduli detection Fase 10a/10b (firme inequivocabili per categoria) ──────────
+[modules.ldap]
+enabled = true
+
+[modules.nosql]
+enabled = true
+
+[modules.mail]
+enabled = true
+
+[modules.ssti]
+enabled = true
+
+# Fingerprint di scanner/tool sul solo User-Agent (sqlmap/nuclei/… + domini OOB).
+[modules.scanner]
+enabled = true
+
+# Server-Side Includes injection (<!--#exec|include|…).
+[modules.ssi]
+enabled = true
+
+# XML External Entity (<!ENTITY / <!DOCTYPE…SYSTEM / encoding="UTF-7").
+[modules.xxe]
+enabled = true
+
+[modules.header_injection]
+enabled = true
+
+# Validazione del FRAMING HTTP (CL/TE) — controllo strutturale, NON content-inspection.
+# Default true: bassissimo falso-positivo (scatta solo su framing illegale/ambiguo).
+[modules.request_smuggling]
+enabled = true
+
+# CRS engine → the managed SecRule file the node-agent writes (shared volume /etc/waf/rules).
+# init-rules seeds it empty so this loads cleanly before the agent publishes anything.
+[modules.crs]
+enabled = true
+files = ["/etc/waf/rules/managed.conf"]
+
+[enterprise.crs_curated]
+enabled = true
+
+# ── Request Capture (enterprise) — cattura la richiesta COMPLETA dei denied ──────
+# Bufferizza method/path/headers/cookies/body delle richieste bloccate in un ring
+# bounded FUORI dal datapath e le spedisce sul canale laterale POST /ingest/captures
+# del control plane (host.docker.internal:9600), per il drill-down evento in dashboard.
+# Raw di default -> redigi i nomi sensibili qui sotto (il valore redatto NON lascia il
+# nodo; solo i NOMI sono riportati, per il banner UI). Il token bearer arriva da
+# WAF_CAPTURE_TOKEN (vedi docker-compose.node.yml), mai da questo file. La retention
+# (hard-delete) e' un concern del control plane ([controlplane.captures]).
+[enterprise.capture]
+enabled          = true
+controlplane_url = "http://host.docker.internal:9600"
+token_env        = "WAF_CAPTURE_TOKEN"
+max_body_bytes   = 65536      # body oltre soglia -> troncato + flaggato
+ring_capacity    = 1024
+ring_bytes       = 33554432   # 32 MiB
+ring_ttl_ms      = 5000       # TTL di una cattura non spedita prima dell'evict
+queue_capacity   = 256        # coda shipper: piena -> drop (mai backpressure sul datapath)
+
+[enterprise.capture.redaction]
+headers     = ["cookie", "authorization", "set-cookie"]
+body_fields = ["password", "token", "secret"]
+
+[metrics]
+enabled = true
+listen  = "0.0.0.0:9090"   # scrape GET http://127.0.0.1:9090/metrics
+
+#[rate_limit]
+#enabled          = true
+#key              = "client_ip"
+#requests         = 100        # token per finestra
+#window_seconds   = 60
+#burst            = 100        # capacità bucket (default = requests)
+#action           = "block"    # "block" -> 429 | "score" -> contributo allo score
+#score            = 5          # punti se action = "score"
+#max_tracked_keys = 100000     # cap memoria; sweep evince i bucket idle
+
+#[enterprise.api_schema]
+#enabled   = true
+#spec_path = "/etc/waf/openapi.json"
+#violation_severity = "critical"

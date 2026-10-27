@@ -1,0 +1,38 @@
+[package]
+name = "waf-enterprise"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Light WAF enterprise binary: wires the at-scale builder seams (Redis StateStore, …) — Apache-2.0"
+
+[[bin]]
+name = "waf-enterprise"
+path = "src/main.rs"
+
+[dependencies]
+waf-core.workspace = true
+waf-proxy.workspace = true
+waf-state-redis = { path = "../waf-state-redis", version = "1.0.0" }
+waf-tls-managed = { path = "../waf-tls-managed", version = "1.0.0" }
+waf-threatintel = { path = "../waf-threatintel", version = "1.0.0" }
+waf-crs-curated = { path = "../waf-crs-curated", version = "1.0.0" }
+# §4-B GraphQL schema-enforcement module, injected via `.add_module()`.
+waf-modules-premium = { path = "../waf-modules-premium", version = "1.0.0" }
+# §4-C signed WASM plugin loader (verify minisign signature → OPEN WasmModule::from_bytes).
+waf-marketplace = { path = "../waf-marketplace", version = "1.0.0" }
+# Request Capture feature (optional, default OFF): buffers full denied requests off-datapath and
+# ships them to the control-plane drill-down. C0 wires the `[enterprise.capture]` config only.
+waf-capture = { path = "../waf-capture", version = "1.0.0" }
+# The OPEN CRS engine — the enterprise binary builds a `CrsModule` from the curated content
+# (`waf-crs-curated`) and injects it via `.add_module()`.
+waf-detection.workspace = true
+# Pin the process-level rustls CryptoProvider (see main.rs). The dep graph links BOTH `ring`
+# (core/instant-acme/Cloudflare client) AND `aws-lc-rs` (pulled by the AWS SDK for Route 53),
+# so rustls can no longer auto-pick a default — we install `ring` explicitly at startup.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+toml.workspace = true

@@ -1,0 +1,115 @@
+{{- /* SPDX-License-Identifier: Apache-2.0 */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "waf.fullname" . }}-config
+  labels:
+    {{- include "waf.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    [proxy]
+    listen = {{ .Values.waf.listen | quote }}
+    backend = {{ .Values.waf.backend | quote }}
+
+    [resilience]
+    on_upstream_error   = {{ .Values.waf.resilience.on_upstream_error | quote }}
+    on_internal_error   = {{ .Values.waf.resilience.on_internal_error | quote }}
+    on_config_error     = {{ .Values.waf.resilience.on_config_error | quote }}
+    on_parser_limit     = {{ .Values.waf.resilience.on_parser_limit | quote }}
+    upstream_timeout_ms = {{ .Values.waf.resilience.upstream_timeout_ms | int64 }}
+
+    [waf]
+    mode = {{ .Values.waf.mode | quote }}
+    block_threshold = {{ .Values.waf.blockThreshold | int64 }}
+    paranoia_level = {{ .Values.waf.paranoiaLevel | int64 }}
+
+    [waf.severity_scores]
+    critical = {{ .Values.waf.severityScores.critical | int64 }}
+    error    = {{ .Values.waf.severityScores.error | int64 }}
+    warning  = {{ .Values.waf.severityScores.warning | int64 }}
+    notice   = {{ .Values.waf.severityScores.notice | int64 }}
+
+    [limits]
+    max_body_size    = {{ .Values.waf.limits.max_body_size | int64 }}
+    max_header_size  = {{ .Values.waf.limits.max_header_size | int64 }}
+    max_headers      = {{ .Values.waf.limits.max_headers | int64 }}
+    max_params       = {{ .Values.waf.limits.max_params | int64 }}
+    max_cookies      = {{ .Values.waf.limits.max_cookies | int64 }}
+    max_json_depth   = {{ .Values.waf.limits.max_json_depth | int64 }}
+
+    {{- range $mod, $enabled := .Values.waf.modules }}
+    [modules.{{ $mod }}]
+    enabled = {{ $enabled }}
+    {{- end }}
+
+    {{- if eq (include "waf.managedRulesEnabled" .) "true" }}
+    [modules.crs]
+    enabled = true
+    files = [{{ .Values.waf.managedRules.path | quote }}]
+    {{- end }}
+
+    {{- if .Values.waf.crsCurated }}
+    [enterprise.crs_curated]
+    enabled = true
+    {{- end }}
+
+    [metrics]
+    enabled = {{ .Values.metrics.enabled }}
+    listen  = {{ .Values.metrics.listen | quote }}
+
+    {{- if .Values.tls.enabled }}
+    [tls]
+    enabled = true
+    cert = "{{ .Values.tls.mountPath }}/tls.crt"
+    key  = "{{ .Values.tls.mountPath }}/tls.key"
+    {{- end }}
+
+    {{- if .Values.rateLimit.enabled }}
+    [rate_limit]
+    enabled          = true
+    key              = {{ .Values.rateLimit.key | quote }}
+    requests         = {{ .Values.rateLimit.requests | int64 }}
+    window_seconds   = {{ .Values.rateLimit.window_seconds | int64 }}
+    burst            = {{ .Values.rateLimit.burst | int64 }}
+    action           = {{ .Values.rateLimit.action | quote }}
+    score            = {{ .Values.rateLimit.score | int64 }}
+    max_tracked_keys = {{ .Values.rateLimit.max_tracked_keys | int64 }}
+    {{- end }}
+
+    {{- if .Values.apiSchema.enabled }}
+    [enterprise.api_schema]
+    enabled   = true
+    spec_path = {{ .Values.apiSchema.mountPath | quote }}
+    violation_severity = {{ .Values.apiSchema.violationSeverity | quote }}
+    {{- end }}
+
+    {{- if .Values.capture.enabled }}
+    [enterprise.capture]
+    enabled          = true
+    controlplane_url = {{ required "capture.controlPlaneUrl is required when capture.enabled" .Values.capture.controlPlaneUrl | quote }}
+    token_env        = "WAF_CAPTURE_TOKEN"
+    max_body_bytes   = {{ .Values.capture.maxBodyBytes | int64 }}
+    ring_capacity    = {{ .Values.capture.ring.capacity | int64 }}
+    ring_bytes       = {{ .Values.capture.ring.bytes | int64 }}
+    ring_ttl_ms      = {{ .Values.capture.ring.ttlMs | int64 }}
+    queue_capacity   = {{ .Values.capture.queueCapacity | int64 }}
+
+    [enterprise.capture.redaction]
+    headers     = {{ .Values.capture.redaction.headers | toJson }}
+    body_fields = {{ .Values.capture.redaction.bodyFields | toJson }}
+    {{- end }}
+
+    {{- with .Values.waf.extraConfig }}
+
+    {{ . | nindent 4 }}
+    {{- end }}
+
+{{- if .Values.agent.enabled }}
+  node-agent.toml: |
+    [agent]
+    control_plane_url = {{ .Values.agent.controlPlaneUrl | quote }}
+    node_name = "__NODE_NAME__"
+    managed_file = {{ .Values.waf.managedRules.path | quote }}
+    reload_command = {{ .Values.agent.reloadCommand | quote }}
+    poll_interval_seconds = {{ .Values.agent.pollIntervalSeconds }}
+{{- end }}

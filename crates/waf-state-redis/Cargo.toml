@@ -1,0 +1,21 @@
+[package]
+name = "waf-state-redis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Distributed (Redis) rate-limit StateStore for Light WAF — enterprise tier (Apache-2.0)"
+
+[dependencies]
+waf-core.workspace = true
+redis.workspace = true
+r2d2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+# SharedCertStore (cert TLS multi-nodo): encrypt the private key at rest before it enters Redis.
+# `ring` is already in the tree (the core's crypto provider) → AES-256-GCM + HKDF-SHA256 with no
+# new crypto backend / cmake. serde(_json) for the stored blob, base64 for the ciphertext field.
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"

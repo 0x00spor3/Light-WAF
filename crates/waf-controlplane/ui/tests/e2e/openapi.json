@@ -1,0 +1,9 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "e2e inventory spec", "version": "1.0" },
+  "paths": {
+    "/api/e2e-inv/{id}": {
+      "get": { "responses": { "200": { "description": "ok" } } }
+    }
+  }
+}

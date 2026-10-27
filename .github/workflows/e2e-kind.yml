@@ -1,0 +1,63 @@
+name: E2E (kind)
+
+# K6 of the Kubernetes-native deployment plan. Spins up a kind cluster, builds+loads the
+# images (no registry), deploys the control plane + a test app + the WAF + the log shipper,
+# then drives a SQLi and asserts the WAF blocks it (403) AND the event reaches the control
+# plane. Heavy (builds Rust images) → runs on demand and on main, not every PR.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "charts/**"
+      - "deploy/**"
+      - "scripts/k8s/**"
+      - "Dockerfile.enterprise"
+      - "Dockerfile.controlplane"
+      - "crates/**"
+      - ".github/workflows/e2e-kind.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-kind-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kind:
+    name: kind e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Install kind
+        run: |
+          curl -fsSLo ./kind \
+            https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Make scripts executable
+        run: chmod +x scripts/k8s/*.sh scripts/images/*.sh
+
+      - name: Run e2e
+        run: bash scripts/k8s/e2e-kind.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -A || true
+          kubectl -n waf describe deploy app-waf || true
+          kubectl -n waf logs -l app.kubernetes.io/name=waf --tail=100 || true
+          kubectl -n waf-system logs -l app.kubernetes.io/name=waf-log-shipper --tail=100 || true

@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+// Sample app schema for the gRPC schema-enforcement live-wire check (see RUNBOOK.md).
+// Compile to a FileDescriptorSet the module loads:
+//   protoc --include_imports --descriptor_set_out=app.bin greeter.proto
+//   # or:  buf build -o app.bin
+// (No protoc? the crate can emit the same demo descriptor — see RUNBOOK.md A.)
+
+syntax = "proto3";
+package test.v1;
+
+message HelloRequest { string name = 1; }
+message HelloReply { string message = 1; }
+
+service Greeter {
+  rpc SayHello(HelloRequest) returns (HelloReply);
+}

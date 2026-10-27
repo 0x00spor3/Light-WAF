@@ -1,0 +1,242 @@
+{{- /* SPDX-License-Identifier: Apache-2.0 */ -}}
+{{- $httpPort := (splitList ":" .Values.waf.listen) | last -}}
+{{- $managed := (include "waf.managedRulesEnabled" .) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "waf.fullname" . }}
+  labels:
+    {{- include "waf.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "waf.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "waf.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "waf.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.agent.enabled }}
+      # The agent signals the WAF via SIGHUP across containers → shared PID namespace.
+      shareProcessNamespace: true
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- if eq $managed "true" }}
+        - name: init-rules
+          image: {{ include "waf.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "test -f {{ .Values.waf.managedRules.path }} || touch {{ .Values.waf.managedRules.path }}"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: managed-rules
+              mountPath: {{ dir .Values.waf.managedRules.path }}
+        {{- end }}
+        {{- if .Values.agent.enabled }}
+        - name: render-agent-config
+          image: {{ include "waf.agentImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - sed "s/__NODE_NAME__/${NODE_NAME}/" /etc/waf/agent-tpl/node-agent.toml > /etc/waf/agent/node-agent.toml
+          env:
+            - name: NODE_NAME
+              {{- if .Values.agent.nodeName }}
+              value: {{ .Values.agent.nodeName | quote }}
+              {{- else }}
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+              {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: agent-config-tpl
+              mountPath: /etc/waf/agent-tpl
+              readOnly: true
+            - name: agent-config
+              mountPath: /etc/waf/agent
+        {{- end }}
+      containers:
+        - name: waf
+          image: {{ include "waf.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/etc/waf/config.toml"]
+          ports:
+            - name: http
+              containerPort: {{ $httpPort }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
+            {{- if .Values.health.enabled }}
+            - name: health
+              containerPort: {{ .Values.health.port }}
+            {{- end }}
+          env:
+            {{- if .Values.health.enabled }}
+            - name: WAF_HEALTH_LISTEN
+              value: "0.0.0.0:{{ .Values.health.port }}"
+            {{- end }}
+            {{- if .Values.redis.urlSecret.name }}
+            - name: WAF_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.urlSecret.name }}
+                  key: {{ .Values.redis.urlSecret.key }}
+            {{- end }}
+            {{- if .Values.capture.enabled }}
+            - name: WAF_CAPTURE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "capture.tokenSecret.name is required when capture.enabled" .Values.capture.tokenSecret.name }}
+                  key: {{ .Values.capture.tokenSecret.key }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                # Interim drain: leave Service endpoints before the process is signalled.
+                command: ["sleep", {{ .Values.preStopSleepSeconds | quote }}]
+          {{- if eq .Values.probes.type "http" }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.livenessPath }}
+              port: {{ if .Values.health.enabled }}health{{ else }}http{{ end }}
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readinessPath }}
+              port: {{ if .Values.health.enabled }}health{{ else }}http{{ end }}
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          {{- else }}
+          livenessProbe:
+            tcpSocket:
+              port: http
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/waf/config.toml
+              subPath: config.toml
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if eq $managed "true" }}
+            - name: managed-rules
+              mountPath: {{ dir .Values.waf.managedRules.path }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: {{ .Values.tls.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.apiSchema.enabled }}
+            - name: api-schema
+              mountPath: {{ .Values.apiSchema.mountPath }}
+              subPath: openapi.json
+              readOnly: true
+            {{- end }}
+        {{- if .Values.agent.enabled }}
+        - name: agent
+          image: {{ include "waf.agentImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["/etc/waf/agent/node-agent.toml"]
+          env:
+            {{- if .Values.agent.tokenSecret.name }}
+            - name: WAF_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.agent.tokenSecret.name }}
+                  key: {{ .Values.agent.tokenSecret.key }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - name: managed-rules
+              mountPath: {{ dir .Values.waf.managedRules.path }}
+            - name: agent-config
+              mountPath: /etc/waf/agent
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "waf.fullname" . }}-config
+        - name: tmp
+          emptyDir: {}
+        {{- if eq $managed "true" }}
+        - name: managed-rules
+          emptyDir: {}
+        {{- end }}
+        {{- if .Values.agent.enabled }}
+        - name: agent-config
+          emptyDir: {}
+        - name: agent-config-tpl
+          configMap:
+            name: {{ include "waf.fullname" . }}-config
+            items:
+              - key: node-agent.toml
+                path: node-agent.toml
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ required "tls.secretName is required when tls.enabled" (default (printf "%s-tls" (include "waf.fullname" .)) .Values.tls.secretName) }}
+        {{- end }}
+        {{- if .Values.apiSchema.enabled }}
+        - name: api-schema
+          configMap:
+            name: {{ required "apiSchema.specConfigMap is required when apiSchema.enabled" .Values.apiSchema.specConfigMap }}
+        {{- end }}

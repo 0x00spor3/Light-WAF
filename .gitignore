@@ -1,1 +1,29 @@
+# Cargo build output
 /target
+debug
+
+# rustfmt backups
+**/*.rs.bk
+
+# MSVC debug info
+*.pdb
+
+# cargo-mutants working data
+**/mutants.out*/
+
+# Local editor / assistant state (never published)
+.vs/
+.idea/
+.claude/
+
+# Playwright test artifacts (control-plane UI; also ignored by ui/.gitignore)
+**/playwright-report/
+**/test-results/
+
+# Local secret-scan / image-scan reports
+gitleaks-*.json
+trufflehog-*.json
+scan.txt
+
+# Image build output (scripts/images/build.sh, sbom-scan.sh)
+/dist/

@@ -1,0 +1,10 @@
+# E2E — session mode (governance ON). Secrets (WAF_CP_AUDIT_KEY, WAF_CP_BOOTSTRAP_ADMIN_PASSWORD)
+# come from the harness env. cookie_secure=false for local http.
+[controlplane]
+listen = "127.0.0.1:9702"
+retention_days = 30
+
+[controlplane.governance]
+enabled = true
+cookie_secure = false
+bootstrap_admin = "admin"

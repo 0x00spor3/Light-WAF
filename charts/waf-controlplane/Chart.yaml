@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: waf-controlplane
+description: >-
+  WAF control plane — dashboard/API over the OPEN telemetry (read-only observability,
+  governance/RBAC, alerting, SIEM forwarding). Off the request path, backed by Postgres.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - waf
+  - observability
+  - control-plane
+home: https://github.com/0x00spor3/Light-WAF
+sources:
+  - https://github.com/0x00spor3/Light-WAF
+maintainers:
+  - name: WAF
+annotations:
+  category: Security
+# Bundled Postgres/Redis are plain in-chart StatefulSets (off by default), NOT subcharts,
+# so the chart stays dependency-free and assumes no public Helm repo.

@@ -1,0 +1,44 @@
+# Live ACME DNS-01 test — lightwaf.org via Route53 + Let's Encrypt STAGING.
+# DNS-01 needs NO inbound reachability: the WAF publishes a TXT on Route53, waits for it on
+# lightwaf.org's authoritative nameservers, then Let's Encrypt validates and issues.
+#
+# Before running:
+#   1. export the AWS creds (a key with route53:ChangeResourceRecordSets on the zone):
+#        export AWS_ACCESS_KEY_ID=...   export AWS_SECRET_ACCESS_KEY=...
+#   2. set [tls.acme.dns].zone_id below to the lightwaf.org hosted-zone id:
+#        aws route53 list-hosted-zones-by-name --dns-name lightwaf.org \
+#          --query 'HostedZones[0].Id' --output text      # -> /hostedzone/Z....  (the Z... part)
+#   3. run:  WAF_CONFIG=acme-dns01.toml cargo run -p waf-enterprise
+
+[proxy]
+listen  = "0.0.0.0:8443"
+backend = "http://127.0.0.1:8000"     # optional; only used if you send real traffic
+
+[tls]
+enabled   = true                       # OPEN: turn on TLS termination
+cert_path = "unused-with-acme.pem"     # ignored when an ACME resolver is injected
+key_path  = "unused-with-acme.pem"
+alpn      = ["h2", "http/1.1"]
+
+[tls.acme]
+enabled   = true
+strategy  = "dns-01"                   # no inbound needed; supports wildcards
+provider  = "route53"
+domains   = ["lightwaf.org", "*.lightwaf.org"]   # apex + wildcard → both write the SAME
+                                                 # _acme-challenge.lightwaf.org (exercises R1)
+email     = "admin@lightwaf.org"
+staging   = true                       # LE STAGING (cert not browser-trusted — expected)
+cache_dir = "acme-cache"               # account.json + cert.pem/key.pem persisted here
+
+[tls.acme.dns]
+zone_id                  = "FILL_ME"   # the Z... hosted-zone id for lightwaf.org
+propagation_timeout_secs = 180         # Route53 propagation is usually < 60s, give headroom
+poll_interval_secs       = 5
+grace_secs               = 10
+renewal_days             = 60
+
+[waf]
+mode = "blocking"
+
+[rate_limit]
+enabled = false                        # no Redis needed for this test

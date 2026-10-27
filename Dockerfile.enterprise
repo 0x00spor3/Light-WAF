@@ -1,0 +1,84 @@
+# syntax=docker/dockerfile:1
+# ─────────────────────────────────────────────────────────────────────────────
+# waf-enterprise — the WAF data-plane binary (enterprise).
+#
+# Build context = the repository root (the whole workspace: core + enterprise crates):
+#
+#   docker build -f Dockerfile.enterprise -t waf-enterprise:latest .
+#
+# Run it with your config mounted (secrets — CF_API_TOKEN, AWS_*, WAF_REDIS_URL —
+# come from the environment, never the image):
+#
+#   docker run --rm -p 8080:8080 \
+#     -v "$PWD/config.toml:/etc/waf/config.toml:ro" \
+#     -e WAF_REDIS_URL=redis://redis:6379 \
+#     waf-enterprise:latest
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM rust:1-bookworm AS build
+
+# `waf-enterprise` links the AWS SDK (Route 53 DNS-01), which pulls `aws-lc-rs` —
+# that crate's build needs cmake + a C toolchain (build-essential/perl already ship
+# in the rust:bookworm base). ca-certificates lets cargo fetch from crates.io.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+
+# Build the release binary. `--locked` uses the committed Cargo.lock for a
+# reproducible dependency graph. Cache mounts speed up re-builds; because the
+# cached target/ is not part of the image layer, copy the binary out in the same
+# RUN to a plain path the runtime stage can pick up.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --locked -p waf-enterprise \
+    && cp /build/target/release/waf-enterprise /usr/local/bin/waf-enterprise \
+    && mkdir -p /skel/app
+
+# ── Runtime stage ────────────────────────────────────────────────────────────
+# Distroless (cc = glibc + libgcc + libstdc++ + libssl3 + the CA bundle) — NO apt,
+# shell, perl, util-linux, ncurses, gzip. The data-plane binary is dynamically
+# linked against glibc ONLY (rustls + ring/aws-lc-rs compile their C statically),
+# so this base is sufficient AND drops the entire Debian base-OS CVE surface that
+# `debian:bookworm-slim` dragged in (none of which the binary used). Pinned by digest.
+FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
+
+# OCI provenance labels — populated by scripts/images/build.sh (VERSION from the
+# enterprise workspace, VCS_REF/BUILD_DATE from the build environment). Kept as
+# build args so `docker build` without them still produces a valid image.
+ARG VERSION=0.0.0-dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="waf-enterprise" \
+      org.opencontainers.image.description="WAF data-plane binary (enterprise tier)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="WAF"
+
+# The CA bundle for outbound TLS (ACME directory, HTTPS threat-intel feeds, backends)
+# ships with distroless at /etc/ssl/certs/ca-certificates.crt — no install needed.
+# /app is created in the build stage owned by the non-root uid so the process can
+# write there (DNS-01 disk cache); under k8s that path is normally a mounted volume.
+COPY --from=build --chown=10001:10001 /skel/app /app
+COPY --from=build /usr/local/bin/waf-enterprise /usr/local/bin/waf-enterprise
+
+# Non-root, numeric: distroless has no passwd entry for 10001, but the binary does
+# no user lookup, and 10001 matches the uid the Helm charts pin — so no chart change.
+USER 10001:10001
+WORKDIR /app
+
+# The sample config listens on 0.0.0.0:8080 (plain h1/h2c). If you enable TLS
+# termination it serves on the configured port instead (443 needs a published
+# mapping and, if bound directly, NET_BIND_SERVICE — prefer a mapped high port).
+# 8081 = the health endpoint (/healthz + /readyz), WAF_HEALTH_LISTEN (K0).
+EXPOSE 8080 8081
+
+# The enterprise binary reuses the core's config resolver, which takes `--config <path>`
+# (or the WAF_CONFIG env var) — NOT a bare positional. Mount your config at this path.
+ENTRYPOINT ["/usr/local/bin/waf-enterprise"]
+CMD ["--config", "/etc/waf/config.toml"]

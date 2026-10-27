@@ -1,0 +1,18 @@
+[package]
+name = "waf-crs-curated"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Curated premium CRS/ModSecurity ruleset content for Light WAF — enterprise tier (Apache-2.0)"
+
+[dependencies]
+# Content-only: the ruleset is embedded via include_str!, so the library has NO runtime deps.
+
+[dev-dependencies]
+# The compat/coverage gate loads the curated content through the OPEN CRS engine and asserts it
+# all loads with zero silent skips, plus a per-rule bite-test.
+waf-core = { workspace = true }
+waf-detection = { workspace = true }
+# The datapath bite-test runs the curated module through the REAL pipeline (blocks vs control).
+waf-pipeline = { workspace = true }

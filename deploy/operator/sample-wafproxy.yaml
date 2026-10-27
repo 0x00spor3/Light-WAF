@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+# Example: protect the `myapp` Service in namespace `prod` with a WAF. Applying this
+# makes the operator create a ConfigMap + Deployment + Service named `myapp-waf` in
+# `prod`, forwarding clean traffic to myapp.prod.svc.cluster.local:8080.
+apiVersion: waf.io/v1alpha1
+kind: WafProxy
+metadata:
+  name: myapp-waf
+  namespace: prod
+spec:
+  # CHANGE ME → your private registry
+  image: registry.internal:5000/waf-enterprise:1.0.0
+  backend:
+    service:
+      name: myapp
+      port: 8080
+  mode: blocking
+  paranoiaLevel: 3
+  blockThreshold: 3
+  replicas: 2
+  crsCurated: true
+  # Force specific detection modules (optional; unlisted keep image defaults):
+  modules:
+    request_smuggling: true
+  # Positive security from an OpenAPI spec in a ConfigMap (optional):
+  # apiSchemaSpecRef: myapp-openapi

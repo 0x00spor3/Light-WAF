@@ -1,0 +1,52 @@
+{{- /* SPDX-License-Identifier: Apache-2.0 */ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $httpPort := (splitList ":" .Values.waf.listen) | last -}}
+{{- $np := .Values.networkPolicy -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "waf.fullname" . }}
+  labels:
+    {{- include "waf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "waf.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Traffic to the WAF http port (empty `from` = allow from anywhere, port-scoped).
+    - ports:
+        - port: {{ $httpPort | int }}
+          protocol: TCP
+      {{- with $np.ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- if .Values.metrics.enabled }}
+    # Scrape the metrics port (restrict to your monitoring namespace via metricsFrom).
+    - ports:
+        - port: {{ .Values.metrics.port | int }}
+          protocol: TCP
+      {{- with $np.metricsFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+  egress:
+    # DNS resolution (to any destination on 53).
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- with $np.egressTo }}
+    - to:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- if $np.allowAllEgress }}
+    # Escape hatch: allow all egress (use when the backend selector is hard to express).
+    - {}
+    {{- end }}
+{{- end }}

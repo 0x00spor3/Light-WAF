@@ -1,0 +1,90 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Control-plane stack: Postgres + Keycloak (SSO) + waf-controlplane (dashboard/API, §7).
+#
+#   docker compose -f docker-compose.controlplane.yml up --build
+#
+# Dashboard on http://localhost:9600 — governance (§8) is ON, so you get a login form
+# plus a "Sign in with SSO" button. SSO goes to the bundled Keycloak (realm "waf");
+# log in as kim / kimpw (group waf-admins → role admin). Local admin: admin / the
+# WAF_CP_BOOTSTRAP_ADMIN_PASSWORD below. Override secrets via a .env file or the shell.
+# ─────────────────────────────────────────────────────────────────────────────
+name: waf-controlplane
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: waf
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-waf}
+      POSTGRES_DB: waf_cp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U waf -d waf_cp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # SSO IdP. `start-dev` derives all URLs from the request host, so reaching it as
+  # `keycloak.localtest.me:8081` (from the browser: that name resolves to 127.0.0.1; from the
+  # control-plane container: mapped to the host gateway) yields a single consistent issuer.
+  # Published on 8081 to leave host port 8080 for a WAF node running on the same box.
+  # Imports the realm on first boot.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./scripts/controlplane/keycloak/import:/opt/keycloak/data/import:ro
+    ports:
+      - "8081:8080"
+    healthcheck:
+      # Keycloak 26 serves health on the management port 9000; the image has bash (/dev/tcp).
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  controlplane:
+    build:
+      context: .
+      dockerfile: Dockerfile.controlplane
+    image: waf-controlplane:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    # Resolve the OIDC issuer host to the host gateway so this container reaches Keycloak's
+    # published port using the SAME hostname the browser uses (→ a matching token issuer).
+    extra_hosts:
+      - "keycloak.localtest.me:host-gateway"
+      - "host.docker.internal:host-gateway"
+    environment:
+      WAF_CP_DATABASE_URL: postgres://waf:${POSTGRES_PASSWORD:-waf}@postgres:5432/waf_cp
+      # Bearer for the ingest + read API (node agents can reuse this as WAF_AGENT_TOKEN).
+      WAF_CP_API_TOKEN: ${WAF_CP_API_TOKEN:-changeme-shared-token}
+      # Governance (§8): the admin bootstrap password + the Ed25519 audit-log signing key
+      # (64 hex chars = a 32-byte seed). CHANGE BOTH for anything beyond local testing.
+      WAF_CP_BOOTSTRAP_ADMIN_PASSWORD: ${WAF_CP_BOOTSTRAP_ADMIN_PASSWORD:-adminpw}
+      WAF_CP_AUDIT_KEY: ${WAF_CP_AUDIT_KEY:-0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e}
+      # OIDC client secret — matches the realm's "waf-cp" client.
+      WAF_CP_OIDC_CLIENT_SECRET: ${WAF_CP_OIDC_CLIENT_SECRET:-waf-cp-secret}
+    volumes:
+      - ./controlplane.compose.toml:/etc/waf/controlplane.toml:ro
+    ports:
+      - "9600:9600"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

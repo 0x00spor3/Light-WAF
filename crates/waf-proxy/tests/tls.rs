@@ -60,10 +60,17 @@ const SQLI_PATH: &str = "/?q=1%20UNION%20SELECT%20a%2Cb%20FROM%20users--";
 fn cert_fixture() -> (PathBuf, PathBuf, CertificateDer<'static>) {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let der = ck.cert.der().clone();
+    // Unique per fixture: tests run in parallel and a coarse clock (Windows) can hand two of
+    // them the same `nanos`, so they would overwrite each other's cert/key (a mismatched
+    // pair → `BadSignature`) or delete them in `cleanup`. pid + a process-wide counter rule
+    // that out; `nanos` only keeps reruns from tripping over stale files.
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
     let dir = std::env::temp_dir();
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let cert_path = dir.join(format!("waf-tls-{nanos}-cert.pem"));
-    let key_path = dir.join(format!("waf-tls-{nanos}-key.pem"));
+    let cert_path = dir.join(format!("waf-tls-{pid}-{seq}-{nanos}-cert.pem"));
+    let key_path = dir.join(format!("waf-tls-{pid}-{seq}-{nanos}-key.pem"));
     std::fs::write(&cert_path, ck.cert.pem()).unwrap();
     std::fs::write(&key_path, ck.key_pair.serialize_pem()).unwrap();
     (cert_path, key_path, der)

@@ -1,0 +1,102 @@
+{{- /* SPDX-License-Identifier: Apache-2.0 */ -}}
+{{- include "wafcp.resolveSecrets" . -}}
+{{- if .Values.postgres.bundled.enabled }}
+{{- $pg := include "wafcp.postgresFullname" . -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "wafcp.postgresAuthSecret" . }}
+  labels:
+    {{- include "wafcp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: {{ .Values.postgres.bundled.password | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $pg }}
+  labels:
+    {{- include "wafcp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  clusterIP: None
+  selector:
+    {{- include "wafcp.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $pg }}
+  labels:
+    {{- include "wafcp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: {{ $pg }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "wafcp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "wafcp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.bundled.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.bundled.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wafcp.postgresAuthSecret" . }}
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.bundled.database | quote }}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.bundled.user | quote }}, "-d", {{ .Values.postgres.bundled.database | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.bundled.user | quote }}, "-d", {{ .Values.postgres.bundled.database | quote }}]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.postgres.bundled.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.postgres.bundled.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.bundled.storage }}
+{{- end }}

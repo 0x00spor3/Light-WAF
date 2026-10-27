@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    # Core: datapath, detection, proxy.
     "crates/waf-core",
     "crates/waf-normalizer",
     "crates/waf-pipeline",
@@ -7,6 +8,20 @@ members = [
     "crates/waf-proxy",
     "crates/waf-corpus",
     "crates/waf-wasm",
+    # Enterprise components: at-scale implementations of the core's trait seams, injected via
+    # `Proxy::builder` without forking the core (BOUNDARY.md §4), plus the off-datapath services.
+    "crates/waf-state-redis",
+    "crates/waf-tls-managed",
+    "crates/waf-threatintel",
+    "crates/waf-crs-curated",
+    "crates/waf-modules-premium",
+    "crates/waf-marketplace",
+    "crates/waf-controlplane",
+    "crates/waf-capture",
+    "crates/waf-governance",
+    "crates/waf-node-agent",
+    "crates/waf-enterprise",
+    "crates/waf-operator",
 ]
 # `fuzz/` is a cargo-fuzz crate (nightly + libFuzzer, Linux/CI only). Excluded so it
 # never breaks `cargo build/test --workspace` on a stable/Windows toolchain.
@@ -15,19 +30,33 @@ resolver = "2"
 
 # Shared package metadata, inherited per-crate via `<field>.workspace = true`.
 # `description`, `keywords`, `categories` stay per-crate (they differ).
+# One version for every crate: the monorepo releases in lockstep.
 [workspace.package]
-version = "0.5.4"
+version = "1.0.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["0x00spor3"]
 repository = "https://github.com/0x00spor3/Light-WAF"
 homepage = "https://github.com/0x00spor3/Light-WAF"
 
+[workspace.dependencies]
 # Internal crates declared once with their published version, so the `path` deps
 # carry a version requirement (mandatory for `cargo publish`).
-[workspace.dependencies]
-waf-core = { path = "crates/waf-core", version = "0.5.4" }
-waf-normalizer = { path = "crates/waf-normalizer", version = "0.5.4" }
-waf-pipeline = { path = "crates/waf-pipeline", version = "0.5.4" }
-waf-detection = { path = "crates/waf-detection", version = "0.5.4" }
-waf-wasm = { path = "crates/waf-wasm", version = "0.5.4" }
+waf-core = { path = "crates/waf-core", version = "1.0.0" }
+waf-normalizer = { path = "crates/waf-normalizer", version = "1.0.0" }
+waf-pipeline = { path = "crates/waf-pipeline", version = "1.0.0" }
+waf-detection = { path = "crates/waf-detection", version = "1.0.0" }
+waf-proxy = { path = "crates/waf-proxy", version = "1.0.0" }
+waf-wasm = { path = "crates/waf-wasm", version = "1.0.0" }
+
+# Third-party deps shared by the enterprise crates.
+redis = { version = "0.27", features = ["r2d2"] }
+r2d2 = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+# Same rustls line as the core (rustls 0.23 / tokio-rustls 0.26) so trait objects
+# (`Arc<dyn ResolvesServerCert>` / `ClientCertVerifier`) unify across the seam.
+tokio-rustls = "0.26"

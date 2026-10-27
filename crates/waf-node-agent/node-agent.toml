@@ -1,0 +1,17 @@
+# Light WAF node-agent config (§7 write-path v3). Run: `waf-node-agent node-agent.toml`.
+# The service token is a secret — prefer the WAF_AGENT_TOKEN env var over putting it here.
+[agent]
+# Base URL of the control plane.
+control_plane_url = "http://127.0.0.1:9600"
+# Control-plane service token (a §8 token with any role; rules are not secret). Prefer WAF_AGENT_TOKEN.
+# token = "svc-token"
+# This node's identity in the convergence view.
+node_name = "edge-1"
+# The managed SecRule .conf this agent owns — MUST be the same path the WAF loads via
+# `[modules.crs].files`. The agent overwrites it atomically on each new published version.
+managed_file = "/etc/waf/managed.conf"
+# Command run after writing the file to make the WAF reload (SIGHUP). Portable: no signal code in the
+# agent. Examples: "kill -HUP $(cat /run/waf.pid)"  or  "systemctl reload waf".
+reload_command = "kill -HUP $(cat /run/waf.pid)"
+# Seconds between polls of the control plane.
+poll_interval_seconds = 15
