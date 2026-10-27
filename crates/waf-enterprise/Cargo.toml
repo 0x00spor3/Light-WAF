@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Light WAF enterprise binary: wires the at-scale builder seams (Redis StateStore, …) — Apache-2.0"
+description = "Light WAF data-plane binary with every component wired in: Redis state, managed TLS, threat intel, advanced detection modules, request capture."
 
 [[bin]]
 name = "waf-enterprise"

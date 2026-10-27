@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Managed TLS (ACME hitless rotation + mTLS) TlsCertSource for Light WAF — enterprise tier (Apache-2.0)"
+description = "Managed TLS for Light WAF: ACME certificates with hitless rotation (TLS-ALPN-01, DNS-01) and mTLS client authentication."
 
 [dependencies]
 waf-proxy.workspace = true

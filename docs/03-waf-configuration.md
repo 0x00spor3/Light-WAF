@@ -9,7 +9,7 @@ are read by the core; the `[enterprise.*]` sections are read by the enterprise b
 same file — the core simply ignores tables it doesn't know.
 
 > Every enterprise section is **default-off**. A file with no `[enterprise.*]` tables (or all disabled)
-> behaves exactly like the OPEN core.
+> behaves exactly like the core `waf-proxy`.
 
 - [Proxy & backend](#proxy--backend)
 - [TLS](#tls)
@@ -293,10 +293,10 @@ verdict  = "malicious"              # malicious | suspicious
 Entries expire (TTL) so a de-listed IP ages out and a dead feed degrades to *Unknown* (fail-safe).
 v1 handles exact IPs only (CIDRs are skipped with a warning).
 
-### Curated premium CRS content
+### Curated CRS content
 
-Loads curated premium rule content (CVE/app/evasion signatures: Log4Shell, Spring4Shell, cloud-metadata
-SSRF, webshells, `.git`/`.env` exposure, …) through the OPEN CRS engine. Additive to the same score.
+Loads curated rule content (CVE/app/evasion signatures: Log4Shell, Spring4Shell, cloud-metadata
+SSRF, webshells, `.git`/`.env` exposure, …) through the core CRS engine. Additive to the same score.
 
 ```toml
 [enterprise.crs_curated]

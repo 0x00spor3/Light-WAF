@@ -1,7 +1,7 @@
 # ARCHITECTURE-en.md — Light WAF (Layer 7)
 
-> Project reference document. Re-read it at the start of every work session
-> to keep architectural consistency.
+> Reference document for the architecture of the core (the datapath). For the components see
+> `ARCHITECTURE_ENTERPRISE.md` (Italian); for the boundary between the two, `BOUNDARY.md`.
 
 ---
 
@@ -56,10 +56,10 @@ the following non-functional requirements:
             └─────────────────────────────────────────────┘
 ```
 
-### Extension surface (open-core embedding)
+### Extension surface (embedding)
 
-The core is published on crates.io as a **library**; an enterprise tier **depends** on the published
-crates and **implements the traits**, with no fork (`BOUNDARY.md` §4). The injection points are
+The core is published on crates.io as a **library**; the component crates **depend** on it
+and **implement the traits**, with no fork (`BOUNDARY.md` §4). The injection points are
 exposed by a **stable** builder — every seam has a default, so a builder with no overrides equals
 `Proxy::bind`:
 

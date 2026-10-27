@@ -6,7 +6,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Signed WASM plugin loader for Light WAF — enterprise tier (Apache-2.0). §4-C: verify a minisign signature before delegating to the OPEN Proxy-Wasm runtime."
+description = "Signed WASM plugins for Light WAF: verifies a minisign signature before handing the plugin to the Proxy-Wasm runtime."
 
 [dependencies]
 # The OPEN Proxy-Wasm runtime — after verifying the signature we delegate to `WasmModule::from_bytes`.

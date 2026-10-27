@@ -1,12 +1,16 @@
-# ARCHITECTURE.md — WAF Enterprise Tier
+# ARCHITECTURE_ENTERPRISE.md — Light WAF components
 
-> Documento di riferimento per il tier **enterprise** (Apache-2.0). Da rileggere all'inizio di ogni sessione.
+> Documento di architettura dei **componenti** (scala, governance, operabilità) — Apache-2.0 come il
+> resto del repository.
 > Presuppone la conoscenza del core (`ARCHITECTURE.md`) e del confine (`BOUNDARY.md`).
 >
 > **Regola-guida ereditata da `BOUNDARY.md`.** Il core è il **datapath di sicurezza**
-> (single-node, ispezionabile). L'enterprise vende **scala, governance e operabilità
+> (single-node, ispezionabile). I componenti aggiungono **scala, governance e operabilità
 > di team** — MAI capacità di detection baseline. *"Capire e ispezionare un protocollo"
-> è core; "gestirlo a scala / con governance" è enterprise.*
+> è core; "gestirlo a scala / con governance" è un componente.*
+>
+> *Terminologia:* "enterprise" in questo documento indica lo strato dei componenti (nato come tier
+> con licenza separata, oggi Apache-2.0 come il core); `OPEN` indica il core. Vedi `BOUNDARY.md`.
 
 ---
 
@@ -35,8 +39,8 @@
 
 ## 2. Principio architetturale: estensione, non fork
 
-L'enterprise è un **insieme di crate separati** (path/repo distinto, ciascuno con la
-propria licenza BSL — `BOUNDARY.md` §6.4) che **dipendono** dal core come libreria e si
+I componenti sono un **insieme di crate separati** (nello stesso workspace del core, ma senza
+accesso ai suoi interni — `BOUNDARY.md`) che **dipendono** dal core come libreria e si
 agganciano ai **tre seam stabili** (ABI congelata, SemVer — `BOUNDARY.md` §5):
 
 ```rust
@@ -337,7 +341,7 @@ da config (la **sorgente governa solo la provenienza** del cert); **no silent do
 
 ## 7. Control plane — `BOUNDARY.md` §2.2
 
-> **v1 IMPLEMENTATA (2026-07-05)** — crate `waf-controlplane` (BSL). **Osservabilità read-only**:
+> **v1 IMPLEMENTATA (2026-07-05)** — crate `waf-controlplane`. **Osservabilità read-only**:
 > ingestione + retention + drill-down + API-dashboard. Rule-management (write-path → push SIGHUP)
 > **deferito dopo §8** (RBAC/audit). Servizio **axum** + **Postgres**; **DECOUPLED da `waf-core`**
 > (DTO propri sul contratto JSON del decision-log → non linka il datapath). Auth v1 = bearer token
@@ -506,7 +510,7 @@ non solo denied). Learning-mode "genera bozza OpenAPI dal traffico" = follow-on.
 
 ## 8. Governance e compliance — `BOUNDARY.md` §2.3
 
-> **v1 IMPLEMENTATA (2026-07-06)** — crate `waf-governance` (BSL), **libreria** del control plane
+> **v1 IMPLEMENTATA (2026-07-06)** — crate `waf-governance`, **libreria** del control plane
 > (zero-core, zero-datapath; opera sullo stesso Postgres, `apply_schema` proprio). **RBAC** con 3 ruoli
 > fissi (`Viewer` read-only / `Operator` [tier write riservato] / `Admin`) + matrice `Permission` pura.
 > **Auth locale**: account con password **argon2id** + **sessioni server-side** (cookie **HttpOnly +
@@ -572,7 +576,7 @@ non solo denied). Learning-mode "genera bozza OpenAPI dal traffico" = follow-on.
 > si copre con un **IdP broker** (Keycloak/Dex): l'IdP SAML del cliente federato *dietro* il broker, il
 > control plane parla **solo OIDC** — il rischio XML-DSig lo gestisce chi lo fa di mestiere. Costo per
 > noi: una **pagina di runbook** (§J). **Nativo = follow-on demand-driven**: si rivaluta SOLO su domanda
-> reale di clienti paganti bloccati dal broker-path, e SOLO verso `samael` (**MAI** un hand-roll pure-Rust).
+> concreta di utenti che il broker-path non riesce a servire, e SOLO verso `samael` (**MAI** un hand-roll pure-Rust).
 
 - **RBAC**: ruoli/permessi sul control plane (read-only / operatore / admin). **[FATTO v1]**
 - **SSO**: OIDC nativo · SAML via IdP broker. **[OIDC FATTO v2; SAML nativo fuori scope per scelta
@@ -633,8 +637,9 @@ richiesta); l'enterprise logga le **azioni umane/amministrative** sul control pl
    (SemVer). Nuove capability cluster-wide = **nuovo metodo con default impl** (additivo).
 3. `Config` è `#[non_exhaustive]`: nuove sezioni enterprise (`[state.redis]`,
    `[controlplane]`, `[governance]`, …) sono **additive non-breaking** lato core.
-4. Ogni crate enterprise vive in path/repo separato con **LICENSE BSL** propria
-   (`BOUNDARY.md` §6.4): il confine è fisico, non solo documentale.
+4. I crate dei componenti dipendono dal core **solo** tramite la sua API pubblica e il core non
+   dipende mai da loro (`BOUNDARY.md`, regola delle dipendenze): il confine è nel grafo delle
+   dipendenze, non solo nella documentazione.
 5. Ogni nuova feature è etichettata in `BOUNDARY.md` **prima del merge**.
 
 ---

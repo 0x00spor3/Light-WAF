@@ -1,7 +1,7 @@
 # ARCHITECTURE.md — Light WAF (Layer 7)
 
-> Documento di riferimento per il progetto. Da rileggere all'inizio di ogni
-> sessione di lavoro (incluso Claude Code) per mantenere coerenza architetturale.
+> Documento di riferimento per l'architettura del core (datapath). Per i componenti vedi
+> `ARCHITECTURE_ENTERPRISE.md`, per il confine tra i due `BOUNDARY.md`.
 
 ---
 

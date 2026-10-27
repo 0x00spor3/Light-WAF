@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Kubernetes operator for Light WAF — reconciles a WafProxy CR into a data-plane Deployment in front of a target Service (K4, enterprise, Apache-2.0)"
+description = "Kubernetes operator for Light WAF: reconciles a WafProxy custom resource into a data-plane Deployment in front of a target Service."
 
 # DELIBERATELY does NOT depend on waf-core / waf-proxy: the operator is a control-plane
 # component that GENERATES manifests (it never inspects traffic). It renders the same

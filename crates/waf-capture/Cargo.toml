@@ -6,7 +6,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Request-capture feature for Light WAF — enterprise tier (Apache-2.0). Buffers full denied requests off-datapath and ships them to the control-plane for the event drill-down. Optional, default OFF."
+description = "Request capture for Light WAF: buffers full denied requests off the datapath and ships them to the control plane for drill-down. Opt-in, with redaction."
 
 [dependencies]
 # C1: the capture DTO, the bounded ring and the `WafModule`. The `tracing::Layer` verdict-join and

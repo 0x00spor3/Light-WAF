@@ -119,5 +119,5 @@ the control plane. It runs in CI (`e2e-kind.yml`).
 
 That's the operator guide. For the design rationale behind the enterprise/core split and the extension
 seams, continue to [`ARCHITECTURE_ENTERPRISE.md`](../ARCHITECTURE_ENTERPRISE.md) and
-[`BOUNDARY.md`](../../BOUNDARY.md); for per-feature copy-paste procedures, the
+[`BOUNDARY.md`](../BOUNDARY.md); for per-feature copy-paste procedures, the
 [`scripts/*/RUNBOOK.md`](../scripts) files.
