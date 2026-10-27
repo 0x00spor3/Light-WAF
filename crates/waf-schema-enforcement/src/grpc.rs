@@ -360,7 +360,7 @@ mod tests {
 
     /// Convenience for the runbook: emit the demo `FileDescriptorSet` to `$WAF_FDS_OUT` (so a live
     /// wire check works without `protoc`/`buf` installed). Ignored by default.
-    /// Run: `WAF_FDS_OUT=app.bin cargo test -p waf-modules-premium emit_fixture_descriptor -- --ignored`
+    /// Run: `WAF_FDS_OUT=app.bin cargo test -p waf-schema-enforcement emit_fixture_descriptor -- --ignored`
     #[test]
     #[ignore]
     fn emit_fixture_descriptor() {

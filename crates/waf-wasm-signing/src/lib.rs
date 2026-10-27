@@ -1,20 +1,16 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-//! Signed WASM plugin loader (§4-C). The OPEN Proxy-Wasm runtime (`waf-wasm`) loads UNSIGNED plugins
-//! from `[modules.wasm]` (skip-on-error). This tier adds the **trust gate**: verify a detached
-//! **minisign** (ed25519) signature over the exact `.wasm` bytes against configured trusted public
-//! keys BEFORE delegating to the OPEN `WasmModule::from_bytes` — zero core changes.
+//! Signed WASM plugins for [Light WAF](https://github.com/0x00spor3/Light-WAF).
 //!
-//! **Posture divergence (deliberate, K5).** Unlike the OPEN loader (a missing/broken unsigned plugin
-//! is skipped, degrading coverage), a signed plugin whose signature does NOT verify is
-//! indistinguishable from tampering → **fail-closed / boot-fatal**, never a silent skip.
+//! The core's Proxy-Wasm runtime (`waf-wasm`) loads unsigned plugins. This crate adds a trust gate:
+//! [`verify_signature`] checks a detached **minisign** (Ed25519) signature over the exact `.wasm` bytes
+//! against trusted public keys, and [`load_verified_plugin`] hands those same bytes to the runtime only
+//! if it verifies (no TOCTOU).
 //!
-//! **STEP 1 (scaffold).** The crate stands up the two public seams — [`verify_signature`] (minisign
-//! detached-signature verification against trusted keys) and [`load_verified_plugin`] (verify → the
-//! OPEN `WasmModule::from_bytes`) — proven by unit tests. There is no `rule_id` registry: a WASM
-//! plugin's verdict comes from the plugin via the OPEN runtime, not from this loader (K7). The
-//! `[enterprise.wasm]` config + wiring + the real-plugin datapath land in later steps.
+//! **Fail-closed on purpose.** The core loader skips a broken unsigned plugin (a missing plugin only
+//! reduces coverage). A signed plugin whose signature does not verify is indistinguishable from
+//! tampering, so it is an error, never a silent skip.
 
 use std::io::Cursor;
 

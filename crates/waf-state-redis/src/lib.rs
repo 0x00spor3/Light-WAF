@@ -1,25 +1,28 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-//! Distributed rate-limit [`StateStore`] backed by Redis — the ENTERPRISE
-//! implementation of the core's `waf_core::StateStore` seam (BOUNDARY.md §2.1/§4).
+//! Distributed state for [Light WAF](https://github.com/0x00spor3/Light-WAF) over Redis.
 //!
-//! The OPEN core ships `InMemoryStateStore` (single-node). This crate plugs a
-//! cluster-wide token bucket into the SAME trait, injected via `Proxy::builder`
-//! WITHOUT forking the core. Decisions (see crate README / plan):
+//! One [`RedisStore`] (one connection pool) provides:
 //!
-//! - **Atomic** refill-then-consume in a single Lua script ⇒ no cluster-wide
-//!   over-allow (TOCTOU). Time = Redis `TIME`; memory bounded by per-key TTL —
-//!   both kept out of the trait ABI, exactly as the A0 design intends.
-//! - **Fail-OPEN** on a runtime Redis error (the trait returns `Acquired`, not a
-//!   `Result`, so the store owns its resilience): a down limiter must not block
-//!   legitimate traffic. The opposite of the security modules' fail-closed,
-//!   because state is infrastructure, not detection. A misconfigured URL is
-//!   caught at boot ([`RedisStore::connect`] pings) so it never silently degrades.
-//! - **NOSCRIPT recovery** via `redis::Script` (EVALSHA → EVAL on cache miss).
-//! - **Sync-on-async**: the blocking pooled call is wrapped in `block_in_place`
-//!   when a multi-thread runtime is present, so a slow Redis cannot starve the
-//!   worker.
+//! - **cluster-wide rate limiting** — an implementation of the core's `waf_core::StateStore`
+//!   trait, injected with `Proxy::builder(&cfg).state_store(..)` without forking the core;
+//! - **IP reputation** — the [`ReputationStore`] (read) and [`ReputationWriter`] (write) traits,
+//!   used by `waf-threatintel`;
+//! - **a shared certificate store** — [`SharedCertStore`] + [`DistributedLock`], used by
+//!   `waf-tls-managed` so one node issues an ACME certificate and every node serves it (the private
+//!   key encrypted at rest with [`CertCipher`], AES-256-GCM).
+//!
+//! Behavior:
+//!
+//! - **Atomic** refill-then-consume in a single server-side Lua script, so two nodes can never both
+//!   allow from the same bucket. Time comes from Redis `TIME`; memory is bounded by per-key TTL.
+//! - **Fail-open at runtime** by default ([`RedisStoreOptions::fail_open`]): a down rate limiter must
+//!   not block legitimate traffic. An unreachable Redis at boot is always an error
+//!   ([`RedisStore::connect`] pings), so the store never silently degrades to single-node.
+//! - **NOSCRIPT recovery** (`EVALSHA` falls back to `EVAL` when the script cache was flushed).
+//! - **No worker starvation**: the blocking pooled call runs inside `block_in_place` on a
+//!   multi-threaded runtime.
 
 use std::fmt;
 use std::net::IpAddr;

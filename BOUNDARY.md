@@ -23,8 +23,8 @@ belongs. It is normative: no feature may remain ambiguous. Every entry is labele
 
 | Layer | Crates | Binary |
 |---|---|---|
-| Core | `waf-core`, `waf-normalizer`, `waf-pipeline`, `waf-detection`, `waf-proxy`, `waf-wasm`, `waf-corpus` | `waf-proxy` (single node, no external services) |
-| Components | `waf-state-redis`, `waf-tls-managed`, `waf-threatintel`, `waf-crs-curated`, `waf-modules-premium`, `waf-marketplace`, `waf-capture`, `waf-enterprise` · `waf-controlplane`, `waf-governance`, `waf-node-agent`, `waf-operator` | `waf-enterprise` (data plane with every component wired in) · `waf-controlplane` · `waf-node-agent` · `waf-operator` |
+| Core | `waf-core`, `waf-normalizer`, `waf-pipeline`, `waf-detection`, `waf-proxy`, `waf-wasm`, `waf-corpus` | `waf`, from `waf-proxy` (single node, no external services) |
+| Components | `waf-state-redis`, `waf-tls-managed`, `waf-threatintel`, `waf-crs-curated`, `waf-schema-enforcement`, `waf-wasm-signing`, `waf-capture`, `waf-enterprise` · `waf-controlplane`, `waf-governance`, `waf-node-agent`, `waf-operator` | `waf-enterprise` (data plane with every component wired in) · `waf-controlplane` · `waf-node-agent` · `waf-operator` |
 
 **Dependency rule.** Components depend on the core's **public API only**; the core never
 depends on a component. A component never forks or patches the core — it plugs in through
@@ -151,26 +151,26 @@ broker path cannot serve, and only via `samael` — never a hand-rolled implemen
   `SecRule` content (CVE/app/evasion signatures), embedded and injected as a `WafModule` via the
   core's CRS engine, gated by `[enterprise.crs_curated]`. Additive — it never re-implements the
   core baseline; a compat gate proves it loads cleanly under the shipped parser subset.
-- **GraphQL / gRPC schema enforcement** (`waf-modules-premium`): validates each GraphQL operation
+- **GraphQL / gRPC schema enforcement** (`waf-schema-enforcement`): validates each GraphQL operation
   against the app's SDL (`apollo-compiler`) and each unary gRPC message against the app's
   `FileDescriptorSet` (`prost-reflect`) — `structural()` `Phase::Body` modules, gated by
   `[enterprise.schema_enforcement]` / `[enterprise.grpc_schema_enforcement]`. Additive
   `Decision::Scores` under the reserved `schema-graphql-*` / `schema-grpc-*` namespaces;
   extraction mirrors the core modules and the core's structural caps run first, bounding the
   validator's input. Follow-ons: gRPC streaming, grpc-web, `.proto`-source input.
-- **OpenAPI positive security** (`waf-modules-premium`, `api_schema.rs`): routes each request
+- **OpenAPI positive security** (`waf-schema-enforcement`, `api_schema.rs`): routes each request
   under a guarded path prefix against the app's OpenAPI spec (JSON; 3.0 + 3.1 via `oas3`) and
   validates parameters + JSON body via `jsonschema`, gated by `[enterprise.api_schema]`. An
   unknown route/method scores Critical, a contract violation scores the lower
   `violation_severity`; value-level injection stays in the core's channel (contract, not
   content). `jsonschema` runs with no HTTP retriever — a WAF never fetches remote schemas.
   Follow-ons: BOLA/BFLA, response-side data classification.
-- **Client integrity / bot detection** (`waf-modules-premium`): scores a browser-impersonation
+- **Client integrity / bot detection** (`waf-schema-enforcement`): scores a browser-impersonation
   request — a modern-browser UA with no `sec-fetch-*` headers — as additive `Decision::Scores`
   under the reserved `bot-*` namespace, gated by `[enterprise.bot_detection]`. Deliberately not
   the core `scanner` module (UA-tool matching). Follow-ons: behavioral scanner detection,
   TLS/JA fingerprinting.
-- **Signed WASM plugins** (`waf-marketplace`; the *runtime* is core, §1.7): verifies a detached
+- **Signed WASM plugins** (`waf-wasm-signing`; the *runtime* is core, §1.7): verifies a detached
   **minisign/ed25519** signature over the `.wasm` against configured `trusted_keys` before
   delegating to the core's `WasmModule::from_bytes`, gated by `[enterprise.wasm]`.
   **Posture divergence, operator-visible:** the core loader *skips* a broken unsigned plugin (a

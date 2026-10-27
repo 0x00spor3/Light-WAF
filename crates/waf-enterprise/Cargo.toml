@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Light WAF data-plane binary with every component wired in: Redis state, managed TLS, threat intel, advanced detection modules, request capture."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["waf", "security", "firewall", "reverse-proxy", "proxy"]
+categories = ["web-programming::http-server", "network-programming", "command-line-utilities"]
 
 [[bin]]
 name = "waf-enterprise"
@@ -18,9 +23,9 @@ waf-tls-managed = { path = "../waf-tls-managed", version = "1.0.0" }
 waf-threatintel = { path = "../waf-threatintel", version = "1.0.0" }
 waf-crs-curated = { path = "../waf-crs-curated", version = "1.0.0" }
 # §4-B GraphQL schema-enforcement module, injected via `.add_module()`.
-waf-modules-premium = { path = "../waf-modules-premium", version = "1.0.0" }
+waf-schema-enforcement = { path = "../waf-schema-enforcement", version = "1.0.0" }
 # §4-C signed WASM plugin loader (verify minisign signature → OPEN WasmModule::from_bytes).
-waf-marketplace = { path = "../waf-marketplace", version = "1.0.0" }
+waf-wasm-signing = { path = "../waf-wasm-signing", version = "1.0.0" }
 # Request Capture feature (optional, default OFF): buffers full denied requests off-datapath and
 # ships them to the control-plane drill-down. C0 wires the `[enterprise.capture]` config only.
 waf-capture = { path = "../waf-capture", version = "1.0.0" }

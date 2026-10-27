@@ -325,6 +325,46 @@ decode_error_severity   = "warning"
 flag_unknown_fields     = false                    # opt-in (protobuf tolerates unknown fields by design)
 ```
 
+### OpenAPI positive security
+
+Validate every REST/JSON request under the guarded path prefixes against your app's **real OpenAPI
+spec** (3.0 or 3.1, as a JSON file). Routing uses the normalized path (decoded, traversal resolved),
+so encoding tricks do not move a request out of scope; requests outside `paths` are left alone.
+
+Two families of signals, both additive to the anomaly score:
+
+- **Unknown surface** — `schema-api-unknown-route` (a path the spec does not declare) and
+  `schema-api-method-not-allowed` (a declared path, undeclared method), scored with
+  `unknown_route_severity`. This is the strong probing signal.
+- **Contract violations** on a known operation — `schema-api-unknown-param`,
+  `schema-api-missing-required`, `schema-api-type-violation`, `schema-api-unknown-property`,
+  `schema-api-content-type` (a body that is not `application/json` / `+json` where the spec
+  expects JSON), `schema-api-body-parse-error` — scored with the lower `violation_severity`.
+
+Injection inside a parameter value (SQLi, XSS…) is still caught by the core detection modules; this
+module checks the *shape* of the request, not its content. The spec is mandatory when enabled and
+validated at boot (fatal if missing, invalid or not compilable). It is re-loaded on every config reload;
+if the new spec is invalid the reload is aborted and the previous one stays active. The module never
+fetches remote `$ref`s.
+
+```toml
+[enterprise.api_schema]
+enabled                = true
+spec_path              = "/etc/waf/openapi.json"   # OpenAPI 3.0/3.1, JSON; boot-fatal if missing/invalid
+paths                  = ["/api"]                   # guarded path prefixes (default ["/api"])
+unknown_route_severity = "critical"                 # undeclared path or method
+violation_severity     = "warning"                  # contract violation on a declared operation
+strict_params          = true                       # flag query parameters not declared for the operation
+strict_body            = true                       # treat request bodies as additionalProperties:false
+                                                    # even where the spec does not say so
+```
+
+With the default scores (warning = 3, critical = 6, block threshold 5), one contract violation alone
+does not block, two different ones do, and an unknown route or method blocks on its own. To roll out
+safely, run in `mode = "detection-only"` first and watch the `schema-api-*` hits in the decision log. If a client legitimately
+sends fields your spec does not list, set `strict_body = false` (or fix the spec) rather than lowering
+the severities.
+
 ### Bot / client-integrity detection
 
 Native cross-header heuristics. v1 flags **browser impersonation**: a User-Agent that claims a modern

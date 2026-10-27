@@ -13,7 +13,7 @@ use std::io::Cursor;
 
 use minisign::KeyPair;
 use waf_core::{Bytes, Config, Normalized, RequestContext, WafMode};
-use waf_marketplace::{load_verified_plugin, verify_signature, WasmOptions};
+use waf_wasm_signing::{load_verified_plugin, verify_signature, WasmOptions};
 use waf_pipeline::{Pipeline, PipelineVerdict};
 
 fn fixture() -> Option<Vec<u8>> {
@@ -30,7 +30,7 @@ fn sign(data: &[u8]) -> (String, String) {
 
 /// Runbook convenience (no `minisign` CLI needed): sign `$WAF_WASM_IN`, write the `.minisig` to
 /// `$WAF_SIG_OUT` (default `<in>.minisig`) and print the base64 public key for `trusted_keys`.
-/// Run: `WAF_WASM_IN=plugin.wasm cargo test -p waf-marketplace sign_plugin -- --ignored --nocapture`
+/// Run: `WAF_WASM_IN=plugin.wasm cargo test -p waf-wasm-signing sign_plugin -- --ignored --nocapture`
 #[test]
 #[ignore]
 fn sign_plugin() {

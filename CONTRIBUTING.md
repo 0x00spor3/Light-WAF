@@ -1,7 +1,8 @@
 # Contributing to Light WAF
 
 Thanks for helping. Bug reports, false-positive reports, detection improvements, docs and code
-are all welcome.
+are all welcome. Everyone taking part is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 - **Security issues** (including detection bypasses) go through the private channel in
   [`SECURITY.md`](SECURITY.md), never a public issue.

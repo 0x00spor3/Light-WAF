@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: 2026 0x00spor3
 # SPDX-License-Identifier: Apache-2.0
 [package]
-name = "waf-modules-premium"
+name = "waf-schema-enforcement"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Advanced detection modules for Light WAF: GraphQL and gRPC schema enforcement, OpenAPI positive security, bot detection."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["waf", "graphql", "grpc", "openapi", "security"]
+categories = ["web-programming"]
 
 [dependencies]
 # The premium modules are injected via the core's `.add_module()` seam (BOUNDARY §4) — same

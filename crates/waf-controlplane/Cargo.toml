@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Control plane for Light WAF: telemetry ingest, dashboard and API, alerting, rule management, governance and SIEM forwarding."
+# Shipped as a container image / Helm chart, not on crates.io (see BOUNDARY.md and the release notes).
+publish = false
 
 [features]
 # Embed the built web UI (`ui/dist`) into the binary for a single-binary production deploy. Requires
@@ -55,7 +57,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # Governance (§8): RBAC + local auth + signed audit log. A sibling library; it owns its tables on the
 # same Postgres (applied via `apply_schema`) and never touches the datapath.
-waf-governance = { path = "../waf-governance" }
+waf-governance = { path = "../waf-governance", version = "1.0.0" }
 # OIDC SSO (§8 v2): Authorization Code + PKCE, discovery + JWKS id_token verification. Uses its own
 # reqwest for the IdP calls (discovery/token/JWKS); the ring provider installed in main covers TLS.
 openidconnect = { version = "3", features = ["reqwest"] }

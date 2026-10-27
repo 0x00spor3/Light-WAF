@@ -26,8 +26,8 @@ use waf_tls_managed::acme::ChallengeStrategy;
 use waf_tls_managed::dns::{CloudflareDns, DnsProvider, Route53Dns};
 use waf_tls_managed::{acme, acme_dns01, mtls, ManagedTlsCertSource};
 use waf_detection::crs::CrsModule;
-use waf_marketplace::{load_verified_plugin, WasmOptions};
-use waf_modules_premium::{
+use waf_wasm_signing::{load_verified_plugin, WasmOptions};
+use waf_schema_enforcement::{
     ApiSchemaEnforcementConfig, ApiSchemaModule, BotDetectionConfig, BotDetectionModule,
     GraphqlSchemaModule, GrpcSchemaEnforcementConfig, GrpcSchemaModule, SchemaEnforcementConfig,
 };

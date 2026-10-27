@@ -1,52 +1,52 @@
-# ARCHITECTURE.md — Light WAF (Layer 7)
+# ARCHITECTURE.md — Light WAF core (Layer 7)
 
-> Documento di riferimento per l'architettura del core (datapath). Per i componenti vedi
-> `ARCHITECTURE_ENTERPRISE.md`, per il confine tra i due `BOUNDARY.md`.
-
----
-
-## 1. Obiettivi del progetto
-
-Realizzare un **Web Application Firewall (WAF)** operante al **Layer 7** della
-pila OSI con i seguenti requisiti non funzionali:
-
-- **Light**: footprint di memoria contenuto, poche dipendenze.
-- **Veloce**: bassa latenza aggiunta per richiesta (target < 1 ms p99 sul path comune).
-- **Modulare**: ogni capacità di detection è un plugin caricabile/disattivabile.
-- **Osservabile**: logging strutturato, metriche, audit delle regole scattate.
-- **Sicuro by design**: gestione esplicita di fail-open / fail-closed.
-
-### Non-obiettivi (per ora)
-- **Gestione certificati a scala** (ACME/Let's Encrypt, rotation, cert multi-nodo, mTLS con PKI
-  gestita) → enterprise (`BOUNDARY.md` §3.2). NB: la **terminazione TLS base, cert-da-file** È
-  implementata ed è **core** (Fase 12, §11) — vedi §8 "Terminazione TLS".
-- Protezioni L3/L4 (DDoS volumetrico → demandato a infrastruttura di rete).
-- WAF distribuito multi-nodo con stato condiviso (fase futura).
+> Reference document for the architecture of the core (the datapath). For the components see
+> `ARCHITECTURE_ENTERPRISE.md`; for the boundary between the two, `BOUNDARY.md`.
 
 ---
 
-## 2. Scelte tecnologiche
+## 1. Project goals
 
-| Ambito            | Scelta consigliata                     | Note |
+Build a **Web Application Firewall (WAF)** operating at **Layer 7** of the OSI stack with
+the following non-functional requirements:
+
+- **Light**: small memory footprint, few dependencies.
+- **Fast**: low added per-request latency (target < 1 ms p99 on the common path).
+- **Modular**: every detection capability is a loadable/disableable plugin.
+- **Observable**: structured logging, metrics, audit of the rules that fired.
+- **Secure by design**: explicit fail-open / fail-closed handling.
+
+### Non-goals (for now)
+- **Certificate management at scale** (ACME/Let's Encrypt, rotation, multi-node certs, mTLS with
+  managed PKI) → enterprise (`BOUNDARY.md` §3.2). NB: **basic, cert-from-file TLS termination** IS
+  implemented and is **core** (Phase 12, §11) — see §9 "TLS termination".
+- L3/L4 protections (volumetric DDoS → handed to network infrastructure).
+- Distributed multi-node WAF with shared state (future phase).
+
+---
+
+## 2. Technology choices
+
+| Area              | Recommended choice                     | Notes |
 |-------------------|----------------------------------------|------|
-| Linguaggio        | **Rust**                               | Sicurezza memoria + throughput |
-| Modello deploy    | Reverse proxy dedicato                 | Isolamento, semplicità |
-| Regex engine      | crate **`regex`** (automi finiti)      | Tempo lineare garantito, niente backtracking catastrofico (stessa garanzia di RE2); multi-pattern via `RegexSet` |
-| Config            | TOML / YAML                            | Regole, soglie, modalità |
-| Logging           | JSON strutturato                       | request_id, regola, score |
-| Test              | Unit + integration + suite WAF esterne | GoTestWAF, OWASP CRS test suite |
+| Language          | **Rust**                               | Memory safety + throughput |
+| Deployment model  | Dedicated reverse proxy                | Isolation, simplicity |
+| Regex engine      | the **`regex`** crate (finite automata)| Guaranteed linear time, no catastrophic backtracking (same guarantee as RE2); multi-pattern via `RegexSet` |
+| Config            | TOML / YAML                            | Rules, thresholds, modes |
+| Logging           | Structured JSON                        | request_id, rule, score |
+| Tests             | Unit + integration + external WAF suites | GoTestWAF, OWASP CRS test suite |
 
 ---
 
-## 3. Architettura ad alto livello
+## 3. High-level architecture
 
 ```
             ┌─────────────────────────────────────────────┐
  Client ───▶│                 WAF (reverse proxy)          │───▶ Backend app
             │                                              │
             │  ┌────────────┐   ┌──────────────────────┐   │
-            │  │  Listener  │──▶│   Pipeline a fasi     │   │
-            │  └────────────┘   │  (orchestratore)      │   │
+            │  │  Listener  │──▶│   Phased pipeline     │   │
+            │  └────────────┘   │  (orchestrator)       │   │
             │                   └──────────┬───────────┘   │
             │                              │                │
             │   ┌──────────────────────────┼─────────────┐  │
@@ -56,410 +56,418 @@ pila OSI con i seguenti requisiti non funzionali:
             └─────────────────────────────────────────────┘
 ```
 
-### Superficie di estensione (embedding open-core)
+### Extension surface (embedding)
 
-Il core è pubblicato su crates.io come **libreria**; un eventuale tier enterprise **dipende** dai
-crate pubblicati e **implementa i trait**, senza fork (`BOUNDARY.md` §4). I punti d'iniezione sono
-esposti da un builder **stabile** — ogni seam ha un default, quindi un builder senza override è
-identico a `Proxy::bind`:
+The core is published on crates.io as a **library**; the component crates **depend** on it
+and **implement the traits**, with no fork (`BOUNDARY.md` §4). The injection points are
+exposed by a **stable** builder — every seam has a default, so a builder with no overrides equals
+`Proxy::bind`:
 
 ```rust
 let proxy = Proxy::builder(&config)
     .state_store(Arc::new(my_store))    // Arc<dyn StateStore>   — default: in-memory token bucket
     .cert_source(Arc::new(my_certs))    // Arc<dyn TlsCertSource> — default: FileCertSource (PEM)
-    .module_factory(|| Ok(build_modules())) // Fn()->Result<Vec<Box<dyn WafModule>>> — extra, sopravvivono al reload
+    .module_factory(|| Ok(build_modules())) // Fn()->Result<Vec<Box<dyn WafModule>>> — extra, survive reload
     .build().await?;
 ```
 
-`.modules(..)`/`.add_module(..)` iniettano un set **statico** costruito una volta: comodo per i
-test, ma **droppato al reload** (il core ricostruisce la pipeline). `.module_factory(F)` (**core 0.3**)
-prende una closure che il core **ri-esegue a ogni reload** (e al bind): i moduli iniettati
-**sopravvivono al SIGHUP** e vengono re-`init`-ati (es. una SDL GraphQL cambiata viene ricaricata). È
-fallibile come **unità**: una ricostruzione fallita **aborta quel reload** e mantiene i moduli last-good
-(mai una finestra scoperta), esattamente come una config rifiutata. È il seam che un embedder usa per i
-moduli premium.
+`.modules(..)`/`.add_module(..)` inject a **static** set built once: handy for tests, but
+**dropped on a reload** (the core rebuilds the pipeline). `.module_factory(F)` (**core 0.3**) takes a
+closure the core **re-runs on every reload** (and at bind): injected modules **survive a SIGHUP** and
+are re-`init`'d (e.g. a changed GraphQL SDL is reloaded). It is fallible as a **unit**: a failed
+rebuild **aborts that reload** and keeps the last-good modules (never an unprotected window), exactly
+like a rejected config. This is the seam a component binary uses for its extra modules.
 
-I tre seam del confine OPEN→ENTERPRISE:
-- **`StateStore`** (`waf-core::state`) — stato rate-limit (e futura IP-reputation). Contratto = **una
-  sola operazione atomica** `try_acquire(key, cost, params) -> Acquired`, **non** get/update: il
-  refill-then-consume dev'essere indivisibile, altrimenti due nodi leggono lo stesso bucket ed
-  entrambi consentono (over-allow cluster-wide / TOCTOU). In-memory lo garantisce sotto un lock; Redis
-  con uno script server-side. Clock e cap memoria sono **interni** allo store (fuori dall'ABI). Impl
-  OPEN = `InMemoryStateStore`; Redis = ENTERPRISE.
-- **`TlsCertSource`** (`waf-proxy::tls`) — provenienza del certificato. Impl OPEN = `FileCertSource`;
-  ACME/rotation/mTLS-PKI = ENTERPRISE. `[tls].enabled`/`alpn` restano da config.
-- **`WafModule`** — moduli di detection aggiuntivi (premium = ENTERPRISE).
+The three core→component seams (`BOUNDARY.md` §4):
+- **`StateStore`** (`waf-core::state`) — rate-limit state (and future IP-reputation). The contract is
+  **one atomic operation** `try_acquire(key, cost, params) -> Acquired`, **not** get/update:
+  refill-then-consume must be indivisible, else two nodes read the same bucket and both allow
+  (cluster-wide over-allow / TOCTOU). In-memory enforces it under one lock; Redis with a server-side
+  script. Clock and memory cap are **internal** to the store (out of the ABI). core impl =
+  `InMemoryStateStore`; Redis = component (`waf-state-redis`).
+- **`TlsCertSource`** (`waf-proxy::tls`) — certificate provenance. core impl = `FileCertSource`;
+  ACME/rotation/mTLS = component (`waf-tls-managed`). `[tls].enabled`/`alpn` still come from config.
+- **`WafModule`** — additional detection modules (component modules, e.g. `waf-schema-enforcement`).
 
-**Freeze ABI (pre-publish §5)**: i tre trait sono **public ABI** congelata via SemVer. `Config` è
-`#[non_exhaustive]` → aggiungere una sezione top-level futura è **additivo non-breaking** (l'esterno
-costruisce da `Config::default()`/TOML, non per literal). Idem per le sub-config prese per valore da
-fn pubbliche (`TlsConfig`, `NetworkConfig`, `LimitsConfig`); le altre sono protette transitivamente.
-Un **metodo builder nuovo con default** è ugualmente additivo: **core 0.3** ha aggiunto così
-`.module_factory` (+ l'alias pubblico `ModuleFactory`) senza toccare `WafModule` — minor version.
-
----
-
-## 4. Pipeline a fasi (hook chain)
-
-Il traffico attraversa una catena di fasi. Ogni fase può **ALLOW**, **BLOCK**,
-**MONITOR** o contribuire con uno **SCORE**.
-
-1. `on_connection`   — IP reputation, geo-blocking, rate limiting iniziale.
-2. `on_request_line` — metodo, path, versione HTTP.
-3. `on_headers`      — validazione header, anti request-smuggling.
-4. `on_body`         — ispezione body (streaming a chunk, con limiti).
-5. `on_response`     — leak detection, header di sicurezza in uscita.
-
-Regola: **normalizzare PRIMA di ispezionare**. La normalizzazione avviene
-all'ingresso di ogni fase che produce dati ispezionabili.
-
-> **Fast-path di skip (Fase 7 / Pilastro 3).** Tra normalizzazione e ispezione
-> contenutistica, un **prefiltro** decide se *qualche* regola di content-detection
-> *potrebbe* matchare il surface canonico. Se no, l'ispezione è **saltata** e la
-> richiesta prosegue come Allow (stesso forward, stesso decision-log) — ottimizzazione
-> trasparente sul benigno, non un secondo percorso decisionale. Il gate è
-> `Pipeline::run_inspection_gated`, **unico** punto usato sia dal proxy sia
-> dall'oracolo di equivalenza. Garanzie e numeri in §7.
+**ABI freeze (pre-publish §5)**: the three traits are **public ABI** frozen via SemVer. `Config` is
+`#[non_exhaustive]` → adding a future top-level section is **additive, non-breaking** (external code
+builds from `Config::default()`/TOML, not a literal). Same for the sub-configs taken by-value by a
+public fn (`TlsConfig`, `NetworkConfig`, `LimitsConfig`); the rest are protected transitively.
+A **new builder method with a default** is likewise additive: **core 0.3** added `.module_factory`
+(+ the public `ModuleFactory` alias) this way, without touching `WafModule` — minor version.
 
 ---
 
-## 5. Contratto dei moduli (plugin interface)
+## 4. Phased pipeline (hook chain)
+
+Traffic flows through a chain of phases. Each phase may **ALLOW**, **BLOCK**, **MONITOR**
+or contribute a **SCORE**.
+
+1. `on_connection`   — IP reputation, geo-blocking, initial rate limiting.
+2. `on_request_line` — method, path, HTTP version.
+3. `on_headers`      — header validation, anti request-smuggling.
+4. `on_body`         — body inspection (chunked streaming, with limits).
+5. `on_response`     — leak detection, outbound security headers.
+
+Rule: **normalize BEFORE inspecting**. Normalization happens at the entry of every phase
+that produces inspectable data.
+
+> **Skip fast-path (Phase 7 / Pillar 3).** Between normalization and content inspection, a
+> **prefilter** decides whether *any* content-detection rule *could* match the canonical
+> surface. If not, inspection is **skipped** and the request continues as Allow (same
+> forward, same decision-log) — a transparent optimization on benign traffic, not a second
+> decision path. The gate is `Pipeline::run_inspection_gated`, the **single** point used by
+> both the proxy and the equivalence oracle. Guarantees and numbers in §7.
+
+---
+
+## 5. Module contract (plugin interface)
 
 ```rust
-/// Decisione restituita da un modulo
+/// Decision returned by a module
 pub enum Decision {
     Allow,
     Block { rule_id: String, reason: String },
     Monitor { rule_id: String },
-    /// Contributo singolo a punti espliciti (regole ad alta confidenza /
-    /// scoring diretto): il modulo conosce già il peso.
+    /// Single contribution with explicit points (high-confidence rules /
+    /// direct scoring): the module already knows the weight.
     Score { rule_id: String, points: u32 },
-    /// N contributi, uno per regola matchata, ciascuno con la sua severità.
-    /// La pipeline risolve `severity -> points` via `[waf.severity_scores]`,
-    /// così lo score cumulativo somma OGNI regola (3 Notice pesano più di 1).
+    /// N contributions, one per matched rule, each with its own severity.
+    /// The pipeline resolves `severity -> points` via `[waf.severity_scores]`,
+    /// so the cumulative score sums EVERY rule (3 Notices weigh more than 1).
     Scores(Vec<ScoreItem>),
-    /// Rifiuto diretto con status HTTP esplicito, distinto da `Block` (path 403).
-    /// Due usi: `status:429` (rate limiting, con `Retry-After`) e `status:400`
-    /// (request smuggling, framing illegale). Veicola `status` e un `Retry-After`
-    /// opzionale. In detection-only la pipeline lo logga ma non rifiuta.
-    /// Tabella delle tre semantiche di deny (403/400/429) in §9.
+    /// Direct rejection with an explicit HTTP status, distinct from `Block` (the 403 path).
+    /// Two uses: `status:429` (rate limiting, with `Retry-After`) and `status:400`
+    /// (request smuggling, illegal framing). Carries `status` and an optional
+    /// `Retry-After`. In detection-only the pipeline logs it but does not reject.
+    /// Table of the three deny semantics (403/400/429) in §9.
     Reject { rule_id: String, reason: String, status: u16, retry_after: Option<u64> },
 }
 
-/// Un contributo severità-taggato emesso dentro `Decision::Scores`.
+/// A severity-tagged contribution emitted inside `Decision::Scores`.
 pub struct ScoreItem { pub rule_id: String, pub severity: Severity }
 
 pub enum Severity { Critical, Error, Warning, Notice }
 
-/// Interfaccia che ogni modulo di detection deve implementare
+/// Interface every detection module must implement
 pub trait WafModule: Send + Sync {
     fn id(&self) -> &str;
-    fn phase(&self) -> Phase;          // in quale fase si attiva
-    fn init(&mut self, cfg: &Config);  // compila regole UNA volta
+    fn phase(&self) -> Phase;          // which phase it activates in
+    fn init(&mut self, cfg: &Config);  // compile rules ONCE
     fn inspect(&self, ctx: &RequestContext) -> Decision;
 }
 ```
 
-- I moduli sono **stateless** rispetto alla richiesta (lo stato sta nel `Context`).
-- La compilazione delle regole avviene in `init()`, mai in `inspect()`. In `init()`
-  il modulo filtra le regole per **paranoia level** (`rule.paranoia <= cfg.waf.paranoia_level`).
-- La firma `inspect -> Decision` è invariata: un modulo restituisce **una** `Decision`,
-  ma `Scores` può trasportare **più contributi** (un `ScoreItem` per regola matchata).
-- Il modulo **non** assegna punti: riporta `rule_id` + `severità`. La conversione
-  `severità -> punti` e l'accumulo di `ctx.score` avvengono **solo nella pipeline**.
-- Ogni modulo è caricabile/disattivabile da config.
+- Modules are **stateless** with respect to the request (state lives in the `Context`).
+- Rule compilation happens in `init()`, never in `inspect()`. In `init()` the module filters
+  rules by **paranoia level** (`rule.paranoia <= cfg.waf.paranoia_level`).
+- The `inspect -> Decision` signature is unchanged: a module returns **one** `Decision`,
+  but `Scores` can carry **multiple contributions** (one `ScoreItem` per matched rule).
+- The module does **not** assign points: it reports `rule_id` + `severity`. The
+  `severity -> points` conversion and the `ctx.score` accumulation happen **only in the
+  pipeline**.
+- Every module is loadable/disableable from config.
 
-### RequestContext (struttura condivisa)
+### RequestContext (shared structure)
 - `client_ip`, `request_id`, `timestamp`
 - `method`, `path`, `raw_path`, `query`, `http_version`
 - `headers` (parsed + raw)
 - `cookies`
-- `body` (handle a chunk + parsed: form/multipart/json)
-- `normalized` (versioni canonicalizzate dei campi)
-- `score` (accumulatore mutabile)
-- `score_contributions` (breakdown per regola: `{module, rule_id, severity, points}`, riempito dalla pipeline per audit/logging)
+- `body` (chunk handle + parsed: form/multipart/json)
+- `normalized` (canonicalized versions of the fields)
+- `score` (mutable accumulator)
+- `score_contributions` (per-rule breakdown: `{module, rule_id, severity, points}`, filled by the pipeline for audit/logging)
 
 ---
 
-## 6. Normalizzazione / Canonicalizzazione
+## 6. Normalization / Canonicalization
 
-Punto **critico** per evitare bypass. Step minimi:
+A **critical** point to avoid bypasses. Minimum steps:
 
-- URL decode (singola + rilevamento doppia codifica).
-- Unicode normalization (NFKC) e gestione overlong encoding.
-- Lowercasing dei path dove appropriato.
-- Rimozione di null byte, normalizzazione separatori path (`..`, `//`).
-- Decoding coerente di body in base a `Content-Type`.
+- URL decode (single + double-encoding detection).
+- Unicode normalization (NFKC) and overlong-encoding handling.
+- Path lowercasing where appropriate.
+- Null-byte removal, path-separator normalization (`..`, `//`).
+- Consistent body decoding based on `Content-Type`.
 
-> **Passata unica condivisa (query / body / cookie).** La canonicalizzazione
-> valore-per-valore è un unico helper (`canonicalize_value`): percent-decode con
-> **seconda passata condizionale** se rilevata doppia codifica (difesa
-> anti-doppia-codifica) + **NFKC**. La usano query, body **e cookie**, così
-> "normalizza una volta, ispeziona dati puliti" vale per tutti i campi e **tutti**
-> i moduli di content-inspection (SQLi/XSS/RCE/LFI-RFI/Header-injection) ne
-> beneficiano senza modifiche. Differenza voluta: i cookie usano `+` **letterale**
-> (RFC 6265 non sono form-encoded), query/body trattano `+` come spazio.
-> **Ordine vs limiti**: i cookie sono decodificati **dopo** l'applicazione dei
-> limiti difensivi (count `max_cookies`, `max_header_size` sull'header grezzo),
-> mai prima — un cookie corto encoded non può espandersi oltre i limiti già
-> validati.
+> **Single shared pass (query / body / cookie).** Per-value canonicalization is a single
+> helper (`canonicalize_value`): percent-decode with a **conditional second pass** if double
+> encoding is detected (anti-double-encoding defense) + **NFKC**. Query, body **and cookies**
+> use it, so "normalize once, inspect clean data" holds for all fields and **all**
+> content-inspection modules (SQLi/XSS/RCE/LFI-RFI/Header-injection) benefit without changes.
+> Deliberate difference: cookies use a **literal** `+` (RFC 6265 are not form-encoded),
+> query/body treat `+` as a space. **Order vs limits**: cookies are decoded **after** the
+> defensive limits are applied (`max_cookies` count, `max_header_size` on the raw header),
+> never before — a short encoded cookie cannot expand beyond limits already validated.
 
-> **Field-coverage multipart (10b-cont + fix).** Per `multipart/form-data`
-> l'ispezione copre, per OGNI part, **tutti e tre** i campi: il `name`, il
-> `filename` e il **valore** del part. gotestwaf (`community-lfi-multipart`)
-> nasconde il traversal nel **`name=`** (senza `filename`!) o nel valore, spesso
-> **double-/overlong-encoded** — il fix B1-cont iniziale guardava solo `filename` e
-> veniva bypassato. Parsing del `Content-Disposition` **case-insensitive** su header
-> (`Content-disposition`) e attributi (`name`/`filename`). Ogni campo passa per
-> `canonicalize_multipart_field` (vedi sotto) PRIMA delle regole. È estensione del
-> **campo ispezionato** + normalizzazione, non broadening di pattern: girano le
-> stesse regole path-traversal/LFI. (Solo i campi del part; il `name` resta
-> contenuto attaccante, non metadato di routing.)
+> **Multipart field-coverage (10b-cont + fix).** For `multipart/form-data`, inspection
+> covers, for EACH part, **all three** fields: the `name`, the `filename` and the part
+> **value**. gotestwaf (`community-lfi-multipart`) hides the traversal in the **`name=`**
+> (without a `filename`!) or in the value, often **double-/overlong-encoded** — the initial
+> B1-cont fix only looked at `filename` and was bypassed. `Content-Disposition` parsing is
+> **case-insensitive** on the header (`Content-disposition`) and attributes
+> (`name`/`filename`). Each field goes through `canonicalize_multipart_field` (see below)
+> BEFORE the rules. It is an extension of the **inspected field** + normalization, not a
+> pattern broadening: the same path-traversal/LFI rules run. (Only the part fields; the
+> `name` stays attacker content, not routing metadata.)
 
-> **Deep-normalization multipart — overlong/`../`-base CHIUSO sul multipart
-> (10b-cont fix).** `canonicalize_multipart_field` applica, prima del match: (1)
-> percent-decode + collapse-overlong **ricorsivi** fino a punto fisso (cap 5 passate)
-> → `%25C0%25AE`→`%C0%AE`→byte `0xC0 0xAE`→`.` e `..%2f`/`..%5c`→separatori; (2)
-> NFKC. Gli **overlong-UTF8** 2-byte che codificano un ASCII (`0xC0/0xC1`, illegali)
-> sono mappati al loro carattere PRIMA del `from_utf8_lossy` (altrimenti → `U+FFFD`,
-> firma persa). Così `%25C0%25AE…etc%25C0%25AFpasswd` nel valore/`name` di un part
-> risolve a `../../etc/passwd` ed è bloccato.
+> **Multipart deep-normalization — overlong/`../`-base CLOSED on multipart (10b-cont fix).**
+> `canonicalize_multipart_field` applies, before matching: (1) **recursive** percent-decode +
+> overlong-collapse up to a fixed point (cap of 5 passes) → `%25C0%25AE`→`%C0%AE`→bytes
+> `0xC0 0xAE`→`.` and `..%2f`/`..%5c`→separators; (2) NFKC. The 2-byte **overlong-UTF8**
+> sequences that encode an ASCII byte (`0xC0/0xC1`, illegal) are mapped to their character
+> BEFORE `from_utf8_lossy` (otherwise → `U+FFFD`, signature lost). So
+> `%25C0%25AE…etc%25C0%25AFpasswd` in a part's value/`name` resolves to `../../etc/passwd`
+> and is blocked.
 
-> **Overlong PIPELINE-WIDE — limite query/path RIMOSSO (Fase 10c).** Il collapse-overlong
-> 2-byte è stato **promosso dalla scoped-multipart alla passata condivisa**
-> `canonicalize_value` (query / body / cookie / multipart, un'unica sorgente di verità).
-> Il limite residuo 10b-cont (`pt-overlong-utf8-passwd-query` come `ExpectedMiss`) è
-> quindi **chiuso**: `?file=%C0%AE%C0%AE%C0%AF…` ora risolve a `../../etc/passwd` ed è
-> bloccato come nel multipart. Il re-gate FP/perf richiesto per la generalizzazione è
-> stato eseguito (P2 ladder invariata, FP 0, inspection flat) — vedi §11 Fase 10c.
+> **Overlong PIPELINE-WIDE — query/path limit REMOVED (Phase 10c).** The 2-byte
+> overlong-collapse was **promoted from the scoped-multipart to the shared pass**
+> `canonicalize_value` (query / body / cookie / multipart, a single source of truth). The
+> residual 10b-cont limit (`pt-overlong-utf8-passwd-query` as `ExpectedMiss`) is therefore
+> **closed**: `?file=%C0%AE%C0%AE%C0%AF…` now resolves to `../../etc/passwd` and is blocked
+> as in multipart. The FP/perf re-gate required for the generalization was performed (P2
+> ladder unchanged, FP 0, inspection flat) — see §11 Phase 10c.
 
-> **Canale base64-derived (Fase 10c) — `decode-then-match-then-discard`.** Oltre alla
-> canonicalizzazione *in-place* (sopra), §6 costruisce un canale **DERIVATO** separato:
-> `normalized.derived_decoded`, una lista di varianti base64-decodificate dei valori
-> ispezionati (query-value, body form/json/multipart, header non esclusi). Il prefilter
-> e **ogni** modulo leggono `derived_decoded` in aggiunta alla superficie canonica, così
-> un payload `Base64Flat` (es. `PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==`) viene decodificato
-> a `<script>alert(1)</script>` e preso dalla regola del modulo competente.
-> - **`decode-then-match-then-discard`**: una variante derivata contribuisce SOLO se
->   matcha una regola; altrimenti è scartata. Per questo la **candidacy** (`is_base64_candidate`:
->   alfabeto `[A-Za-z0-9+/]`+`=`, lunghezza `%4==0` e `≥ BASE64_MIN_LEN`) è un **gate di
->   COSTO, non di sicurezza** (reject O(1) sul traffico non-base64), e il blob decodificato
->   è tenuto solo se **`mostly_printable`** (≥90% ASCII stampabile): un token/hash benigno
->   ad alta entropia decodifica a rumore senza firma → scartato → **niente FP**.
-> - **Budget condiviso `PIPELINE_CAP = 5`**: UN solo contatore di passate di fixed-point
->   è condiviso fra i due stadi (overlong-collapse + base64-recurse, incluso base64-of-base64
->   e base64-che-avvolge-percent/overlong) → terminazione garantita, linear-time (§13).
-> - **I due canali hanno freeze-implication OPPOSTE.** L'**overlong** è un canale
->   *canonico* (stesso valore, re-encoding legale risolto) → è **pipeline-wide senza
->   eccezioni**. Il **base64** è un canale *derivato* statistico → ha un'**esclusione
->   header per-nome** (D3): `Authorization`/`Proxy-Authorization`/`Cookie`/`Set-Cookie`/
->   `ETag`/`If-None-Match`/`If-Match` + ogni header `*-token` sono base64-benign-heavy e
->   ad alto volume, quindi la scommessa decode-then-match lì non paga e li escludiamo.
->   I **cookie** sono fuori dal canale base64 (session-cookie base64-benign-heavy) ma
->   restano dentro il canale overlong/canonico.
-> - **Leaf JSON via canale derivato (10c REOPEN, pcap-driven).** I valori-stringa di un
->   body `application/json` sono un punto cieco scoperto col pcap: `serde_json` fa già
->   l'unescape di `\uXXXX`/`\n`/… (NON serve uno stadio di JSON-unescape, e `\xNN` non è
->   JSON valido → serde rigetterebbe il body), ma il leaf è poi **ispezionato RAW** —
->   diversamente da form-urlencoded (decodificato al parse) e multipart (decodificato in
->   `body_str_values`), il leaf JSON non vede mai `canonicalize_value`. Così un leaf
->   `%25C0%25AE…`/`%3CsvG…` arriva ai moduli ancora codificato → bypass. Fix:
->   `json_leaf_derived` alimenta il canale **derivato** con la forma decodificata del leaf
->   (percent+overlong fixed-point, spinta solo se DIVERSA dal raw; + espansione base64),
->   condividendo l'**unico** `PIPELINE_CAP` (nessun nuovo cap). **Lo storage del leaf NON
->   è mutato** (decode-then-match-then-discard); il decoded entra solo via `derived_decoded`.
->   **Ricorsivo su ogni livello**: `flatten_json` discende oggetti+array, quindi ogni leaf
->   annidato (`{"a":{"b":payload}}`, array) è coperto — un wrapper non re-introduce il bypass.
->   Control isolante (probe): lo stesso `%25C0%25AE…` in query → score 12 (passa per
->   `canonicalize_value`); in leaf JSON pre-fix → score 0. FP-gate: trap base64-like/overlong
->   sulla superficie JSON-leaf → `benign_FP=[]` (alta-entropia scartata da `mostly_printable`).
-> - **`derive_variants` — il canale derivato è MULTI-TRASFORMAZIONE (10c).** Oltre al base64,
->   ogni valore ispezionato passa per un insieme di trasformazioni anti-evasione, tutte
->   `decode-then-match-then-discard` (la variante conta SOLO se matcha una regola → niente FP):
->   - **§6-D1 entity-decode di EVASIONE** (`html_entity_decode_evasion`): decodifica entity named
->     (`&lpar;`→`(`, `&colon;`→`:`, `&equals;`→`=`, …) e numeriche (`&#99;`/`&#x28;`) **ESCLUDENDO
->     i 5 char strutturali `< > & " '`** — così l'escaping benigno (`&lt;b&gt;`) resta inerte,
->     l'evasione (`javas&#99;ript:`, `confirm&lpar;1&rpar;`) si risolve.
->   - **§6-D2 mid-token tag-strip** (`strip_midtoken_tags`): droppa un `<…>` SOLO se circondato
->     da word-char su entrambi i lati (`\w<…>\w`) → la mutation `o<x>nfocus`→`onfocus`, mentre i
->     tag che AVVOLGONO parole intere (`<code>onerror</code>`) restano → zero FP.
->   - **§6-D2b mid-token control-strip** (`strip_midtoken_controls`): droppa un run di control C0
->     (NUL/`0x01`–`0x1F`, esclusi `\t\n\r`) fra word-char → `<<scr\0ipt>`→`<<script>`.
->   - **§6-D3 de-obf VBScript-concat** (`strip_vbscript_concat`): fonde i giunti `"…&…"` della
->     concatenazione VBScript (`"Ex"&"e"&"cute`→`Execute`) per la forma well-formed `%26`.
->   **COMPOSIZIONE (cardine, scoperto col probe)**: le trasformazioni strutturali sono applicate
->   anche a OGNI variante **base64-decodata**, non solo al raw — un payload `Base64Flat` ha come
->   raw il blob opaco (niente `<`/`&`/control), quindi senza la composizione la mutation
->   decodificata resterebbe non-ricostruita (era il bug `o<x>nfocus`/`<<scr\0ipt>` Base64Flat).
+> **base64-derived channel (Phase 10c) — `decode-then-match-then-discard`.** Beyond the
+> *in-place* canonicalization (above), §6 builds a separate **DERIVED** channel:
+> `normalized.derived_decoded`, a list of base64-decoded variants of the inspected values
+> (query-value, body form/json/multipart, non-excluded headers). The prefilter and **every**
+> module read `derived_decoded` in addition to the canonical surface, so a `Base64Flat`
+> payload (e.g. `PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==`) is decoded to
+> `<script>alert(1)</script>` and caught by the relevant module's rule.
+> - **`decode-then-match-then-discard`**: a derived variant contributes ONLY if it matches a
+>   rule; otherwise it is discarded. That is why **candidacy** (`is_base64_candidate`:
+>   alphabet `[A-Za-z0-9+/]`+`=`, length `%4==0` and `≥ BASE64_MIN_LEN`) is a **COST gate,
+>   not a security gate** (O(1) reject on non-base64 traffic), and the decoded blob is kept
+>   only if **`mostly_printable`** (≥90% printable ASCII): a benign high-entropy token/hash
+>   decodes to signature-less noise → discarded → **no FP**.
+> - **Shared budget `PIPELINE_CAP = 5`**: a SINGLE fixed-point pass counter is shared between
+>   the two stages (overlong-collapse + base64-recurse, including base64-of-base64 and
+>   base64-wrapping-percent/overlong) → guaranteed termination, linear-time (§13).
+> - **The two channels have OPPOSITE freeze implications.** The **overlong** channel is
+>   *canonical* (same value, a legal re-encoding resolved) → it is **pipeline-wide without
+>   exceptions**. The **base64** channel is a statistical *derived* one → it has a **per-name
+>   header exclusion** (D3): `Authorization`/`Proxy-Authorization`/`Cookie`/`Set-Cookie`/
+>   `ETag`/`If-None-Match`/`If-Match` + every `*-token` header are base64-benign-heavy and
+>   high-volume, so the decode-then-match bet does not pay off there and we exclude them.
+>   **Cookies** are outside the base64 channel (session cookies are base64-benign-heavy) but
+>   remain inside the overlong/canonical channel.
+> - **JSON leaf via the derived channel (10c REOPEN, pcap-driven).** The string values of an
+>   `application/json` body were a blind spot found with the pcap: `serde_json` already
+>   unescapes `\uXXXX`/`\n`/… (NO JSON-unescape stage is needed, and `\xNN` is not valid JSON
+>   → serde would reject the body), but the leaf is then **inspected RAW** — unlike
+>   form-urlencoded (decoded at parse) and multipart (decoded in `body_str_values`), the JSON
+>   leaf never sees `canonicalize_value`. So a leaf `%25C0%25AE…`/`%3CsvG…` reaches the
+>   modules still encoded → bypass. Fix: `json_leaf_derived` feeds the **derived** channel the
+>   decoded form of the leaf (percent+overlong fixed-point, pushed only if DIFFERENT from the
+>   raw; + base64 expansion), sharing the **single** `PIPELINE_CAP` (no new cap). **The leaf
+>   storage is NOT mutated** (decode-then-match-then-discard); the decoded form enters only via
+>   `derived_decoded`. **Recursive at every level**: `flatten_json` descends objects+arrays,
+>   so every nested leaf (`{"a":{"b":payload}}`, arrays) is covered — a wrapper does not
+>   re-introduce the bypass. Isolating control (probe): the same `%25C0%25AE…` in query → score
+>   12 (goes through `canonicalize_value`); in a JSON leaf pre-fix → score 0. FP-gate:
+>   base64-like/overlong traps on the JSON-leaf surface → `benign_FP=[]` (high entropy
+>   discarded by `mostly_printable`).
+> - **`derive_variants` — the derived channel is MULTI-TRANSFORM (10c).** Beyond base64,
+>   every inspected value goes through a set of anti-evasion transforms, all
+>   `decode-then-match-then-discard` (a variant counts ONLY if it matches a rule → no FP):
+>   - **§6-D1 EVASION entity-decode** (`html_entity_decode_evasion`): decodes named entities
+>     (`&lpar;`→`(`, `&colon;`→`:`, `&equals;`→`=`, …) and numeric ones (`&#99;`/`&#x28;`)
+>     **EXCLUDING the 5 structural chars `< > & " '`** — so benign escaping (`&lt;b&gt;`) stays
+>     inert while the evasion (`javas&#99;ript:`, `confirm&lpar;1&rpar;`) resolves.
+>   - **§6-D2 mid-token tag-strip** (`strip_midtoken_tags`): drops a `<…>` ONLY when surrounded
+>     by word-chars on both sides (`\w<…>\w`) → the mutation `o<x>nfocus`→`onfocus`, while tags
+>     that WRAP whole words (`<code>onerror</code>`) remain → zero FP.
+>   - **§6-D2b mid-token control-strip** (`strip_midtoken_controls`): drops a run of C0 control
+>     bytes (NUL/`0x01`–`0x1F`, excluding `\t\n\r`) between word-chars → `<<scr\0ipt>`→`<<script>`.
+>   - **§6-D3 VBScript-concat de-obf** (`strip_vbscript_concat`): fuses the `"…&…"` joints of
+>     VBScript string concatenation (`"Ex"&"e"&"cute`→`Execute`) for the well-formed `%26` form.
+>   **COMPOSITION (cornerstone, found with the probe)**: the structural transforms are applied
+>   to EACH **base64-decoded** variant too, not only to the raw — a `Base64Flat` payload has the
+>   opaque blob as its raw (no `<`/`&`/control), so without the composition the decoded mutation
+>   would stay un-reconstructed (this was the `o<x>nfocus`/`<<scr\0ipt>` Base64Flat bug).
 >
-> **Deferral 10d tracciato (NON silente) — `hdr-overlong-crlf-header-value`.** Un overlong
-> LF `%C0%8A` (= `\n`) in un **valore di header** ispezionato da `header_injection` resta
-> `ExpectedMiss{until_phase:"10d"}`: ripiegarlo nella superficie CRLF di quel modulo è un
-> **cambio canonico** dell'input-surface senza bite in 10c (per disciplina §13 un cambio
-> canonico entra con il suo bite + re-gate P1/P2/P3 completo). Documentato e sotto-test,
-> non un buco silente; flippa a `Triggers` a 10d.
+> **Tracked 10d deferral (NOT silent) — `hdr-overlong-crlf-header-value`.** An overlong LF
+> `%C0%8A` (= `\n`) in a **header value** inspected by `header_injection` stays
+> `ExpectedMiss{until_phase:"10d"}`: folding it into that module's CRLF surface is a
+> **canonical change** of the input-surface without a bite in 10c (per the §13 discipline a
+> canonical change enters with its own bite + full P1/P2/P3 re-gate). Documented and
+> under-test, not a silent hole; it flips to `Triggers` at 10d.
 
-> **XSS-URL evasion — CHIUSO in 10c (era B2-cont).** Le due famiglie che mancavano di una
-> passata di normalizzazione sono ora prese dal canale `derive_variants` (vedi sopra),
-> `decode-then-match-then-discard`, senza aprire un FP-factory:
+> **XSS-URL evasion — CLOSED in 10c (was B2-cont).** The two families that lacked a
+> normalization pass are now caught by the `derive_variants` channel (see above),
+> `decode-then-match-then-discard`, without opening an FP-factory:
 > - **Entity-obfuscation** (`javas&#99;ript:`, `confirm&lpar;1&rpar;`, `&lt;svg/onload&equals;…`):
->   `html_entity_decode_evasion` (§6-D1) decodifica le entity di evasione **escludendo** i 5 char
->   strutturali `< > & " '` → l'escaping benigno resta inerte.
-> - **Mutation / tag-splitting** (`autof<x>ocus o<x>nfocus=…`, `<<scr\0ipt>`): `strip_midtoken_tags`
->   (§6-D2) e `strip_midtoken_controls` (§6-D2b) ricostruiscono il token SOLO mid-token (`\w<…>\w`)
->   → niente FP su markup che avvolge parole intere.
+>   `html_entity_decode_evasion` (§6-D1) decodes the evasion entities **excluding** the 5
+>   structural chars `< > & " '` → benign escaping stays inert.
+> - **Mutation / tag-splitting** (`autof<x>ocus o<x>nfocus=…`, `<<scr\0ipt>`):
+>   `strip_midtoken_tags` (§6-D2) and `strip_midtoken_controls` (§6-D2b) reconstruct the token
+>   ONLY mid-token (`\w<…>\w`) → no FP on markup that wraps whole words.
 >
-> NB residuo (frozen by-design): il **whitespace-collapse intra-token** (`java sc ript`, D2b-2) resta
-> rinviato (alto FP su prosa, 0 payload wire); e alcuni "bypass" XSS-URL sono `Warning`/PL2 sub-soglia
-> per la scelta anti-FP di accumulo (§7, Bucket-B) — bloccarli implicherebbe alzarne la severity (congelata).
+> NB residual (frozen by-design): the **intra-token whitespace-collapse** (`java sc ript`,
+> D2b-2) stays deferred (high FP on prose, 0 wire payloads); and some XSS-URL "bypasses" are
+> `Warning`/PL2 sub-threshold by the anti-FP accumulation choice (§7, Bucket-B) — blocking
+> them alone would require raising their severity (frozen).
 
-> **SQLi-URL / MSSQL — CHIUSO in 10c (era B3-cont → 10b-bis).** Le 3 famiglie "medie"
-> (inline-comment `/*!UNiOn*/`, subquery `information_schema`, stacked/blind `sleep()`) e le
-> JSON-function (`JSON_EXTRACT`/`JSON_DEPTH`) bloccavano già (Critical). L'`xp_cmdshell` con
-> padding di commenti (`3;/* a */…EXEC …xp_cmdshell @c`), prima sub-soglia, è ora preso dalla
-> regola **`sqli-mssql-dangerous-proc`** (xp_cmdshell/xp_dirtree/xp_reg*/sp_oacreate/… Critical).
-> **Invocation-anchored** per disciplina anti-FP: il proc-name conta solo se preceduto da
-> `[.;(=]` o `exec[ute] [schema.]` (così il wire `Master.dbo.xp_cmdshell` matcha ma la prosa
-> benigna `"how to disable xp_cmdshell"` NO — probe-dimostrato). `severity_scores` restano congelati.
+> **SQLi-URL / MSSQL — CLOSED in 10c (was B3-cont → 10b-bis).** The 3 "medium" families
+> (inline-comment `/*!UNiOn*/`, `information_schema` subquery, stacked/blind `sleep()`) and the
+> JSON-functions (`JSON_EXTRACT`/`JSON_DEPTH`) already blocked (Critical). `xp_cmdshell` with
+> comment padding (`3;/* a */…EXEC …xp_cmdshell @c`), previously sub-threshold, is now caught
+> by the **`sqli-mssql-dangerous-proc`** rule (xp_cmdshell/xp_dirtree/xp_reg*/sp_oacreate/…
+> Critical). **Invocation-anchored** for anti-FP discipline: the proc-name counts only when
+> preceded by `[.;(=]` or `exec[ute] [schema.]` (so the wire `Master.dbo.xp_cmdshell` matches
+> but the benign prose `"how to disable xp_cmdshell"` does NOT — probe-demonstrated).
+> `severity_scores` stay frozen.
 
-> **SQL block-comment evasion `UNION/**/SELECT` — CHIUSO in 0.5.1 (pentest #2, G-1).** Le firme
-> multi-keyword assumono `\s+` tra i token; un commento `/* */` (che il DB tratta come spazio)
-> lo sconfiggeva → bypass reale con dump credenziali su Juice Shop. Fix: il modulo `sqli`
-> costruisce una copia **comment-collapsed** di ogni valore (`/* … */` → uno spazio, mirror di
-> ModSec `t:replaceComments`) e matcha su **originale ∪ collapsed** — così `sqli-mysql-versioned-comment`
-> resta valido sull'originale `/*!…*/`. **Scope module-local** (non globale nel normalizer):
-> `/* */` è sintassi SQL-specifica, collassarla nel canale globale aggiungerebbe superficie FP
-> cross-modulo a beneficio zero. Il prefilter Pilastro-3 testa la stessa forma collapsed (soundness).
-> **FOLLOW-ON esplicito**: le `SecRule` custom del motore CRS importato (B2) NON ricevono questo
-> collapse — solo il modulo `sqli` nativo; un transform CRS `t:replaceComments` opt-in è deferito.
+> **Null byte in the path + double encoding as signals — CLOSED in 0.5.0 (pentest #1, F-1).**
+> `GET /ftp/package.json.bak%2500.md` served a `.bak` file the app otherwise refused: `%2500` is a
+> double-encoded `%00`. The root cause was in the normalizer, not in a missing regex:
+> `normalize_path` already decoded to a fixpoint and **stripped NUL** from the path, so the canonical
+> path was clean and `pt-null-byte` (a `\x00` pattern) was structurally blind to it — and the
+> existing `double_encoding_detected` flag was **inert** (set, never scored). Fix: `normalize_path`
+> now returns `(path, double_encoding, null_byte)`, with the NUL detected **before** the strip, on
+> the same string the strip filters; `Normalized` gains `null_byte_detected` (additive). Both flags
+> are scored by the new structural `evasion` module (§8). **Path only, on purpose**: query, cookie
+> and body keep their NUL, where `pt-null-byte` (Warning, PL2) already fires — flagging them too
+> would double count and silently escalate a query `%00` from Warning to Critical. Since the flag is
+> path-only, a file upload carrying real `0x00` bytes can never set it. `normalize_path`'s signature
+> change is a breaking public-API change, hence the minor bump to 0.5.0.
 
-> **Jinja/Python SSTI + NoSQL operator-in-key — CHIUSI in 0.5.1 (pentest #2, G-2/G-3).** G-2:
-> object-access Jinja (`{{config}}`, `__class__/__mro__/__subclasses__`, statement `{%for x in…%}`
-> con argomento) oltre all'aritmetica già coperta. G-3: operatore Mongo in **key position**
-> (nome param `q[$ne]`, chiave JSON `{"$gt":…}`) = strutturale → `nosql-operator-key` Critical
-> (distinto dal Warning value-position, FP-safe su `$schema`/`$ref`/`$100`); il prefilter scansiona
-> nomi+chiavi con lo stesso pattern always-on.
+> **SQL block-comment evasion `UNION/**/SELECT` — CLOSED in 0.5.1 (pentest #2, G-1).** The
+> multi-keyword signatures assume `\s+` between tokens; a `/* */` comment (which the DB treats as
+> whitespace) defeated them → a real bypass with a credential dump on Juice Shop. Fix: the `sqli`
+> module builds a **comment-collapsed** copy of each value (`/* … */` → one space, mirroring
+> ModSec `t:replaceComments`) and matches on **original ∪ collapsed** — so
+> `sqli-mysql-versioned-comment` stays valid on the original `/*!…*/`. **Module-local scope** (not
+> global in the normalizer): `/* */` is SQL-specific syntax, and collapsing it in the global channel
+> would add cross-module FP surface for zero benefit. The Pillar-3 prefilter tests the same
+> collapsed form (soundness). **Explicit FOLLOW-ON**: custom `SecRule`s of the imported CRS engine
+> (B2) do NOT get this collapse — only the native `sqli` module; an opt-in CRS `t:replaceComments`
+> transform is deferred.
 
-### Limiti difensivi (anti-DoS sul parser)
-- Dimensione massima header / body.
-- Numero massimo di parametri / cookie / header.
-- Profondità massima JSON/XML.
+> **Jinja/Python SSTI + NoSQL operator-in-key — CLOSED in 0.5.1 (pentest #2, G-2/G-3).** G-2:
+> Jinja object access (`{{config}}`, `__class__/__mro__/__subclasses__`, a `{%for x in…%}`
+> statement with an argument) on top of the arithmetic already covered. G-3: a Mongo operator in
+> **key position** (param name `q[$ne]`, JSON key `{"$gt":…}`) is structural →
+> `nosql-operator-key` Critical (distinct from the value-position Warning, FP-safe on
+> `$schema`/`$ref`/`$100`); the prefilter scans names + keys with the same always-on pattern.
+
+### Defensive limits (anti-DoS on the parser)
+- Max header / body size.
+- Max number of parameters / cookies / headers.
+- Max JSON/XML depth.
 
 ---
 
 ## 7. Anomaly Scoring
 
-Modello ispirato a OWASP CRS: blocco **non binario** ma cumulativo.
+A model inspired by OWASP CRS: blocking is **not binary** but cumulative.
 
-- **Severità configurabili** (`[waf.severity_scores]`): `critical/error/warning/notice`
-  → punti. Niente punteggi hardcoded nei moduli; ogni regola dichiara solo una severità.
-- **Accumulo centralizzato nella pipeline**: ogni regola matchata (via `Decision::Scores`)
-  aggiunge `severity_scores[severità]` al `ctx.score`. Lo score è la **somma di tutti i
-  match**, sia tra moduli (SQLi + XSS) sia entro lo stesso modulo (3 Notice = 3×notice).
-- **Tracciamento contributi**: la pipeline registra in `ctx.score_contributions` chi
-  (`module`/`rule_id`/`severità`) ha aggiunto quanti `points`, per audit/logging.
-- **Soglia configurabile** (`block_threshold`): se `score >= block_threshold` →
-  in modalità `blocking` BLOCK, in `detection-only` solo log; altrimenti ALLOW.
-- **Convivenza `Block` ↔ scoring**: `Decision::Block` resta una scorciatoia che blocca
-  (in `blocking`) **a prescindere dallo score**, riservata a regole ad altissima confidenza;
-  `Decision::Score`/`Scores` alimentano invece l'accumulo cumulativo. Entrambi i percorsi
-  passano dalla stessa pipeline, unico punto che decide il verdetto finale.
-- **Livelli di paranoia** (`paranoia_level`, 1..=4): ogni regola dichiara la paranoia
-  minima a cui si attiva; `init()` compila solo le regole con `paranoia <= paranoia_level`.
-  Livelli più alti = più regole = più aggressivo (e più falsi positivi).
-- **Logging della decisione**: alla fine della pipeline si emette un record con
-  `score` totale, `threshold`, `mode`, verdetto e il dettaglio dei contributi.
+- **Configurable severities** (`[waf.severity_scores]`): `critical/error/warning/notice` →
+  points. No hardcoded scores in the modules; each rule declares only a severity.
+- **Centralized accumulation in the pipeline**: every matched rule (via `Decision::Scores`)
+  adds `severity_scores[severity]` to `ctx.score`. The score is the **sum of all matches**,
+  both across modules (SQLi + XSS) and within the same module (3 Notices = 3×notice).
+- **Contribution tracking**: the pipeline records in `ctx.score_contributions` who
+  (`module`/`rule_id`/`severity`) added how many `points`, for audit/logging.
+- **Configurable threshold** (`block_threshold`): if `score >= block_threshold` → in
+  `blocking` mode BLOCK, in `detection-only` just log; otherwise ALLOW.
+- **`Block` ↔ scoring coexistence**: `Decision::Block` remains a shortcut that blocks (in
+  `blocking`) **regardless of the score**, reserved for very-high-confidence rules;
+  `Decision::Score`/`Scores` instead feed the cumulative accumulation. Both paths go through
+  the same pipeline, the single point that decides the final verdict.
+- **Paranoia levels** (`paranoia_level`, 1..=4): each rule declares the minimum paranoia at
+  which it activates; `init()` compiles only the rules with `paranoia <= paranoia_level`.
+  Higher levels = more rules = more aggressive (and more false positives).
+- **Decision logging**: at the end of the pipeline a record is emitted with the total
+  `score`, `threshold`, `mode`, verdict and the contribution detail.
 
-### Taratura dei pesi e della soglia (Fase 7 / Pilastro 2)
+### Tuning the weights and the threshold (Phase 7 / Pillar 2)
 
-La taratura di `[waf.severity_scores]` e `block_threshold` è **giustificata
-dall'evidenza del corpus** (§10), non da default ereditati. Tre fatti misurati la
-inquadrano, senza edulcorarli:
+The tuning of `[waf.severity_scores]` and `block_threshold` is **justified by corpus
+evidence** (§10), not by inherited defaults. Three measured facts frame it, without sugar
+-coating:
 
-- **Il corpus benigno NON vincola la soglia.** Tutti i benigni scoreano 0 (nessuna
-  regola matcha): per qualunque `threshold >= 1` il margine benigno è `threshold-0`.
-  Quindi la soglia **non separa** benigno da malevolo (qui è triviale) — **codifica
-  la POLICY DI ACCUMULO**: quanti segnali deboli co-occorrenti servono per bloccare.
-  La recall 100% del Pilastro 1 è **detection** recall (una regola matcha), distinta
-  dalla **blocking** recall (`score >= soglia`) che il Pilastro 2 misura ex novo.
-- **Critical blocca per merito proprio; Warning/Notice solo in accumulo.** Un
-  segnale debole isolato è FP-prone: es. `rfi-remote-url` è Notice/PL3 **perché
-  matcha qualsiasi URL** — farlo bloccare da solo bloccherebbe ogni `?redirect=
-  https://…` in produzione. Il corpus mostra FP=0 solo perché **evita per
-  costruzione** quegli input, non perché sia sicuro abbassare la soglia. Perciò i
-  deboli restano sotto soglia by-design.
-- **Config raccomandata C2**: `critical=6, error=4, warning=3, notice=2`,
-  `block_threshold=5`. Alza Critical 5→6 così un singolo Critical blocca con
-  **margine +1** (robustezza che il default CRS 5/T5 non ha), senza toccare la
-  soglia né far bloccare i deboli (lone Warning 3 / Notice 2 / `2×Notice`=4 restano
-  sotto 5). Scartate sull'evidenza: **C1** (`T4`) perché `2×Notice=4` bloccherebbe →
-  FP di massa; **C3** (rescale ampio) perché elimina l'accumulo Warning+Notice e
-  abbassa la blocking-recall. Lo sweep ha verificato che C2 ha lo **stesso
-  blocking-set di C0**, benign-blocking 0 a ogni PL, `validate()` OK.
-  **`block_margin` own-merit**: **PL1/PL2 +1** (vincolo = un Critical), **PL3 +0** —
-  e quel +0 è **by-design**: il caso che lega il margine non è un Critical fragile
-  ma `lfi-rfi-remote-script` con own = Warning(3)+Notice(2)=5, cioè la ladder
-  "Warning+Notice in accumulo bloccano alla soglia". Pinnata e validata in
-  `tests/validation.rs` (cinque proprietà-ladder).
+- **The benign corpus does NOT constrain the threshold.** All benigns score 0 (no rule
+  matches): for any `threshold >= 1` the benign margin is `threshold-0`. So the threshold
+  **does not separate** benign from malicious (it is trivial here) — it **encodes the
+  ACCUMULATION POLICY**: how many co-occurring weak signals are needed to block. Pillar 1's
+  100% recall is **detection** recall (a rule matches), distinct from the **blocking** recall
+  (`score >= threshold`) that Pillar 2 measures from scratch.
+- **Critical blocks on its own merit; Warning/Notice only via accumulation.** An isolated
+  weak signal is FP-prone: e.g. `rfi-remote-url` is Notice/PL3 **because it matches any URL**
+  — making it block on its own would block every `?redirect=https://…` in production. The
+  corpus shows FP=0 only because it **avoids those inputs by construction**, not because it is
+  safe to lower the threshold. So the weak signals stay sub-threshold by-design.
+- **Recommended config C2**: `critical=6, error=4, warning=3, notice=2`, `block_threshold=5`.
+  It raises Critical 5→6 so a single Critical blocks with **margin +1** (robustness the CRS
+  default 5/T5 lacks), without touching the threshold or making the weak signals block (a lone
+  Warning 3 / Notice 2 / `2×Notice`=4 stay below 5). Discarded on the evidence: **C1** (`T4`)
+  because `2×Notice=4` would block → mass FP; **C3** (broad rescale) because it eliminates the
+  Warning+Notice accumulation and lowers blocking-recall. The sweep verified that C2 has the
+  **same blocking-set as C0**, benign-blocking 0 at every PL, `validate()` OK.
+  **own-merit `block_margin`**: **PL1/PL2 +1** (the binding case = one Critical), **PL3 +0** —
+  and that +0 is **by-design**: the case that binds the margin is not a fragile Critical but
+  `lfi-rfi-remote-script` with own = Warning(3)+Notice(2)=5, i.e. the "Warning+Notice via
+  accumulation block at the threshold" ladder. Pinned and validated in `tests/validation.rs`
+  (five ladder properties).
 
-**Limiti espliciti (onestà > apparenza di completezza):**
-- **Overlap-masking (§8)**: a PL3 tre malevoli bloccano **solo** via overlap
-  cross-modulo `rfi-remote-url`, non per merito proprio: `rce-download-exec-query`,
-  `ssrf-loopback-query`, `ssrf-ip-obfuscation-query` (own=3, total=5). Il gap
-  blocking-recall **own 50% vs total 56%** a PL3 quantifica il masking (3/50). Da
-  leggere assieme a §8.
-- **Assenza di malevoli multi-segnale intra-modulo**: il corpus non contiene casi
-  che accumulano più regole dello **stesso** modulo. Il comportamento d'accumulo
-  ("2×Warning blocca", "Warning+Notice blocca") è quindi **predetto dall'aritmetica**
-  e testato solo da overlap incidentali, non da casi dedicati. Lavoro futuro
-  post-congelamento, non colmato ora (detection congelata).
+**Explicit limits (honesty > the appearance of completeness):**
+- **Overlap-masking (§8)**: at PL3 three malicious cases block **only** via the cross-module
+  overlap `rfi-remote-url`, not on their own merit: `rce-download-exec-query`,
+  `ssrf-loopback-query`, `ssrf-ip-obfuscation-query` (own=3, total=5). The blocking-recall gap
+  **own 50% vs total 56%** at PL3 quantifies the masking (3/50). Read together with §8.
+- **Absence of intra-module multi-signal malicious cases**: the corpus contains no cases that
+  accumulate multiple rules from the **same** module. The accumulation behavior ("2×Warning
+  blocks", "Warning+Notice blocks") is therefore **predicted by arithmetic** and tested only
+  by incidental overlaps, not by dedicated cases. Future work post-freeze, not filled now
+  (detection frozen).
 
-**Stato**: C2 è validata nel corpus e pinnata in `tests/validation.rs`, e il default
-di produzione in `waf-core` è **allineato a C2** (`default_critical_score = 6`); il
-test `waf-pipeline` che asserisce il default è aggiornato di conseguenza
-(`c.points == 6`). Gli altri pesi restano CRS (`error=4, warning=3, notice=2`),
-`block_threshold` default = 5.
+**Status**: C2 is validated in the corpus and pinned in `tests/validation.rs`, and the
+production default in `waf-core` is **aligned to C2** (`default_critical_score = 6`); the
+`waf-pipeline` test that asserts the default is updated accordingly (`c.points == 6`). The
+other weights stay CRS (`error=4, warning=3, notice=2`), `block_threshold` default = 5.
 
-### Fast-path di equivalenza (Fase 7 / Pilastro 3)
+### Equivalence fast-path (Phase 7 / Pillar 3)
 
-Riduce il costo del path completo sul traffico benigno **senza cambiare un verdetto**.
-L'equivalenza è **testata** sul corpus (oracolo), non assunta.
+Reduces the cost of the full path on benign traffic **without changing a verdict**. The
+equivalence is **tested** on the corpus (the oracle), not assumed.
 
-- **Prefiltro scope-aware sound.** Unione `RegexSet` di tutte le regole content
-  attive (derivata dalle stesse tabelle `*_RULES` → nessun drift), valutata sul
-  **surface canonico** (post-§6). Soundness per costruzione: un match è l'OR di tutti
-  i pattern → **nessun match ⟹ nessuna regola matcha ⟹ Allow**. Può solo sbagliare
-  verso "candidate" (gira il full-path), mai verso uno skip errato.
-  - **Due bucket di scope**: `MAIN` (6 moduli-content + header-injection non-host) su
-    un **superset** delle superfici reali {path,query,cookie,header,body}; `HOST` (sole
-    regole `Scope::HostHeaders`, pattern `[/@]` largo) **solo** sui valori host.
-    Un'unione scope-blind matchava il `/` di ogni path → 0 skip; lo split lo risolve.
-- **Char-pre-check SCARTATO come unsound** (mai implementarlo): (1) keyword
-  alfanumeriche (`union select`, `sleep(`, `/etc/passwd`); (2) evasione §6
-  (`%3C`/fullwidth → `<`). Entrambi = falsi negativi.
-- **Equivalenza asimmetrica (DEC 1)**: coincide la **decisione** (Allow/Block/Reject);
-  `score`+`matched_rules` solo dove l'ispezione gira (uno skip non li calcola; lo
-  short-circuit-su-block già produce rules parziali by-design). **Fail-safe (DEC 3)**:
-  fast→full inutile = solo perf; skip che nasconde un block = **falso negativo critico**
-  → assert che urla.
-- **Oracolo + guardie** (`tests/validation.rs`) sul gate reale `run_inspection_gated`:
-  decisione full≡fast su 79 casi × PL1-3; soundness; completezza + **scope-correspondence**
-  (bucket host == regole `Scope::HostHeaders`, derivato dalla sorgente); 2 fixture
-  avversari (keyword-benigna + encoded). Il **bite-test** (mis-scoping/char-check
-  deliberati) rende l'oracolo rosso su 3 fronti, verde al ripristino — la guardia morde.
-- **Guadagno misurato** (`examples/fastpath_bench.rs`, @C2/PL3): **29/74** skip-eligible
-  (tutti i benigni + 3 gap), **11.74×** sul path benigno (1520→130 ns), overhead 6.7%
-  sul malevolo. Net positivo su traffico in maggioranza benigno.
-- **Costruzione unica** (`build_reloadable`): prefiltro e pipeline dallo stesso snapshot
-  → reload li rigenera insieme, mai disallineati.
+- **Sound scope-aware prefilter.** A `RegexSet` union of all active content rules (derived
+  from the same `*_RULES` tables → no drift), evaluated on the **canonical surface** (post-§6).
+  Soundness by construction: a match is the OR of all patterns → **no match ⟹ no rule matches
+  ⟹ Allow**. It can only err toward "candidate" (run the full path), never toward an incorrect
+  skip.
+  - **Two scope buckets**: `MAIN` (6 content modules + non-host header-injection) over a
+    **superset** of the real surfaces {path,query,cookie,header,body}; `HOST` (only the
+    `Scope::HostHeaders` rules, broad `[/@]` pattern) **only** over the host values. A
+    scope-blind union matched the `/` of every path → 0 skips; the split fixes it.
+- **Char-pre-check DISCARDED as unsound** (never implement it): (1) alphanumeric keywords
+  (`union select`, `sleep(`, `/etc/passwd`); (2) §6 evasion (`%3C`/fullwidth → `<`). Both =
+  false negatives.
+- **Asymmetric equivalence (DEC 1)**: the **decision** coincides (Allow/Block/Reject);
+  `score`+`matched_rules` only where inspection runs (a skip does not compute them; the
+  short-circuit-on-block already produces partial rules by-design). **Fail-safe (DEC 3)**: a
+  needless fast→full is only perf; a skip that hides a block is a **critical false negative** →
+  a screaming assert.
+- **Oracle + guards** (`tests/validation.rs`) on the real `run_inspection_gated` gate:
+  full≡fast decision over 79 cases × PL1-3; soundness; completeness + **scope-correspondence**
+  (host bucket == `Scope::HostHeaders` rules, derived from the source); 2 adversarial fixtures
+  (benign-keyword + encoded). The **bite-test** (deliberate mis-scoping/char-check) turns the
+  oracle red on 3 fronts, green on restore — the guard bites.
+- **Measured gain** (`examples/fastpath_bench.rs`, @C2/PL3): **29/74** skip-eligible (all
+  benigns + 3 gaps), **11.74×** on the benign path (1520→130 ns), 6.7% overhead on the
+  malicious. Net positive on mostly-benign traffic.
+- **Single construction** (`build_reloadable`): prefilter and pipeline from the same snapshot →
+  a reload regenerates them together, never misaligned.
 
 ---
 
-## 8. Catalogo moduli (roadmap)
+## 8. Module catalog (roadmap)
 
-| Modulo            | Fase        | Priorità |
+| Module            | Phase       | Priority |
 |-------------------|-------------|----------|
-| Normalization     | tutte       | P0 ✅ |
+| Normalization     | all         | P0 ✅ |
 | SQLi              | body/query  | P0 ✅ |
 | XSS               | body/query  | P0 ✅ |
 | Path traversal    | request_line| P1 ✅ |
@@ -469,1078 +477,1142 @@ L'equivalenza è **testata** sul corpus (oracolo), non assunta.
 | Header injection  | headers     | P1 ✅ |
 | Request smuggling | connection  | P1 ✅ |
 | Rate limiting L7  | connection  | P1 ✅ |
-| GraphQL (strutturale)| body     | Fase 11 ✅ |
-| gRPC (strutturale)| body     | Fase gRPC ✅ |
-| Geo / IP reputation| connection | P2 |
-| Bot detection     | headers     | P2 |
+| GraphQL (structural)| body      | Phase 11 ✅ |
+| gRPC (structural) | body      | gRPC phase ✅ |
+| Evasion signals (structural) | body | 0.5.0 ✅ |
+| IP reputation     | connection  | component ✅ (`waf-threatintel`) |
+| Geo-blocking      | connection  | P2 (not implemented) |
+| Bot detection     | headers     | component ✅ (`waf-schema-enforcement`) |
 
-Ogni modulo di detection è attivabile/disattivabile via config con la sezione
-`[modules.<nome>]` e il flag `enabled` (es. `[modules.path_traversal] enabled = true`).
-I moduli condividono lo schema di scoring della §7 (severità da `[waf.severity_scores]`,
-filtro per `paranoia_level`); nessun punteggio è hardcoded nei moduli.
+Every detection module is enableable/disableable via config with the `[modules.<name>]`
+section and the `enabled` flag (e.g. `[modules.path_traversal] enabled = true`). Modules
+share the §7 scoring scheme (severities from `[waf.severity_scores]`, filtered by
+`paranoia_level`); no score is hardcoded in the modules.
 
-> **Tuning regole (pre-Fase 7, baseline FP pulito)** — tre pattern Critical/Warning
-> sono stati **ristretti** per falsi positivi noti su traffico legittimo (id,
-> severità e `paranoia_level` **invariati**, cambia solo il `pattern`; recall
-> dimostrato dai test positivi esistenti):
-> - `xss-event-handler`: da `on\w+=` (matchava `?online=true`, `?onsale=1`) a una
->   **lista chiusa** di event-handler reali (`onerror|onload|onclick|on…`).
-> - `sqli-tautology-or` / `sqli-tautology-and`: la char-class includeva lo **spazio**
->   con `+`, attraversando frasi (`men or women=adult`, `color or size=large`).
->   Ora gli operandi sono **numerici o singolo-carattere** (`1=1`, `'a'='a'`, `x=x`).
->   NB: il crate `regex` non ha backreference → non si può imporre l'uguaglianza dei
->   due lati; il restringimento operando è l'approssimazione backref-free che separa
->   le tautologie iniettate dai `parola=parola` benigni.
+> **Rule tuning (pre-Phase 7, clean FP baseline)** — three Critical/Warning patterns were
+> **narrowed** for known false positives on legitimate traffic (id, severity and
+> `paranoia_level` **unchanged**, only the `pattern` changes; recall demonstrated by the
+> existing positive tests):
+> - `xss-event-handler`: from `on\w+=` (matched `?online=true`, `?onsale=1`) to a **closed
+>   list** of real event handlers (`onerror|onload|onclick|on…`).
+> - `sqli-tautology-or` / `sqli-tautology-and`: the char-class included the **space** with
+>   `+`, crossing phrases (`men or women=adult`, `color or size=large`). Now the operands are
+>   **numeric or single-character** (`1=1`, `'a'='a'`, `x=x`). NB: the `regex` crate has no
+>   backreference → you cannot enforce the equality of the two sides; the operand narrowing is
+>   the backref-free approximation that separates injected tautologies from benign
+>   `word=word`.
 
-> Rate limiting L7 (`[rate_limit]`, fase `on_connection`):
-> - **Token bucket** per chiave: O(1) tempo/memoria, burst configurabile (`burst`),
->   refill = `requests / window_seconds` token/s. Scelto su fixed/sliding-window
->   per assenza di effetto-bordo e footprint costante (obiettivo light/fast).
-> - **Esecuzione pre-normalizzazione**: la fase `on_connection` gira **prima** di
->   Fase 2 (`Pipeline::run_connection` nel proxy), così il traffico oltre-soglia è
->   rifiutato senza pagare il parsing.
-> - **Azione** (`action`): `block` → `Decision::Reject` (HTTP **429** + `Retry-After`
->   calcolato dal bucket `ceil((1-tokens)/refill)`); `score` → contributo allo score
->   cumulativo (§7). In **detection-only** il superamento è loggato ma non rifiuta.
-> - **Chiave** (`key`): `client_ip` = `ctx.client_ip`, ovvero l'**IP risolto** dal
->   resolver trusted-proxy condiviso (vedi §9 e `[network]`), **non** più la peer
->   addr grezza. ✅ **Opzione B risolta**: dietro un LB/CDN *fidato* la chiave è il
->   client reale preso da `X-Forwarded-For` contando gli hop da destra; il rate
->   limiter non legge l'IP direttamente — usa `ctx.client_ip`, derivato una volta
->   in `build_context`. L'enum `RateLimitKey` resta predisposto per chiavi future
->   (header, path).
-> - **Memoria**: cap `max_tracked_keys`; allo sforamento si fa sweep dei bucket
->   idle (pieni → indistinguibili da chiavi nuove, quindi evictabili).
+> Rate limiting L7 (`[rate_limit]`, `on_connection` phase):
+> - **Token bucket** per key: O(1) time/memory, configurable burst (`burst`), refill =
+>   `requests / window_seconds` tokens/s. Chosen over fixed/sliding-window for the absence of
+>   an edge effect and a constant footprint (light/fast goal).
+> - **Pre-normalization execution**: the `on_connection` phase runs **before** Phase 2
+>   (`Pipeline::run_connection` in the proxy), so over-threshold traffic is rejected without
+>   paying for parsing.
+> - **Action** (`action`): `block` → `Decision::Reject` (HTTP **429** + `Retry-After` computed
+>   from the bucket `ceil((1-tokens)/refill)`); `score` → contribution to the cumulative score
+>   (§7). In **detection-only** the overrun is logged but not rejected.
+> - **Key** (`key`): `client_ip` = `ctx.client_ip`, i.e. the **resolved IP** from the shared
+>   trusted-proxy resolver (see §9 and `[network]`), **not** the raw peer addr anymore. ✅
+>   **Option B resolved**: behind a *trusted* LB/CDN the key is the real client taken from
+>   `X-Forwarded-For` counting hops from the right; the rate limiter does not read the IP
+>   directly — it uses `ctx.client_ip`, derived once in `build_context`. The `RateLimitKey`
+>   enum stays ready for future keys (header, path).
+> - **Memory**: cap `max_tracked_keys`; on overrun an idle-bucket sweep runs (full buckets →
+>   indistinguishable from new keys, hence evictable).
 
-> Nota path traversal: il normalizzatore (Fase 2) **risolve già** `.`/`..` nel
-> path, quindi le sequenze `../` si rilevano su query/cookie/body (dove
-> sopravvivono dopo il decode), mentre sul `normalized.path` si rilevano i
-> **target sensibili** (es. `/etc/passwd`) che restano dopo la risoluzione.
+> Path-traversal note: the normalizer (Phase 2) **already resolves** `.`/`..` in the path, so
+> `../` sequences are detected on query/cookie/body (where they survive the decode), while on
+> `normalized.path` the **sensitive targets** (e.g. `/etc/passwd`) that remain after
+> resolution are detected.
 
-> Confini tra moduli (per evitare doppio conteggio dello score cumulativo):
-> - **Path Traversal** = manipolazione del filesystem (`../`, `/etc/passwd`,
->   null-byte, UNC).
-> - **LFI / RFI** = *meccanismi di inclusione* di codice/script: wrapper/stream
->   (`php://`, `phar://`, `data://`, `expect://`, `file://`, …) e inclusione
->   remota (`http(s)://`/`ftp://` di uno script). Non ri-rileva i path filesystem.
->   Pur essendo nel catalogo come fase `query`, **ispeziona query + body + cookie**
->   (l'LFI/RFI via POST esiste).
-> - **SSRF** = il server che effettua richieste verso URL controllati
->   dall'attaccante (metadata `169.254.169.254`, `localhost`, schemi `gopher://`,
->   `dict://`). Rileva il **target** (IP/host/scheme SSRF-specifici), non gli
->   scheme `http(s)://`/`ftp://`/`file://` (che restano a RFI/LFI). Quindi
->   `http://169.254.169.254/` prende `rfi-remote-url` (Notice, debole) **e**
->   `ssrf-cloud-metadata` (Critical) — segnali diversi, non ridondanti.
+> Inter-module boundaries (to avoid double-counting the cumulative score):
+> - **Path Traversal** = filesystem manipulation (`../`, `/etc/passwd`, null-byte, UNC).
+> - **LFI / RFI** = *inclusion mechanisms* of code/scripts: wrappers/streams (`php://`,
+>   `phar://`, `data://`, `expect://`, `file://`, …) and remote inclusion (`http(s)://`/`ftp://`
+>   of a script). Does not re-detect filesystem paths. Although it is in the catalog as a
+>   `query` phase, it **inspects query + body + cookie** (LFI/RFI via POST exists).
+> - **SSRF** = the server making requests to attacker-controlled URLs (metadata
+>   `169.254.169.254`, `localhost`, schemes `gopher://`, `dict://`). It detects the **target**
+>   (SSRF-specific IP/host/scheme), not the `http(s)://`/`ftp://`/`file://` schemes (which stay
+>   with RFI/LFI). So `http://169.254.169.254/` gets `rfi-remote-url` (Notice, weak) **and**
+>   `ssrf-cloud-metadata` (Critical) — different, non-redundant signals.
 
-> Note Header injection (CRLF / response splitting):
-> - **Insight hyper**: il crate `http`/hyper **rifiuta CR/LF/NUL nei valori header
->   in ingresso** al parse, quindi la CRLF injection *negli header* non arriva al
->   WAF. La superficie viva è il **CRLF percent-encoded nei param query/body**
->   (`%0d%0a…Set-Cookie:`), decodificato da Fase 2 e potenzialmente riflesso dal
->   backend in un response header, più la **Host injection ad absolute-URI**
->   (`Host: http://evil`, che hyper accetta).
-> - **Modulo field-aware**: a differenza degli altri moduli, le regole hanno uno
->   `scope` (All / NonBody / HostHeaders / Body) perché il CR/LF nudo è anomalo in
->   query/cookie/header ma legittimo nel body (textarea) — lì è Notice/PL3.
-> - **Nota sulle fasi**: `phase()` indica solo l'**ordine** di esecuzione in
->   pipeline, **non** il campo ispezionato. Header injection è in `Phase::Headers`
->   ma ispeziona anche query/body (i dati normalizzati sono tutti disponibili a
->   prescindere dalla fase).
-> - **Confine hyper**: condiviso con Request Smuggling — l'invariante "hyper
->   sanitizza il framing/header a monte" è descritto **una sola volta** nella nota
->   Request Smuggling (assunzione di sicurezza esplicita).
+> Header injection notes (CRLF / response splitting):
+> - **hyper insight**: the `http`/hyper crate **rejects CR/LF/NUL in inbound header values** at
+>   parse, so CRLF injection *in headers* does not reach the WAF. The live surface is the
+>   **percent-encoded CRLF in query/body params** (`%0d%0a…Set-Cookie:`), decoded by Phase 2
+>   and potentially reflected by the backend into a response header, plus the **Host injection
+>   to an absolute-URI** (`Host: http://evil`, which hyper accepts).
+> - **Field-aware module**: unlike the other modules, the rules have a `scope` (All / NonBody /
+>   HostHeaders / Body) because a bare CR/LF is anomalous in query/cookie/header but legitimate
+>   in the body (textarea) — there it is Notice/PL3.
+> - **Phase note**: `phase()` indicates only the **order** of execution in the pipeline, **not**
+>   the inspected field. Header injection is in `Phase::Headers` but inspects query/body too
+>   (the normalized data is all available regardless of phase).
+> - **hyper boundary**: shared with Request Smuggling — the invariant "hyper sanitizes the
+>   framing/headers upstream" is described **only once** in the Request Smuggling note (an
+>   explicit security assumption).
 
-> Note Request Smuggling (modulo **strutturale**, non content-inspection — Fase 6/P4):
-> - **Cos'è**: validazione del **framing HTTP** (confini del body: `Content-Length`
->   vs `Transfer-Encoding`). Lo smuggling è il disaccordo tra come WAF e upstream
->   interpretano quei confini; **inoltrare** un framing ambiguo È il vettore. Perciò
->   gira in `Phase::Connection` (in `run_connection`, **prima** di normalizzazione e
->   detection) e su framing illegale **rifiuta con 400** — **binario**, mai `Scores`.
-> - **Regole** (tutte → `Reject{400}`): (1) CL **e** TE simultanei; (2) CL duplicato
->   o valore non-intero/lista; (3) TE duplicato o ≠ singolo token `chunked`
->   (case-insensitive) — `xchunked`, `chunked, chunked`, liste `gzip, chunked` incluse.
->   Postura **strict**: l'unico TE accettato è `chunked` (le liste sono il terreno
->   dello smuggling e ri-serializziamo comunque verso il backend).
-> - **⚠️ ASSUNZIONE DI SICUREZZA ESPLICITA (confine hyper)**: l'**igiene del framing
->   a basso livello** — whitespace prima dei `:`, obs-fold, OWS attorno ai valori,
->   CR/LF/NUL negli header — è garantita da **hyper** che la **rifiuta/normalizza al
->   parse**, *prima* che i moduli vedano la richiesta; in più il WAF **parsa e
->   ri-serializza** verso il backend (il client hyper rigenera CL/TE), neutralizzando
->   strutturalmente gran parte dello smuggling. Questo modulo è **difesa-in-profondità**
->   sulle ambiguità semantiche residue. **Se si cambia parser HTTP, o si introduce un
->   path senza ri-serializzazione, le Rule 4 (whitespace-pre-`:`/obs-fold) vanno
->   re-implementate sui byte grezzi qui.** Vale anche per Header injection (CR/LF).
-> - **Test**: la logica è coperta da **unit** deterministici (hyper non interferisce);
->   l'integration usa `gzip, chunked` (hyper lo accetta perché termina in `chunked`,
->   il modulo strict lo rifiuta) per esercitare lo stack completo fino al 400.
+> Request Smuggling notes (a **structural** module, not content-inspection — Phase 6/P4):
+> - **What it is**: validation of the **HTTP framing** (body boundaries: `Content-Length` vs
+>   `Transfer-Encoding`). Smuggling is the disagreement between how the WAF and the upstream
+>   interpret those boundaries; **forwarding** an ambiguous framing IS the vector. So it runs in
+>   `Phase::Connection` (in `run_connection`, **before** normalization and detection) and on an
+>   illegal framing it **rejects with 400** — **binary**, never `Scores`.
+> - **Rules** (all → `Reject{400}`): (1) CL **and** TE simultaneously; (2) duplicate CL or a
+>   non-integer/list value; (3) duplicate TE or ≠ the single token `chunked`
+>   (case-insensitive) — `xchunked`, `chunked, chunked`, lists `gzip, chunked` included. A
+>   **strict** posture: the only accepted TE is `chunked` (lists are the ground of smuggling
+>   and we re-serialize toward the backend anyway).
+> - **⚠️ EXPLICIT SECURITY ASSUMPTION (hyper boundary)**: the **low-level framing hygiene** —
+>   whitespace before `:`, obs-fold, OWS around values, CR/LF/NUL in headers — is guaranteed by
+>   **hyper** which **rejects/normalizes it at parse**, *before* the modules see the request; in
+>   addition the WAF **parses and re-serializes** toward the backend (the hyper client
+>   regenerates CL/TE), structurally neutralizing most smuggling. This module is
+>   **defense-in-depth** on the residual semantic ambiguities. **If the HTTP parser is changed,
+>   or a path without re-serialization is introduced, the Rule 4 (whitespace-pre-`:`/obs-fold)
+>   must be re-implemented on the raw bytes here.** This also applies to Header injection
+>   (CR/LF).
+> - **Tests**: the logic is covered by deterministic **unit** tests (hyper does not interfere);
+>   the integration uses `gzip, chunked` (hyper accepts it because it ends in `chunked`, the
+>   strict module rejects it) to exercise the full stack up to the 400.
 
-> Note SSRF:
-> - **Overlap intra-modulo dichiarato**: `169.254.169.254` matcha sia
->   `ssrf-cloud-metadata` (Critical) sia `ssrf-private-ip` link-local (Notice, a PL3)
->   → contributo additivo 5+2 a PL3. È difesa-in-profondità voluta, non un bug.
-> - **Gap noto (offuscamento IP)**: le regole decimale/hex/ottale coprono solo
->   `127.0.0.1`, non l'IP metadata (`169.254.169.254` decimale = `2852039166`).
-> - **Gap noto (IPv6)**: la copertura è limitata a `[::1]` e `fd00:ec2::254`;
->   mancano `fc00::/7` (ULA) e `fe80::/10` (link-local IPv6).
-> - Entrambi i gap sono presidiati da casi `ExpectedMiss` nel corpus di validazione
->   (§10): tracciati, non gating; se un giorno scattano, il caso va promosso a
->   `Triggers` (regressione in meglio).
+> SSRF notes:
+> - **Declared intra-module overlap**: `169.254.169.254` matches both `ssrf-cloud-metadata`
+>   (Critical) and `ssrf-private-ip` link-local (Notice, at PL3) → additive contribution 5+2 at
+>   PL3. It is intended defense-in-depth, not a bug.
+> - **Known gap (IP obfuscation)**: the decimal/hex/octal rules cover only `127.0.0.1`, not the
+>   metadata IP (`169.254.169.254` decimal = `2852039166`).
+> - **Known gap (IPv6)**: coverage is limited to `[::1]` and `fd00:ec2::254`; `fc00::/7` (ULA)
+>   and `fe80::/10` (IPv6 link-local) are missing.
+> - Both gaps are guarded by `ExpectedMiss` cases in the validation corpus (§10): tracked, not
+>   gating; if one day they fire, the case must be promoted to `Triggers` (a regression for the
+>   better).
 
-> Cookie ora normalizzati come query/body (percent-decode double-aware + NFKC):
-> un payload codificato in un cookie (es. `php%3a%2f%2f`) viene sciolto e le regole
-> basate sul decode scattano anche sui cookie, per **tutti** i moduli di
-> content-inspection. Vedi §6 (passata unica condivisa) per il punto e l'ordine
-> rispetto ai limiti difensivi. NB: `parse_cookies_limited` conserva ancora il
-> testo grezzo (per logging/limiti); il decode avviene **dopo**, nello stesso
-> punto in cui si decodificano query/body.
+> Cookies are now normalized like query/body (double-aware percent-decode + NFKC): a payload
+> encoded in a cookie (e.g. `php%3a%2f%2f`) is unwrapped and the decode-based rules fire on
+> cookies too, for **all** content-inspection modules. See §6 (single shared pass) for the
+> point and the order relative to the defensive limits. NB: `parse_cookies_limited` still keeps
+> the raw text (for logging/limits); the decode happens **after**, at the same point where
+> query/body are decoded.
 
-> Note GraphQL (modulo **strutturale**, non content-inspection — Fase 11):
-> - **Cos'è**: come `request_smuggling`, NON ispeziona contenuto (l'injection negli
->   argomenti/variabili è già presa dal canale JSON-leaf/derived, §6). Applica **cap
->   DoS/abuse sulla FORMA** dell'operazione GraphQL: profondità del selection-set, conteggio
->   alias/field/directive, dimensione del batch, + policy di introspection. I conteggi
->   vengono da una passata **lessicale** (`graphql_lex`, l'8° parser custom, fuzzato §13):
->   **depth paren-aware** (`{` conta solo fuori dagli argomenti `(...)`, così un input-object
->   annidato non gonfia la profondità), salta string/block-string/commenti.
-> - **Transport**: estrae la query da JSON `query`/`<i>.query` leaf e GET `?query=` **solo sui
->   `paths` configurati** (così una JSON-API non-GraphQL con un campo `query` non è toccata),
->   e da un body `application/graphql` (per Content-Type, qualsiasi path). Default **OFF**
->   (endpoint-specifico, cap da tarare).
-> - **Decisione**: cap DoS oltre soglia → `Reject{400}`; introspection (se `block_introspection`)
->   → `Block{403}`.
-> - **⚠️ Modulo STRUTTURALE in `Phase::Body` → `WafModule::structural() = true`**: il fast-path
->   (Pillar 3, §7) prova "nessuna regola **content** può matchare" e salta l'ispezione content;
->   ma non può provare inerte un modulo strutturale, quindi gli strutturali girano **anche sul
->   percorso di skip** (`run_phases_filtered(structural_only)`). Senza questo flag un DoS GraphQL
->   privo di firma content-regex **bypasserebbe** il modulo. Regola: un nuovo modulo strutturale
->   `Phase::Body` DEVE marcarsi `structural()`.
-> - **Fix §6 collegato (Step-0)**: un body `application/graphql` è `ParsedBody::Raw`, ispezionato
->   grezzo da `body_str_values` → la forma percent-decodata non veniva ispezionata (bypass
->   injection-encoded). Il collector body-derived ora spinge il **canonical del Raw-body** nel
->   `derived_decoded` (come `json_leaf_derived`).
-> - **11-bis (gotestwaf re-capture, wire-driven)** — due bypass d'introspection, **due cause/layer
->   distinti**:
->   - **(a) buco §6 body-parsing CT-less** (generico, non GraphQL): un body **senza `Content-Type`**
->     cadeva su `ParsedBody::Raw` (il JSON è parsato solo con `application/json`) → il canale
->     **per-leaf** §6 (`json_leaf_derived`) era saltato e restava solo il canonicalize whole-string.
->     Conseguenza: un'injection **encoded-in-leaf** (base64 / JSON `\u`) bypassava droppando il CT
->     (il plaintext no — la stringa grezza è comunque ispezionata). Fix = **`parse_body` sniff JSON**:
->     se il body sembra JSON (`{`/`[`) e parsa, è trattato come `application/json` (`body.rs::sniff_json`);
->     altrimenti `Raw`; errore di depth propagato (fail-closed). Beneficia **tutti** i moduli.
->   - **(b) transport GraphQL su GET**: gotestwaf mette nell'`?query=` l'**intera busta JSON**
->     `{"query":"<doc>"}`, non un documento grezzo → `graphql_lex` salta il contenuto-stringa e non
->     vede `__schema` (depth≈1). Fix = `unwrap_query_envelope` (in `waf-normalizer`, serde già dep →
->     detection resta serde-free): ogni *carrier* passa per **"envelope-or-raw"** (`operations()`→`expand()`).
-> - **Confine open/enterprise** (`BOUNDARY.md` §3.1): i **cap strutturali** sono core (OPEN);
->   la **schema-enforcement** (validare la query contro lo schema reale dell'app → gestione
->   schema = governance) resta **enterprise**.
+> GraphQL notes (a **structural** module, not content-inspection — Phase 11):
+> - **What it is**: like `request_smuggling`, it does NOT inspect content (injection in
+>   arguments/variables is already caught by the JSON-leaf/derived channel, §6). It enforces
+>   **DoS/abuse caps on the SHAPE** of the GraphQL operation: selection-set depth, alias/field/
+>   directive counts, batch size, + an introspection policy. The counts come from a **lexical**
+>   pass (`graphql_lex`, the 8th custom parser, fuzzed §13): **paren-aware depth** (a `{` counts
+>   only outside an argument list `(...)`, so a nested input object does not inflate the depth),
+>   skipping strings/block-strings/comments.
+> - **Transports**: extracts the query from a JSON `query`/`<i>.query` leaf and GET `?query=`
+>   **only on the configured `paths`** (so a non-GraphQL JSON API with a `query` field is left
+>   alone), and from an `application/graphql` body (by Content-Type, any path). Default **OFF**
+>   (endpoint-specific, caps need tuning).
+> - **Decision**: a DoS cap over its limit → `Reject{400}`; introspection (if
+>   `block_introspection`) → `Block{403}`.
+> - **⚠️ STRUCTURAL module in `Phase::Body` → `WafModule::structural() = true`**: the fast-path
+>   (Pillar 3, §7) proves "no **content** rule can match" and skips content inspection; but it
+>   cannot prove a structural module inert, so structural modules run **even on the skip path**
+>   (`run_phases_filtered(structural_only)`). Without this flag a GraphQL DoS with no content
+>   signature would **bypass** the module. Rule: a new structural `Phase::Body` module MUST set
+>   `structural()`.
+> - **Related §6 fix (Step-0)**: an `application/graphql` body is `ParsedBody::Raw`, inspected raw
+>   by `body_str_values` → its percent-decoded form was not inspected (encoded-injection bypass).
+>   The body-derived collector now pushes the **Raw-body canonical** into `derived_decoded` (like
+>   `json_leaf_derived`).
+> - **11-bis (gotestwaf re-capture, wire-driven)** — two introspection bypasses, **two distinct
+>   causes/layers**:
+>   - **(a) CT-less §6 body-parsing hole** (generic, not GraphQL-specific): a body with **no
+>     `Content-Type`** fell through to `ParsedBody::Raw` (JSON is parsed only for `application/json`)
+>     → the **per-leaf** §6 channel (`json_leaf_derived`) was skipped, leaving only the whole-string
+>     canonicalize. Result: an **encoded-in-leaf** injection (base64 / JSON `\u`) bypassed by simply
+>     dropping the CT (plaintext did not — the raw string is still inspected). Fix = **`parse_body`
+>     JSON sniff**: when the body looks like JSON (`{`/`[`) and parses, treat it as `application/json`
+>     (`body.rs::sniff_json`); else `Raw`; a depth error propagates (fail-closed). Benefits **all**
+>     modules.
+>   - **(b) GraphQL GET transport**: gotestwaf places the **whole JSON envelope** `{"query":"<doc>"}`
+>     in `?query=`, not a bare document → `graphql_lex` skips string contents and never sees
+>     `__schema` (depth ≈ 1). Fix = `unwrap_query_envelope` (in `waf-normalizer`, serde already a dep
+>     → detection stays serde-free): every *carrier* goes through **"envelope-or-raw"**
+>     (`operations()`→`expand()`).
+> - **Open/enterprise boundary** (`BOUNDARY.md` §3.1): the **structural caps** are core (OPEN);
+>   **schema-enforcement** (validating the query against the app's real schema → schema management
+>   = governance) stays **enterprise**.
 
-> Note gRPC (modulo **strutturale** + canale content §6 — Fase gRPC; richiede HTTP/2 = Fase 12):
-> - **Due responsabilità, contabilità SEPARATA** (la lezione del fix §6):
->   - **CONTENT (§6, always-on)**: il body gRPC è `application/grpc*` binario → il normalizer de-frama
->     e estrae i campi protobuf (leaf length-delimited) nel canale `derived_decoded`, così i moduli
->     content (SQLi/XSS/…) ispezionano un'injection nascosta in un campo. Una cattura SQLi-in-campo è
->     **creditata a §6/al modulo content**, NON al modulo grpc.
->   - **STRUCTURAL (modulo `grpc`)**: cap DoS sulla FORMA (dimensione messaggio / numero campi / depth
->     di nesting) + policy compressi → `Reject{400}`. Default OFF (`[modules.grpc]`).
-> - **Parser** `grpc_extract` (9° parser hand-rolled, fuzzato §13): framing `[flag][len:4 BE][msg]` +
->   protobuf wire-format senza schema. Euristica length-delimited: **UTF-8 valido → leaf-string**,
->   altrimenti **ricorsione sub-message** (depth-capped). Il content-inspection è **best-effort
->   dichiarato** (il wire-format senza `.proto` è ambiguo: string|bytes|sub-message indistinguibili) —
->   il deliverable garantito è lo **strutturale**. NB: una sub-message UTF-8 resta UNA leaf, ma il testo
->   nidificato è comunque una SUA sottostringa → la regola content matcha lo stesso.
-> - **Compressi** (`on_compressed`): `grpc-encoding`≠`identity` o flag per-messaggio = payload opaco →
->   `Reject` (fail-closed, default) o `Passthrough` (a verbale). `identity`/assente = ispezionato.
-> - **`structural()=true`** (come GraphQL): gira anche sul fast-path-skip (un DoS gRPC senza firma
->   content non deve bypassare).
-> - **Datapath (Fase gRPC, su HTTP/2 di Fase 12)**: forwarding **h2c end-to-end** via un client
->   `http2_only` **dedicato** ai target gRPC (il client generale resta h1 — niente flag globale) +
->   **relay dei trailer** `grpc-status`/`grpc-message` in entrambe le direzioni. Il modello resta
->   **buffer-then-inspect** (`collect_with_trailers` raccoglie body E trailer; `FramedBody` ri-emette
->   data-frame + trailers-frame) → unary coperto; **streaming deferito** (riscriverebbe il body-path).
->   `te: trailers` ri-aggiunto sul forward gRPC (richiesto dai server gRPC). Backend **h2-over-TLS**
->   (`https://`) deferito.
-> - **Confine open/enterprise** (`BOUNDARY.md` §3.1): inspection gRPC = **core/OPEN** (datapath, come
->   JSON/multipart); firme premium / schema-enforcement = enterprise.
+> gRPC notes (**structural** module + §6 content channel — gRPC phase; needs the HTTP/2 of Phase 12):
+> - **Two responsibilities, SEPARATE accounting** (the §6-fix lesson):
+>   - **CONTENT (§6, always-on)**: the `application/grpc*` body is binary → the normalizer de-frames it
+>     and extracts the protobuf fields (length-delimited leaves) into `derived_decoded`, so the content
+>     modules (SQLi/XSS/…) inspect an injection hidden in a field. A SQLi-in-field catch is credited to
+>     **§6 / the content module**, NOT to gRPC.
+>   - **STRUCTURAL (`grpc` module)**: DoS caps on the SHAPE (message size / field count / nesting depth)
+>     + a compressed policy → `Reject{400}`. Default OFF (`[modules.grpc]`).
+> - **Parser** `grpc_extract` (9th hand-rolled parser, fuzzed §13): framing `[flag][len:4 BE][msg]` +
+>   schema-less protobuf wire-format. Length-delimited heuristic: **valid UTF-8 → leaf string**, else
+>   **recurse as a sub-message** (depth-capped). Content inspection is **declared best-effort** (the
+>   wire format is ambiguous without the `.proto`: string|bytes|sub-message are indistinguishable) — the
+>   guaranteed deliverable is the **structural** signal. NB: a UTF-8 sub-message stays ONE leaf, but the
+>   nested text is still a substring of it → a content rule still matches.
+> - **Compressed** (`on_compressed`): `grpc-encoding` ≠ `identity` or the per-message flag = opaque
+>   payload → `Reject` (fail-closed, default) or `Passthrough` (on record). `identity`/absent = inspected.
+> - **`structural()=true`** (like GraphQL): runs on the fast-path skip too (a gRPC DoS with no content
+>   signature must not bypass).
+> - **Datapath (gRPC phase, over Phase-12 HTTP/2)**: **h2c end-to-end** forwarding via a `http2_only`
+>   client **dedicated** to gRPC targets (the general client stays h1 — no global flag) + **trailer
+>   relay** (`grpc-status`/`grpc-message`) both ways. The model stays **buffer-then-inspect**
+>   (`collect_with_trailers` keeps body AND trailers; `FramedBody` re-emits a data frame + a trailers
+>   frame) → unary covered; **streaming deferred** (it would rewrite the body-path). `te: trailers` is
+>   re-added on the gRPC forward (gRPC servers require it). An **h2-over-TLS** backend (`https://`) is
+>   deferred.
+> - **Core/component boundary** (`BOUNDARY.md` §3.1): gRPC inspection = **core** (datapath, like
+>   JSON/multipart); schema enforcement = component.
+
+> Evasion notes (a **structural** module with no regex — 0.5.0, F-1; normalization side in §6):
+> - **What it is**: it turns two normalizer flags into score. `null_byte_detected` (a NUL decoded in
+>   the path, captured before the strip) → `evasion-null-byte` **Critical**; `double_encoding_detected`
+>   → `evasion-double-encoding` **Warning**. `Phase::Body`, `structural() == true`: the flags come
+>   from normalization, so the module must also run on fast-path skips (the Phase-11 lesson).
+> - **`Scores`, not a `Block` shortcut**: the contributions land in `score_contributions`, so the
+>   decision log keeps a trace — the original gap was exactly "blocked by nothing, logged nowhere".
+> - **Why double encoding is only a Warning**: legacy proxies and gateways re-encode legitimately; a
+>   Critical would block real traffic. It blocks only in combination with another signal. A
+>   `%2500` path therefore scores Critical + Warning: blocked, with two traces.
+> - Config `[modules.evasion]`, **default on** (a core security control, like `request_smuggling`).
+
+> Rule additions from the 0.5.x pentest remediations (each one red-first, with FP traps added to the
+> corpus and a full `validation.rs` run before release; 0.5.1 is in §6):
+> - **0.5.0 — pentest #1 (Juice Shop).** **F-2** `ssti-erb-jsp-arithmetic` (Critical, PL1):
+>   `<%[=-]?\s*\d+\s*[*+/x-]\s*\d+` — ERB/EJS/JSP/ASP delimiters with digit-operator-digit
+>   **adjacent** inside them; that adjacency is the anti-FP discriminator (`<%-- 2024 --%>` and
+>   `<%= user.name %>` stay clean). **F-3** `rce-shellshock` (Critical, PL1):
+>   `(?:^|[\s;&|=])\(\)\s*\{` — the Bash function definition `() {`, anchored to a non-identifier
+>   boundary so minified JavaScript `function(){` does not match. As an `RCE_RULES` entry it covers
+>   path/query/cookie/body/Referer automatically. The **User-Agent** is deny-listed from generic
+>   header inspection (too noisy for the broad rule set), so the module runs a **dedicated
+>   single-pattern scan** of the UA for this rule only — the UA never sees the rest of the RCE set,
+>   and the rule is emitted once even if UA and cookie both match.
+> - **0.5.2 — pentest #2 "extreme" follow-ons.** **E-2** `sqli-tautology-or`/`-and`: besides `=`
+>   (single-char or numeric operands, incl. float, scientific and hex), comparison operators
+>   (`<=`, `>=`, `<>`, `!=`, `<`, `>`) and `LIKE` with **numeric-only** operands — `OR 1<2`,
+>   `OR 1 LIKE 1`, `OR 0x1=0x1` are caught while prose like `a<b or c>d` stays clean (non-numeric
+>   operands are the discriminator). **E-3a** `ssrf-loopback`: the `\[::1\]` branch was dead code
+>   (`\b` never matches next to `[`/`]`); it is now a dedicated bracket alternative
+>   `\[(?:0{1,4}:|:){1,7}0{0,3}1\]` covering compressed, expanded and partial IPv6 loopback, while
+>   public IPv6 literals do not match (`[fc00::1]`/`[fe80::1]` remain documented misses). **E-3b**
+>   homoglyph loopback (`①②⑦.0.0.1`, fullwidth digits): verified **not reproducible** — NFKC folds
+>   them to `127.0.0.1` before detection; a unit test locks that invariant. **E-4** SSTI engine
+>   coverage: arithmetic delimiters extended to Thymeleaf `*{…}` and Razor `@(…)`, Jinja statements
+>   with a parenthesis and no space (`{%print(7*7)%}`), a new `ssti-smarty-php` for `{php}`; and a
+>   `proto-pollution-key` rule (Critical, always on) for `__proto__` / `constructor.prototype` in
+>   **key position only** (parameter names, JSON/form keys) — a value such as `obj.__proto__.x`
+>   stays clean. The prefilter scans keys with the same pattern, so the fast path stays sound.
+>   E-1 (Log4Shell lookup obfuscation) was closed in the curated CRS content component, not in the
+>   core.
+> - **0.5.3 — DVWA pentest.** **D-1** was a real exfiltration (an admin password hash leaked through
+>   error-based SQLi): `… AND extractvalue(1,concat(0x7e,(SELECT …)))` had no UNION, OR, comment or
+>   tautology to catch. Three Critical PL1 rules: `sqli-error-based-fn`
+>   `\b(?:extractvalue|updatexml)\s*\(`, `sqli-error-exp-overflow` `\bexp\s*\(\s*~`,
+>   `sqli-subquery-exists` `\bexists\s*\(\s*select\b` (FP traps `exp(2)`, prose `exists (`). Pure
+>   boolean-blind inference (`ascii(substring(…))>64`) stays out of scope: too FP-prone.
+>   **Declared trade-offs** from the same pentest: **D-2** a remote URL without an executable
+>   extension (`page=http://host/shell.txt`) only hits `rfi-remote-url` (Notice, PL3,
+>   non-blocking by design — URLs in parameters are common); **D-3** `ssrf-loopback` also fires on a
+>   legitimate `127.0.0.1` value (e.g. a ping tool) — accepted as an aggressive default.
 
 ---
 
-## 9. Operatività
+## 9. Operability
 
-### Configurazione esterna (Fase 6 — Pilastro 1)
+### External configuration (Phase 6 — Pillar 1)
 
-Il caricamento della config da file esterno è una capability di prima classe; la
-**validazione semantica** è separata e riusabile dall'hot reload (Pilastro 3).
+Loading the config from an external file is a first-class capability; **semantic validation**
+is separate and reusable from hot reload (Pillar 3).
 
-- **Precedenza del path** (più esplicito/effimero → più implicito):
-  1. flag CLI `--config <path>` (anche `--config=<path>`) — intento per-invocazione;
-  2. env var `WAF_CONFIG` — livello deployment (container/systemd/CI);
+- **Path precedence** (most explicit/ephemeral → most implicit):
+  1. CLI flag `--config <path>` (also `--config=<path>`) — per-invocation intent;
+  2. env var `WAF_CONFIG` — deployment level (container/systemd/CI);
   3. default `config.toml`.
-  Parsing CLI manuale (nessun `clap`: una sola flag).
-- **Pipeline esplicita** `resolve_path → load → parse → validate → build`:
-  - `Config::validate()` (in `waf-core`, dependency-light) è il **controllo
-    semantico** riusabile; `waf-proxy::config::{resolve_path,load,parse_and_validate}`
-    orchestra fs/CLI e mappa gli errori; `Proxy::bind` è il build.
-- **Fail-fast**: qualunque errore (I/O, TOML, semantico) → messaggio chiaro su
-  **stderr** + **exit code 2**. Mai avvio con config parziale o default silenti.
-- **File mancante = errore fatale, sempre** (qualsiasi sorgente). Un WAF non deve
-  partire con config implicita (`trusted_proxies` vuoto, rate-limit off, soglie non
-  tarate): è lo scenario "sembra protetto ma non lo è". `LoadError` distingue le
-  diagnosi: `NotFound` ("file non trovato a <path>") vs `Parse` (TOML errato **o**
-  campo obbligatorio mancante, es. "missing field `backend`") vs `Validation`.
-- **Schema di validazione semantica** (`ConfigError`):
-  - `proxy.backend`: URL assoluto `http(s)` con authority;
-  - `waf.block_threshold >= 1`; `waf.paranoia_level ∈ 1..=4`
-    (`MAX_PARANOIA_LEVEL`; PL4 è *forward-compatible* — vedi sotto);
-  - `waf.severity_scores.*` ciascuno `>= 1`; `limits.*` ciascuno `>= 1`;
-  - `rate_limit` (se `enabled`): `requests/window_seconds/max_tracked_keys >= 1`,
-    `burst`(se presente)`>= 1`, `score >= 1` se `action="score"`;
-  - `network.trusted_hops ∈ 1..=10` (`MAX_TRUSTED_HOPS`);
-    `trusted_proxies` ogni entry CIDR valido; `client_ip_header` non vuoto.
-  - La raggiungibilità di `block_threshold` è garantita per costruzione dai
-    controlli `>= 1` su soglia e pesi (nessuna regola cross-field spuria).
-- **PL4 "vuoto ma legale"**: il validatore presidia il *contratto* (`1..=4`), non lo
-  stato corrente delle regole (max `HIGHEST_RULE_PARANOIA = 3`). Se
-  `paranoia_level` supera la massima paranoia presente, `Proxy::bind` emette un
-  **warn** a startup: nessuna regola aggiuntiva attivata. Così PL4 non si comporta
-  silenziosamente come PL3.
+  Manual CLI parsing (no `clap`: a single flag).
+- **Explicit pipeline** `resolve_path → load → parse → validate → build`:
+  - `Config::validate()` (in `waf-core`, dependency-light) is the reusable **semantic check**;
+    `waf-proxy::config::{resolve_path,load,parse_and_validate}` orchestrates fs/CLI and maps the
+    errors; `Proxy::bind` is the build.
+- **Fail-fast**: any error (I/O, TOML, semantic) → a clear message on **stderr** + **exit code
+  2**. Never start with a partial config or silent defaults.
+- **A missing file = a fatal error, always** (any source). A WAF must not start with an
+  implicit config (`trusted_proxies` empty, rate-limit off, untuned thresholds): that is the
+  "looks protected but isn't" scenario. `LoadError` distinguishes the diagnoses: `NotFound`
+  ("file not found at <path>") vs `Parse` (bad TOML **or** a missing required field, e.g.
+  "missing field `backend`") vs `Validation`.
+- **Semantic validation schema** (`ConfigError`):
+  - `proxy.backend`: absolute `http(s)` URL with an authority;
+  - `waf.block_threshold >= 1`; `waf.paranoia_level ∈ 1..=4` (`MAX_PARANOIA_LEVEL`; PL4 is
+    *forward-compatible* — see below);
+  - `waf.severity_scores.*` each `>= 1`; `limits.*` each `>= 1`;
+  - `rate_limit` (if `enabled`): `requests/window_seconds/max_tracked_keys >= 1`, `burst` (if
+    present) `>= 1`, `score >= 1` if `action="score"`;
+  - `network.trusted_hops ∈ 1..=10` (`MAX_TRUSTED_HOPS`); every `trusted_proxies` entry a valid
+    CIDR; `client_ip_header` non-empty.
+  - The reachability of `block_threshold` is guaranteed by construction by the `>= 1` checks on
+    the threshold and the weights (no spurious cross-field rule).
+- **PL4 "empty but legal"**: the validator guards the *contract* (`1..=4`), not the current
+  state of the rules (max `HIGHEST_RULE_PARANOIA = 3`). If `paranoia_level` exceeds the maximum
+  paranoia present, `Proxy::bind` emits a **warn** at startup: no additional rule is activated.
+  This way PL4 does not silently behave like PL3.
 
-- **Modalità**: `detection-only` (default in staging) vs `blocking`.
-- **Fail mode**: per-scenario via `[resilience]` (vedi sotto) — NON un singolo
-  booleano globale (il vecchio `waf.fail_open` è stato rimosso).
-- **Hot reload**: ricarica regole/config senza restart via **SIGHUP** (vedi sotto).
-- **Logging**: JSON con `request_id`, modulo, `rule_id`, `score`, decisione.
-- **Metriche**: latenza per fase, richieste bloccate, falsi positivi stimati.
-- **Status di risposta** — i **tre Reject/deny** hanno semantiche distinte:
-  - `Decision::Block` (detection ad alta confidenza / soglia score) → **403 Forbidden**;
-  - `Decision::Reject{status:400}` (request smuggling: **framing HTTP illegale**) → **400 Bad Request**;
-  - `Decision::Reject{status:429}` (rate limiting) → **429 Too Many Requests** con `Retry-After`;
-  - normalizzazione fallita (parser limit, Pilastro 2) → **400** secondo `on_parser_limit`.
-  `deny_response` sceglie la reason-phrase dal `status` (400→Bad Request, 429→Too
-  Many Requests); il 403 di `Block` è un arm separato. In detection-only nessun
-  rifiuto: si logga soltanto.
+- **Modes**: `detection-only` (default in staging) vs `blocking`.
+- **Fail mode**: per-scenario via `[resilience]` (see below) — NOT a single global boolean (the
+  old `waf.fail_open` was removed).
+- **Hot reload**: reloads rules/config without a restart via **SIGHUP** (see below).
+- **Logging**: JSON with `request_id`, module, `rule_id`, `score`, decision.
+- **Metrics**: per-phase latency, blocked requests, estimated false positives.
+- **Response status** — the **three Reject/deny** cases have distinct semantics:
+  - `Decision::Block` (high-confidence detection / score threshold) → **403 Forbidden**;
+  - `Decision::Reject{status:400}` (request smuggling: **illegal HTTP framing**) → **400 Bad
+    Request**;
+  - `Decision::Reject{status:429}` (rate limiting) → **429 Too Many Requests** with
+    `Retry-After`;
+  - normalization failed (parser limit, Pillar 2) → **400** per `on_parser_limit`.
+  `deny_response` picks the reason-phrase from the `status` (400→Bad Request, 429→Too Many
+  Requests); the 403 of `Block` is a separate arm. In detection-only there is no rejection: it
+  only logs.
 
-### Resilienza: fail-open / fail-closed (Fase 6 — Pilastro 2)
+### Resilience: fail-open / fail-closed (Phase 6 — Pillar 2)
 
-Cosa fa il WAF **quando è lui in difficoltà**. Policy **esplicita e per-scenario**
-(`[resilience]`), mai comportamento implicito. `FailMode` è uniforme su tutti gli
-scenari per coerenza di schema, ma il *significato* di `fail_open` è
-scenario-specifico (vedi nota upstream).
+What the WAF does **when it is the one in trouble**. **Explicit, per-scenario** policy
+(`[resilience]`), never implicit behavior. `FailMode` is uniform across all scenarios for
+schema consistency, but the *meaning* of `fail_open` is scenario-specific (see the upstream
+note).
 
 | Scenario (`[resilience]`) | Default | fail_closed | fail_open |
 |---|---|---|---|
-| `on_internal_error` (panic modulo / regex) | **fail_open** | Block sintetico (403 in blocking, solo-log in detection-only) | salta il modulo, la richiesta prosegue |
-| `on_upstream_error` (origin giù/timeout) | **fail_closed** | **502** Bad Gateway | **503** Service Unavailable (retryable) |
-| `on_parser_limit` (normalization fallita) | **fail_closed** | **400** | inoltra **non-ispezionato** (log critico) |
-| `on_config_error` (reload invalido, P3) | **fail_open** | rifiuta serving finché config valida | mantiene **last-good** config |
-| `upstream_timeout_ms` | 30000 | — | tetto round-trip (no hang del worker) |
+| `on_internal_error` (module panic / regex) | **fail_open** | Synthetic Block (403 in blocking, log-only in detection-only) | skip the module, the request continues |
+| `on_upstream_error` (origin down/timeout) | **fail_closed** | **502** Bad Gateway | **503** Service Unavailable (retryable) |
+| `on_parser_limit` (normalization failed) | **fail_closed** | **400** | forward **uninspected** (critical log) |
+| `on_config_error` (invalid reload, P3) | **fail_open** | refuse serving until the config is valid | keep the **last-good** config |
+| `upstream_timeout_ms` | 30000 | — | round-trip cap (no worker hang) |
 
-**Razionale dei default:**
-- `on_internal_error = fail_open`: il WAF è un controllo *additivo*; un suo bug
-  (panic, regex blow-up) non deve ridurre la disponibilità sotto quella che l'app
-  avrebbe *senza* WAF. Fallire closed su un difetto interno = single-point-of-failure.
-- `on_upstream_error = fail_closed`: origin down non è mascherabile (servire vuoto
-  è peggio); 5xx chiaro + timeout. **Nota**: `fail_open` su upstream **NON** significa
-  "lascia passare" (non c'è origin da raggiungere) — sceglie solo il **503 retryable
-  al posto del 502**. Semantica diversa da `fail_open` su `on_internal_error`.
-- `on_parser_limit = fail_closed`: input oversize/malformato è vettore DoS ed
-  evasione (ciò che non parso non ispeziono); inoltrarlo non-ispezionato vanifica
-  il WAF.
-- `on_config_error = fail_open`: un WAF sano non deve rompersi per un reload errato;
-  tiene la last-good config. Lo **startup resta fail-fast** (Pilastro 1): lì non c'è
-  last-good. Riusa `Config::validate()` per rilevare la corruzione.
+**Default rationale:**
+- `on_internal_error = fail_open`: the WAF is an *additive* control; a bug of its own (panic,
+  regex blow-up) must not lower availability below what the app would have *without* a WAF.
+  Failing closed on an internal defect = a single point of failure.
+- `on_upstream_error = fail_closed`: an origin down is not maskable (serving empty is worse); a
+  clear 5xx + timeout. **Note**: `fail_open` on upstream does **NOT** mean "let it through"
+  (there is no origin to reach) — it only chooses the **retryable 503 instead of the 502**.
+  Different semantics from `fail_open` on `on_internal_error`.
+- `on_parser_limit = fail_closed`: oversize/malformed input is a DoS and evasion vector (what I
+  do not parse I do not inspect); forwarding it uninspected defeats the WAF.
+- `on_config_error = fail_open`: a healthy WAF must not break over a bad reload; it keeps the
+  last-good config. **Startup stays fail-fast** (Pillar 1): there is no last-good there. Reuses
+  `Config::validate()` to detect the corruption.
 
-**Panic isolation**: in `pipeline::run_phases` ogni `module.inspect()` gira dentro
-`catch_unwind(AssertUnwindSafe(...))`. `inspect` è read-only su `&RequestContext`
-→ un panic non lascia `ctx` parzialmente mutato (sound). Su panic: **log `error!`**
-+ applicazione di `on_internal_error`. L'isolamento **cross-connessione** è dato
-anche dai task tokio separati per connessione: un panic catturato non propaga, le
-altre connessioni non sono toccate. Ogni attivazione fail-open/closed è **loggata**
-(evento operativo critico).
+**Panic isolation**: in `pipeline::run_phases` every `module.inspect()` runs inside
+`catch_unwind(AssertUnwindSafe(...))`. `inspect` is read-only over `&RequestContext` → a panic
+does not leave `ctx` partially mutated (sound). On a panic: **`error!` log** + applying
+`on_internal_error`. **Cross-connection** isolation is also provided by the separate tokio task
+per connection: a caught panic does not propagate, the other connections are untouched. Every
+fail-open/closed activation is **logged** (a critical operational event).
 
-> Migrazione: un `waf.fail_open` residuo nel TOML produce un **errore di load
-> esplicito** (`LoadError::RemovedKey`, "usa [resilience]"), mai un no-op silenzioso.
+> Migration: a residual `waf.fail_open` in the TOML produces an **explicit load error**
+> (`LoadError::RemovedKey`, "use [resilience]"), never a silent no-op.
 
-### Hot reload (Fase 6 — Pilastro 3)
+### Hot reload (Phase 6 — Pillar 3)
 
-Ricarica della config a runtime **senza restart** e **senza droppare connessioni**.
+Reload of the config at runtime **without a restart** and **without dropping connections**.
 
-- **Trigger: SIGHUP** (`tokio::signal`, `#[cfg(unix)]`) — pattern classico
-  (nginx/haproxy), zero nuove dipendenze, intento esplicito dell'operatore.
-  Scartati: file-watch/`notify` (dep + debounce/race su scritture parziali) ed
-  endpoint admin (superficie HTTP da autenticare). Il segnale è **solo il bottone**:
-  la logica validate-then-swap (`Reloader::reload_from`) è **OS-agnostica** e
-  testata direttamente (anche su Windows, dove SIGHUP non esiste).
-- **Swap atomico: `Arc<RwLock<Arc<Reloadable>>>` (std, zero-dep)**. Ogni richiesta
-  fa `read()`, **clona l'`Arc`** e rilascia subito la guard (mai tenuta attraverso
-  un `.await`) → sezione critica = una clone (ns), letture non in contesa. Lo swap
-  è una **singola assegnazione di puntatore** che non può panicare → il lock non
-  viene avvelenato da questo path (il poisoning è comunque recuperato con
-  `into_inner` per difesa). `arc-swap` darebbe letture lock-free ma è una dep per
-  un guadagno marginale (reload rarissimo): refactor indolore se un giorno servisse.
-- **Validate-then-swap** (riusa Pilastro 1): `config::load` (read→parse→validate→
-  guardia migrazione). **Config invalida → si TIENE la vecchia + log errore**: una
-  reload fallita non degrada mai lo stato funzionante.
-- **Ricompilazione regole**: `build_reloadable` ricostruisce **tutto** come unità
-  (regex ricompilate via `Pipeline::new`, CIDR ri-parsati via `ClientIpResolver`,
-  normalizer/limiti/backend/resilience) e lo swappa atomicamente → mai stato misto
-  (regex vecchie + soglie nuove). Una richiesta vede o tutto il vecchio o tutto il
-  nuovo `Reloadable`; le connessioni/richieste in volo completano col proprio
-  snapshot e non vengono interrotte.
-- **Moduli iniettati (core 0.3 `.module_factory`)**: i moduli extra iniettati da un
-  embedder vengono **ricostruiti a ogni reload** dal `ModuleFactory` (una closure salvata
-  in `StaticState`, process-lifetime) — prima della 0.3 il reload li droppava passando
-  `Vec::new()`. Girano al bind e a ogni swap, quindi **sopravvivono al SIGHUP** e sono
-  re-`init`-ati via `Pipeline::new`. Il factory è **fallibile come unità**: se una
-  ricostruzione fallisce (es. una SDL/descriptor diventata invalida su disco), il reload
-  **si aborta** e si tiene il `Reloadable` last-good — che contiene ancora i moduli buoni:
-  i `Box<dyn WafModule>` non sono clonabili, quindi l'abort-intero è ciò che li preserva.
-  Un set **statico** via `.modules()`/`.add_module()` resta invece boot-only (non sopravvive).
+- **Trigger: SIGHUP** (`tokio::signal`, `#[cfg(unix)]`) — a classic pattern (nginx/haproxy),
+  zero new dependencies, an explicit operator intent. Discarded: file-watch/`notify` (a dep +
+  debounce/race on partial writes) and an admin endpoint (an HTTP surface to authenticate). The
+  signal is **only the button**: the validate-then-swap logic (`Reloader::reload_from`) is
+  **OS-agnostic** and tested directly (even on Windows, where SIGHUP does not exist).
+- **Atomic swap: `Arc<RwLock<Arc<Reloadable>>>` (std, zero-dep)**. Every request does a
+  `read()`, **clones the `Arc`** and immediately releases the guard (never held across an
+  `.await`) → the critical section = a clone (ns), reads are uncontended. The swap is a
+  **single pointer assignment** that cannot panic → the lock is not poisoned by this path
+  (poisoning is recovered with `into_inner` for defense anyway). `arc-swap` would give
+  lock-free reads but is a dep for a marginal gain (reloads are very rare): a painless refactor
+  if it is ever needed.
+- **Validate-then-swap** (reuses Pillar 1): `config::load`
+  (read→parse→validate→migration-guard). **Invalid config → KEEP the old one + log error**: a
+  failed reload never degrades the working state.
+- **Rule recompilation**: `build_reloadable` rebuilds **everything** as a unit (regex
+  recompiled via `Pipeline::new`, CIDRs re-parsed via `ClientIpResolver`,
+  normalizer/limits/backend/resilience) and swaps it atomically → never a mixed state (old
+  regex + new thresholds). A request sees either all of the old or all of the new `Reloadable`;
+  in-flight connections/requests complete with their own snapshot and are not interrupted.
+- **Injected modules (core 0.3 `.module_factory`)**: extra modules injected by an embedder are
+  **rebuilt on every reload** by the `ModuleFactory` (a closure stored in `StaticState`,
+  process-lifetime) — before 0.3 the reload dropped them by passing `Vec::new()`. They run at bind
+  and on every swap, so they **survive a SIGHUP** and are re-`init`'d via `Pipeline::new`. The
+  factory is **fallible as a unit**: if a rebuild fails (e.g. an SDL/descriptor went invalid on
+  disk), the reload **aborts** and the last-good `Reloadable` — which still holds the working
+  modules — is kept: `Box<dyn WafModule>` is not cloneable, so the whole-abort is what preserves
+  them. A **static** set via `.modules()`/`.add_module()` stays boot-only (does not survive).
 
-**Stato runtime (NON azzerato) vs config (ricostruita):**
+**Runtime state (NOT reset) vs config (rebuilt):**
 
-| NON si resetta (process-lifetime) | Si ricostruisce nello swap |
+| NOT reset (process-lifetime) | Rebuilt in the swap |
 |---|---|
-| **token bucket rate-limit** (`StateStore` dietro `RateLimitState`, reiniettato; default in-memory, override `Proxy::builder().state_store(..)`) | regole/regex, filtro paranoia, soglie/severità |
-| pool connessioni hyper (`client`) | parametri rate-limit (capacity/refill/action) |
-| connessioni/richieste in volo | resolver CIDR `trusted_proxies`, policy resilience |
-| contatore `request_id` | limiti, `backend` |
+| **rate-limit token bucket** (`StateStore` behind `RateLimitState`, re-injected; default in-memory, override `Proxy::builder().state_store(..)`) | rules/regex, paranoia filter, thresholds/severities |
+| hyper connection pool (`client`) | rate-limit parameters (capacity/refill/action) |
+| in-flight connections/requests | `trusted_proxies` CIDR resolver, resilience policy |
+| `request_id` counter | limits, `backend` |
 
-> **Non-sfruttabilità**: i bucket sopravvivono al reload → un attaccante non può
-> azzerare il proprio throttle inducendo un reload. Se il nuovo limite **abbassa**
-> la capacità, al refill successivo i token sono già clampati a `min(nuova_capacity)`
-> (gestito in `inspect`) → sicuro.
+> **Non-exploitability**: the buckets survive the reload → an attacker cannot reset their own
+> throttle by inducing a reload. If the new limit **lowers** the capacity, at the next refill
+> the tokens are already clamped to `min(new_capacity)` (handled in `inspect`) → safe.
 
-**Campi reloadable vs restart-required:**
+**Reloadable vs restart-required fields:**
 
-| Campo | Reload |
+| Field | Reload |
 |---|---|
-| `proxy.listen` (bind address) | **restart-required** — se cambia a runtime: **warn + valore vecchio mantenuto** (il socket è già in ascolto) |
-| `proxy.backend`, `[waf]`, `[modules]`, `[limits]`, `[rate_limit]`, `[network]`, `[resilience]` | reloadable a caldo |
+| `proxy.listen` (bind address) | **restart-required** — if it changes at runtime: **warn + keep the old value** (the socket is already listening) |
+| `proxy.backend`, `[waf]`, `[modules]`, `[limits]`, `[rate_limit]`, `[network]`, `[resilience]` | hot-reloadable |
 
-### Risoluzione dell'IP client (trusted-proxy)
+### Client-IP resolution (trusted-proxy)
 
-Un WAF L7 sta quasi sempre dietro LB/CDN/TLS-terminator: la peer addr è l'IP del
-proxy. Il **client reale** è risolto da un helper condiviso (`waf-core::network`,
-`ClientIpResolver`), derivato **una sola volta** in `build_context` e scritto in
-`ctx.client_ip` — *single source of truth* letta da rate limiting, logging
-strutturato (Fase 1) e futura Geo/IP-reputation (Fase 8). Il rate limiter **non**
-ri-risolve: legge `ctx.client_ip`.
+An L7 WAF almost always sits behind an LB/CDN/TLS-terminator: the peer addr is the proxy's IP.
+The **real client** is resolved by a shared helper (`waf-core::network`, `ClientIpResolver`),
+derived **only once** in `build_context` and written to `ctx.client_ip` — a *single source of
+truth* read by rate limiting, structured logging (Phase 1) and future Geo/IP-reputation (Phase
+8). The rate limiter does **not** re-resolve: it reads `ctx.client_ip`.
 
-Schema `[network]` (sezione globale, `#[serde(default)]`):
-- `trusted_proxies` — CIDR dei propri proxy (IPv4/IPv6, parsing manuale, niente
-  dipendenze). Default **vuoto**.
-- `client_ip_header` — header della catena (default `X-Forwarded-For`).
-- `trusted_hops` — quanti hop fidarsi contando **da destra**.
+`[network]` schema (a global section, `#[serde(default)]`):
+- `trusted_proxies` — the CIDRs of one's own proxies (IPv4/IPv6, manual parsing, no
+  dependencies). Default **empty**.
+- `client_ip_header` — the chain header (default `X-Forwarded-For`).
+- `trusted_hops` — how many hops to trust counting **from the right**.
 
-Logica (l'ordine **è** la frontiera di sicurezza):
-1. peer **non** trusted → usa peer, header ignorato (`DirectPeer`).
-2. peer trusted → IP a `trusted_hops` **da destra**; **mai** il primo IP (è
-   controllato dal client → spoofabile) (`TrustedHeader`).
-3. header assente / malformato / **catena più corta di `trusted_hops`** → fallback
-   alla peer addr + `warn` (`FallbackMissingHeader`/`FallbackMalformed`); **mai**
-   ripiegare sull'IP spoofabile.
-4. **Fail-safe**: `trusted_proxies` vuoto (default) → **sempre** peer, XFF ignorato:
-   un deploy non configurato non è spoofabile.
+Logic (the order **is** the security boundary):
+1. peer **not** trusted → use peer, header ignored (`DirectPeer`).
+2. peer trusted → the IP at `trusted_hops` **from the right**; **never** the first IP (it is
+   client-controlled → spoofable) (`TrustedHeader`).
+3. header absent / malformed / **chain shorter than `trusted_hops`** → fallback to the peer
+   addr + `warn` (`FallbackMissingHeader`/`FallbackMalformed`); **never** fall back to the
+   spoofable IP.
+4. **Fail-safe**: `trusted_proxies` empty (default) → **always** peer, XFF ignored: an
+   unconfigured deploy is not spoofable.
 
-> Nota: l'header `X-Forwarded-For` che il proxy **aggiunge** verso il backend resta
-> la **peer addr** (record dell'hop realmente osservato), distinta dall'IP risolto
-> usato internamente per chiave/log.
+> Note: the `X-Forwarded-For` header the proxy **adds** toward the backend stays the **peer
+> addr** (a record of the actually-observed hop), distinct from the resolved IP used internally
+> for the key/log.
 
-### Terminazione TLS (Fase 12)
+### TLS termination (Phase 12)
 
-Terminazione TLS **base, cert-da-file** sul listener — **core/OPEN** (`BOUNDARY.md` §3.2; single-node
-self-sufficiency). Config `[tls]` (default **off**): `enabled`, `cert_path`, `key_path`, `alpn`
-(default `["h2","http/1.1"]`).
+**Basic, cert-from-file** TLS termination on the listener — **core/OPEN** (`BOUNDARY.md` §3.2;
+single-node self-sufficiency). Config `[tls]` (default **off**): `enabled`, `cert_path`, `key_path`,
+`alpn` (default `["h2","http/1.1"]`).
 
-- **Libreria**: `rustls` (+ `tokio-rustls`, provider **ring**), no OpenSSL — l'**unica** eccezione
-  legittima alla regola "parser hand-rolled" (il TLS non si hand-rolla mai).
-- **Serving h1+h2 unificato**: il loop di `run()` usa `hyper-util` `auto::Builder` → una sola porta
-  serve h1 e h2 (ALPN su TLS, preface su cleartext h2c). **`handle()` è INVARIATO**: il `Request` è
-  protocol-neutral e `body.collect()` consegna lo **stesso** `Bytes` bufferizzato su h1 e h2 (invariante
-  provato col probe Step-0). L'inspection è quindi **protocol-agnostica** — bite-test: un SQLi su
-  h2-over-TLS è bloccato 403 come su h1.
-- **ALPN h2-ready**: `["h2","http/1.1"]` negozia h2 col client capace e ripiega a h1 col client h1-only
-  (non forza h2). Prerequisito per gRPC-over-TLS (fase successiva).
-- **Seam §4 (`waf-proxy::tls`)**: `trait TlsCertSource` con impl OPEN `FileCertSource` (PEM). ACME/
-  rotation/cert multi-nodo/**mTLS con PKI gestita** = impl ENTERPRISE dello stesso trait (mTLS è
-  esplicitamente fuori dal core, `BOUNDARY.md` §3.2). **Iniezione**: `Proxy::builder().cert_source(..)`
-  (default `FileCertSource` dai path di config); `acceptor_from_source` sceglie sorgente iniettata vs
-  file. `[tls].enabled`/`alpn` restano da config — la sorgente governa solo la *provenienza* del cert.
-- **No silent downgrade (fail-closed)**: con TLS abilitato il listener serve **solo** TLS. L'acceptor è
-  costruito a `bind` ed è **immutabile** (non hot-reloadable, come `listen_addr` = restart-required):
-  non esiste un path runtime che ripieghi a chiaro. `enabled=true` + cert illeggibile = **boot error
-  fatale**. Un errore di **handshake** per-connessione è loggato e la connessione droppata, **non-fatale**
-  per il listener.
-- **Postura DoS HTTP/2 (a verbale)**: h2 apre superfici che h1 non ha (max-concurrent-streams, frame
-  flood SETTINGS/PING/**RST = Rapid Reset, CVE-2023-44487**, HPACK). Fase 12 si affida ai **default di
-  hyper/h2**; nessun knob esposto ora — scelta **consapevole e dichiarata**, possibile tuning futuro
-  (estende i `[limits]` §6).
+- **Library**: `rustls` (+ `tokio-rustls`, **ring** provider), no OpenSSL — the **only** legitimate
+  exception to the "hand-rolled parser" rule (TLS is never hand-rolled).
+- **Unified h1+h2 serving**: `run()` uses `hyper-util` `auto::Builder` → one port serves h1 and h2
+  (ALPN over TLS, preface over cleartext h2c). **`handle()` is UNCHANGED**: the `Request` is
+  protocol-neutral and `body.collect()` delivers the **same** buffered `Bytes` over h1 and h2
+  (invariant proven by the Step-0 probe). Inspection is therefore **protocol-agnostic** — bite test:
+  a SQLi over h2-over-TLS is blocked 403 just like over h1.
+- **ALPN h2-ready**: `["h2","http/1.1"]` negotiates h2 with a capable client and falls back to h1 with
+  an h1-only client (it does not force h2). Prerequisite for gRPC-over-TLS (next phase).
+- **§4 seam (`waf-proxy::tls`)**: `trait TlsCertSource` with the OPEN impl `FileCertSource` (PEM).
+  ACME/rotation/multi-node certs / **mTLS with managed PKI** are ENTERPRISE impls of the same trait
+  (mTLS is explicitly outside the core, `BOUNDARY.md` §3.2). **Injection**:
+  `Proxy::builder().cert_source(..)` (default `FileCertSource` from config paths); `acceptor_from_source`
+  picks the injected source vs the file. `[tls].enabled`/`alpn` stay in config — the source governs only
+  the cert *provenance*.
+- **No silent downgrade (fail-closed)**: with TLS enabled the listener serves **only** TLS. The
+  acceptor is built at `bind` and is **immutable** (not hot-reloadable, like `listen_addr` =
+  restart-required): there is no runtime path that downgrades to cleartext. `enabled=true` + an
+  unreadable cert is a **fatal boot error**. A per-connection **handshake** error is logged and the
+  connection dropped, **non-fatal** to the listener.
+- **HTTP/2 DoS posture (on record)**: h2 opens surfaces h1 lacks (max-concurrent-streams, control-frame
+  flood SETTINGS/PING/**RST = Rapid Reset, CVE-2023-44487**, HPACK). Phase 12 relies on **hyper/h2
+  defaults**; no knob exposed yet — a **conscious, declared** choice, possible future tuning (extends
+  the `[limits]` §6).
 
 ---
 
-### Osservabilità: logging + metriche (B1)
+### Observability: logging + metrics (B1)
 
-- **Logging strutturato JSON** (`tracing` + `tracing_subscriber`, `EnvFilter`): una riga per decisione
-  (`request_id`, decision, score, contributi), più `→ request`/`← response`.
-  - **`score_contributions` nel decision-log (0.4)**: su una richiesta **bloccata/rifiutata** la riga porta
-    il **breakdown per-regola** come campo JSON — array di `{module, rule_id, severity, points}` (severità
-    minuscola). Solo sul path negato (mai per traffico benigno, mai sul path caldo). `ScoreContribution`/
-    `Severity` derivano `Serialize`/`Deserialize` → un consumer a valle (drill-down control plane §7,
-    ARCHITECTURE_ENTERPRISE) ricostruisce il verdetto negli stessi tipi. **Nomi/formato = contratto di
-    ingestione stabile** (bloccato da uno shape-test), accanto alla metrics-ABI.
-- **Metriche Prometheus** (`[metrics]`, default **off**): esposizione text su `GET /metrics`. **Baseline
-  OPEN** (`BOUNDARY.md` §1.6); OTLP-push deferito (i contatori sono **exporter-neutral**, `render()` è
-  l'exporter Prometheus → un domani OTLP è un secondo sink, non una riscrittura).
-  - **Listener SEPARATO** (`[metrics].listen`, default `127.0.0.1:9090`, loopback): **mai** la porta dati
-    — `/metrics` espone postura interna (volumi blocked/rate_limited) ed è esso stesso info-leak se
-    raggiungibile; inoltre verrebbe ispezionato dal WAF. Bind **fail-fast** a `bind` (porta occupata =
-    boot error). Il service risponde **404** a tutto ciò che non è `GET /metrics`. *Bite-test cardine: la
-    porta dati NON espone `/metrics`.*
-  - **Metriche** (convenzioni Prom, **unità base = secondi**): `waf_requests_total{decision=...}` (set
-    **chiuso**: `allowed|blocked|rate_limited|bad_request|upstream_error|internal_error` —
-    `internal_error` ≠ `upstream_error`: errore interno del WAF vs backend fallito);
-    `waf_request_duration_seconds` (**histogram a bucket fissi** + `_sum`/`_count`, **zero quantili
-    in-process** → `histogram_quantile()` lato scrape); `waf_up`, `waf_build_info`.
-  - **Regola cardinalità (vincolo)**: MAI label da input utente (no `path`/`ip`/`rule_id`) → un breakdown
-    per-regola futuro è una metrica separata con cap, non un label su `requests_total`.
-  - **Strumentazione = puro side-effect**: contatori `AtomicU64` relaxed, nessun lock/`.await` sul path
-    caldo; registrazione in **un punto netto** (`handle`, via `Outcome` ritornato). I verdetti non
-    cambiano — provato dalla validation invariata.
+- **Structured JSON logging** (`tracing` + `tracing_subscriber`, `EnvFilter`): one line per decision
+  (`request_id`, decision, score, contributions), plus `→ request`/`← response`.
+  - **`score_contributions` in the decision-log (0.4)**: a **blocked/rejected** request's line carries the
+    **per-rule breakdown** as a JSON field — an array of `{module, rule_id, severity, points}` (lowercased
+    severity). Only on the denied path (never for benign traffic, never on the hot path). `ScoreContribution`/
+    `Severity` derive `Serialize`/`Deserialize`, so a downstream consumer (the §7 control-plane drill-down,
+    ARCHITECTURE_ENTERPRISE) reconstructs the verdict into the same types. **Field names/format are a stable
+    ingestion contract** (locked by a shape test), alongside the metrics ABI.
+- **Prometheus metrics** (`[metrics]`, default **off**): text exposition on `GET /metrics`. **OPEN
+  baseline** (`BOUNDARY.md` §1.6); OTLP-push deferred (the counters are **exporter-neutral**, `render()`
+  is the Prometheus exporter → OTLP later is a second sink, not a rewrite).
+  - **SEPARATE listener** (`[metrics].listen`, default `127.0.0.1:9090`, loopback): **never** the data
+    port — `/metrics` exposes internal posture (blocked/rate_limited volumes) and is itself an info leak
+    if reachable; it would also be inspected by the WAF. **Fail-fast** bind at `bind` (busy port = boot
+    error). The service returns **404** to anything that is not `GET /metrics`. *Cardinal bite-test: the
+    data port does NOT expose `/metrics`.*
+  - **Metrics** (Prom conventions, **base unit = seconds**): `waf_requests_total{decision=...}` (**closed**
+    set: `allowed|blocked|rate_limited|bad_request|upstream_error|internal_error` — `internal_error` ≠
+    `upstream_error`: the WAF's own failure vs a failed backend); `waf_request_duration_seconds`
+    (**fixed-bucket histogram** + `_sum`/`_count`, **no in-process quantiles** → `histogram_quantile()` at
+    scrape time); `waf_up`, `waf_build_info`.
+  - **Cardinality rule (constraint)**: NEVER user-derived labels (no `path`/`ip`/`rule_id`) → a future
+    per-rule breakdown is a separate capped metric, not a label on `requests_total`.
+  - **Instrumentation = pure side effect**: `AtomicU64` relaxed counters, no lock/`.await` on the hot
+    path; recorded at a **single point** (`handle`, via a returned `Outcome`). Verdicts are unchanged —
+    proven by the unchanged validation.
 
-### Import regole OWASP CRS / ModSecurity (B2)
+### Importing OWASP CRS / ModSecurity rules (B2)
 
-Il core spedisce il **parser/engine** per importare regole `SecRule` (`BOUNDARY.md` §1.7); il **contenuto
-curato** resta enterprise (§2.4). `[modules.crs]` (`enabled`, `files`), default **off**. I file `seclang`
-sono letti al boot, concatenati in ordine di include, parsati e compilati in un `WafModule` (`crs`); un file
-illeggibile è loggato e saltato (CRS è additivo, default-off → fail-open su `on_config_error`, mai crash).
-Il 10° parser hand-rolled del workspace (lexer `seclang` → AST → evaluator).
+The core ships the **parser/engine** to import `SecRule` rules (`BOUNDARY.md` §1.7); the **curated
+content** stays enterprise (§2.4). `[modules.crs]` (`enabled`, `files`), default **off**. `seclang` files
+are read at boot, concatenated in include order, parsed and compiled into a `WafModule` (`crs`); an
+unreadable file is logged and skipped (CRS is additive, default-off → fail-open on `on_config_error`, never
+a crash). The 10th hand-rolled parser in the workspace (`seclang` lexer → AST → evaluator).
 
-- **Due canali, mai incrociati (fondazione, paletto #1)**: le regole CRS dichiarano transform `t:` che
-  ModSecurity applica al valore **grezzo**. I moduli nativi leggono la superficie §6 (`ctx.normalized.*`),
-  **già** percent-decodata ricorsivamente + NFKC. Dare quella superficie a un `t:urlDecode` farebbe
-  **doppio decode** (`%2575`→`%75`→`u`) dove ModSec decoda una volta → cambio di semantica silenzioso. Quindi
-  il canale CRS estrae dal **raw** del `RequestContext` (`ctx.query`/`headers`/`cookies`/`body`) e la pipeline
-  `t:` della regola fa ogni decodifica. ModSec applica un **url-decode implicito singolo** popolando `ARGS`
-  (replicato: `percent_decode` single-pass), poi i `t:` staccano sopra. *Bite-test cardine: control del
-  doppio-decode in entrambe le direzioni.*
-- **Subset v1** (esplicito, tutto il resto è **SKIP + report al boot**, mai drop silenzioso — policy D3):
-  - directive `SecRule`/`SecDefaultAction`/`SecRuleRemoveById` (`SecAction`/`SecMarker`/`SecRuleUpdate*`/
-    ignote = ignorate);
-  - operatori `@rx @pm @contains @beginsWith @endsWith @within @streq` (+ negazione `!`); fuori subset
-    `@detectSQLi`/`@detectXSS` (= libinjection, dipendenza C, fuori dall'ethos) e gli operatori IP/geo/numerici;
-  - transform `lowercase urlDecode(Uni) htmlEntityDecode compressWhitespace removeWhitespace removeNulls
-    normalizePath base64Decode none` (con `t:none` che **resetta** la pipeline ereditata da `SecDefaultAction`);
-  - target `ARGS*`/`REQUEST_HEADERS[:n]`/`REQUEST_COOKIES`/`REQUEST_URI(_RAW)`/`REQUEST_FILENAME`/`QUERY_STRING`/
-    `REQUEST_METHOD`/`REQUEST_PROTOCOL`/`REQUEST_LINE`/`REQUEST_BODY` + selettori `:Name` ed esclusioni `!VAR:n`;
-  - `chain` supportata (tutti i link devono matchare); azioni stateful (`setvar`/`ctl`/`skip`/…) o ignote →
-    regola saltata. Fasi 1/2 = request; 3/4/5 (response/logging) → saltate.
-- **`structural()=true` + performance (paletto #2)**: le regole CRS portano pattern esterni che il
-  `ContentPrefilter` non conosce → il fast-path non può provarle inerti → il modulo gira su **ogni** richiesta
-  (prezzo dell'import-fedele). Mitigazione: le regole single-link `@rx` positive sono **bucketate** per
-  `(variabili, pipeline-t:)` → un `RegexSet` per bucket, una passata invece di N regex in loop; chain/negazioni/
-  operatori non-`@rx` cadono sullo slow-path per-regola. Il costo scala col numero di **bucket**, non di regole.
-  *Misurato* (`examples/crs_bench`, release, richiesta benigna a 4 arg): 1 bucket condiviso 50→500 regole =
-  3.1→4.8 µs (sub-lineare); 500 regole in 1 bucket (4.8 µs) costano **meno** di 50 regole in 5 bucket (11.8 µs)
-  → conferma che il driver è il numero di bucket. In linea coi ~4-5 µs della inspection nativa → con un file CRS
-  reale (per lo più pochi bucket `ARGS`) il budget p99 (<1 ms) regge.
-- **Scoring + doppio-conteggio (paletto #4, a verbale)**: ogni regola CRS matchata emette un `ScoreItem`
-  `{rule_id:"crs-<id>", severity}` (CRS `CRITICAL/ERROR/WARNING/NOTICE` → enum `Severity`; severity mancante →
-  default `Warning`); contribuisce allo **stesso anomaly score cumulativo** dei moduli nativi (nessuna logica
-  di decisione nuova; il `block/deny/pass` per-regola è **collassato** nel cumulativo, modello CRS anomaly).
-  CRS e nativi si **sovrappongono per costruzione** → un payload preso da entrambi conta 2× → **con CRS on il
-  tuning di soglia è dell'operatore** (le CRS hanno la loro logica di threshold). Il re-gate "validation 10/10
-  invariata" vale **solo perché CRS è default-off**; il corpus nativo non copre lo scoring con CRS on (non
-  spediamo contenuto CRS, §2.4).
-- **Limiti dichiarati v1**: `@pmFromFile` (risoluzione path per-file) non supportato (usare `@pm` inline);
-  body multipart/JSON non mappati su `ARGS` (usare `REQUEST_BODY`); `SecDefaultAction` non si applica ai link
-  figli di una chain; negazione operatore = approssimata a "nessun valore matcha".
+- **Two channels, never crossed (foundation, paletto #1)**: CRS rules declare `t:` transforms that
+  ModSecurity applies to the **raw** value. Native modules read the §6 surface (`ctx.normalized.*`), which is
+  **already** recursively percent-decoded + NFKC. Feeding that into a `t:urlDecode` would **double-decode**
+  (`%2575`→`%75`→`u`) where ModSec decodes once → a silent semantic change. So the CRS channel sources from
+  the **raw** `RequestContext` (`ctx.query`/`headers`/`cookies`/`body`) and the rule's `t:` pipeline does
+  every decode. ModSec implicitly single-url-decodes when populating `ARGS` (replicated with a single-pass
+  `percent_decode`); the rule's `t:` stack on top. *Cardinal bite-test: the double-decode control, both ways.*
+- **v1 subset** (explicit; everything else is **SKIP + boot report**, never a silent drop — policy D3):
+  directives `SecRule`/`SecDefaultAction`/`SecRuleRemoveById` (`SecAction`/`SecMarker`/`SecRuleUpdate*`/unknown
+  = ignored); operators `@rx @pm @contains @beginsWith @endsWith @within @streq` (+ `!` negation), with
+  `@detectSQLi`/`@detectXSS` (libinjection = a C dependency, against the ethos) and IP/geo/numeric operators
+  out; transforms `lowercase urlDecode(Uni) htmlEntityDecode compressWhitespace removeWhitespace removeNulls
+  normalizePath base64Decode none` (`t:none` **resets** the `SecDefaultAction`-inherited pipeline); targets
+  `ARGS*`/`REQUEST_HEADERS[:n]`/`REQUEST_COOKIES`/`REQUEST_URI(_RAW)`/`REQUEST_FILENAME`/`QUERY_STRING`/
+  `REQUEST_METHOD`/`REQUEST_PROTOCOL`/`REQUEST_LINE`/`REQUEST_BODY` + `:Name` selectors and `!VAR:n` exclusions;
+  `chain` supported (all links must match); stateful (`setvar`/`ctl`/`skip`/…) or unknown actions → rule
+  skipped. Phases 1/2 = request; 3/4/5 (response/logging) skipped.
+- **`structural()=true` + performance (paletto #2)**: CRS rules carry external patterns the `ContentPrefilter`
+  does not know → the fast-path cannot prove them inert → the module runs on **every** request (the price of
+  faithful import). Mitigation: single-link positive `@rx` rules are **bucketed** by `(variables, t:-pipeline)`
+  → one `RegexSet` per bucket (one pass instead of N regexes in a loop); chains/negations/non-`@rx` fall to a
+  per-rule slow path. Cost scales with the number of **buckets**, not rules. *Measured*
+  (`examples/crs_bench`, release, benign 4-arg request): one shared bucket 50→500 rules = 3.1→4.8 µs
+  (sub-linear); 500 rules in 1 bucket (4.8 µs) are cheaper than 50 rules in 5 buckets (11.8 µs) → confirming
+  the driver is the bucket count. In line with the native ~4-5 µs inspection → a real CRS file (mostly a few
+  `ARGS` buckets) keeps the p99 budget (<1 ms).
+- **Scoring + double counting (paletto #4, on record)**: every matched CRS rule emits a `ScoreItem`
+  `{rule_id:"crs-<id>", severity}` (CRS `CRITICAL/ERROR/WARNING/NOTICE` → `Severity`; missing severity →
+  `Warning`) into the **same** cumulative anomaly score as the native modules (no new decision logic; per-rule
+  `block/deny/pass` is **folded** into the cumulative, CRS anomaly model). CRS and natives **overlap by
+  construction** → a payload caught by both counts twice → **with CRS on the operator owns threshold tuning**.
+  "validation 10/10 unchanged" holds **only because CRS is default-off**; the native corpus does not cover
+  scoring with CRS on (we ship no CRS content, §2.4).
+- **Declared v1 limits**: `@pmFromFile` (per-file path resolution) unsupported (use inline `@pm`); multipart/
+  JSON bodies not mapped to `ARGS` (use `REQUEST_BODY`); `SecDefaultAction` does not apply to chain children;
+  operator negation approximated as "no value matches".
 
-### Runtime plugin WASM / Proxy-Wasm (B3)
+### WASM / Proxy-Wasm plugin runtime (B3)
 
-Il core spedisce il **runtime** Proxy-Wasm (`BOUNDARY.md` §1.7); marketplace/signing restano enterprise (§2.4).
+The core ships the Proxy-Wasm **runtime** (`BOUNDARY.md` §1.7); marketplace/signing stays enterprise (§2.4).
 `[modules.wasm]` (`enabled`, `plugins[]`, `pool_size`, `fuel_per_request`, `max_memory_bytes`,
-`checkout_timeout_ms`), default **off**. Crate isolato `waf-wasm` (dipende solo da `waf-core` + `wasmi`, così la
-dep dell'interprete non ricade su tutto il workspace); ogni `.wasm` è caricato come `WafModule` (`wasm:<nome>`).
-Engine = **`wasmi` 1.1.0** (interprete puro-Rust, niente JIT/C, fuel metering integrato — pin convalidato dal
-probe B3-0). Un `.wasm` illeggibile o non compilabile è loggato e **saltato** (fail-open al LOAD, come CRS).
+`checkout_timeout_ms`), default **off**. Isolated crate `waf-wasm` (depends only on `waf-core` + `wasmi`, so the
+interpreter dependency does not fall on the whole workspace); each `.wasm` loads as a `WafModule` (`wasm:<name>`).
+Engine = **`wasmi` 1.1.0** (pure-Rust interpreter, no JIT/C, built-in fuel metering — pin validated by the B3-0
+probe). A `.wasm` that is unreadable or fails to compile is logged and **skipped** (fail-open at LOAD, like CRS).
 
-- **Modello (buffer-then-inspect → request-path)**: header e body sono già bufferati quando il modulo gira,
-  quindi per ogni richiesta l'host esegue la sequenza Proxy-Wasm in un colpo (`end_of_stream=1`):
-  `on_context_create` → `on_request_headers` → (se `Continue`) `on_request_body` → `on_done`/`on_delete`. Un
-  `proxy_send_local_response` del guest è **catturato** (mai scritto sul wire) e mappato a `Decision` (403 →
-  `Block`, altro → `Reject{status}`); nessuna cattura → `Allow`. `phase()=Body`, **`structural()=true`** (come
-  CRS: l'host non può provare inerte un plugin → gira su ogni richiesta). **SDK init**: i guest del Rust SDK
-  registrano la factory in `_initialize`/`_start` (WASI-reactor), che `wasmi` non chiama da solo → l'host lo
-  invoca una volta post-instantiate (scoperto col filtro SDK reale; senza, il guest panica su `on_context_create`).
-- **Subset host-functions (paletto #4) + report**: implementate `proxy_log`, `proxy_get_buffer_bytes`,
+- **Model (buffer-then-inspect → request path)**: headers and body are already buffered when the module runs, so
+  per request the host runs the Proxy-Wasm sequence in one shot (`end_of_stream=1`): `on_context_create` →
+  `on_request_headers` → (if `Continue`) `on_request_body` → `on_done`/`on_delete`. A guest's
+  `proxy_send_local_response` is **captured** (never written to the wire) and mapped to a `Decision` (403 →
+  `Block`, else `Reject{status}`); no capture → `Allow`. `phase()=Body`, **`structural()=true`** (like CRS: the
+  host cannot prove a plugin inert → it runs on every request). **SDK init**: Rust-SDK guests register their
+  factory in `_initialize`/`_start` (WASI reactor), which `wasmi` does not call on its own → the host invokes it
+  once post-instantiate (found via the real SDK filter; without it the guest panics in `on_context_create`).
+- **Host-function subset (paletto #4) + report**: implemented `proxy_log`, `proxy_get_buffer_bytes`,
   `proxy_get_header_map_pairs`/`_value`, `proxy_get_property`, `proxy_send_local_response`,
-  `proxy_get_current_time_nanoseconds`, `proxy_set_tick_period_milliseconds`. Ogni **altro** import dichiarato dal
-  guest è **stubbato dinamicamente** (matching della `FuncType`) → `Status::Unimplemented` (così un filtro reale
-  istanzia sempre, mai fallimento su import mancante). **Lezione dal filtro SDK reale**: l'SDK *dichiara* ogni
-  import a prescindere dall'uso → la classe "degraded" **non** è deducibile dagli import dichiarati (il report al
-  boot è **informativo**). Il segnale accurato è a **runtime**: alla **prima invocazione** effettiva di uno stub
-  *semantico* (`proxy_http_call`/`shared_data`/`set_header*`/grpc/queue/foreign-call) l'host emette un `warn!`
-  e marca l'istanza (`semantic_stub_hit`). Gli stub *cosmetici* (metriche/tick) non alterano la detection.
-- **DoS (a verbale)**: **fuel** resettato per richiesta (`set_fuel`) = **tetto di latenza**, non solo kill-switch
-  (gira su ogni richiesta); **cap di memoria** (`StoreLimits`); nessun host-call di I/O oltre il subset (no
-  filesystem, no `proxy_http_call` → anti-SSRF). Qualsiasi **trap** (fuel/memoria/errore runtime) **fallisce
-  chiuso** → `Reject{500}` (riusa il binario `on_internal_error`). Il probe B3-0 ha provato che una trap **dentro
-  il malloc reentrante** (host→guest), da fuel **o** da cap-memoria, risale pulita a `Reject{500}` senza panico
-  host. *Misurato* (`examples/wasm_bench`, release, guest che legge+scansiona l'header-map, richiesta benigna a 5
-  header): p50 ~7 µs, **p99 ~9 µs**, p99.9 ~12 µs → ~100× sotto il budget p99 (<1 ms).
-- **Concorrenza + isolamento (paletto #1)**: `Module` compilato una volta (condiviso); **pool** di `(Store,
-  Instance)` dietro `Mutex`+`Condvar`. `inspect(&self)` fa **checkout** (uno `Store` non è **mai** condiviso fra
-  thread), popola `HostState` (azzerato dall'host: `req`/`captured`), `set_fuel`, esegue, legge la disposizione,
-  **checkin**. Lo stato interno del guest è isolato per richiesta via lifecycle Proxy-Wasm (`on_context_create`/
-  `on_delete`): se un plugin non pulisce è un **bug del plugin** (confine di fiducia dichiarato). **Pool
-  exhaustion** (paletto #3): checkout **blocca-con-timeout** (`checkout_timeout_ms`); allo scadere → fail-closed
-  (`on_internal_error`). *Bite-test*: due richieste consecutive **sulla stessa istanza** (2ª benigna → `Allow`
-  anche se la 1ª ha bloccato) + variante concorrente (32 thread, niente leakage/panic).
-- **Limiti dichiarati v1**: solo request-path (callback response deferiti); header **read-only** (`set_header_*` =
-  stub semantico); fedeltà ABI provata contro un filtro Proxy-Wasm **reale** del Rust SDK (smoke env-gated
-  `WAF_WASM_FIXTURE`; l'oracolo in-CI sono guest WAT compilati inline, sorgente leggibile, niente binario opaco).
+  `proxy_get_current_time_nanoseconds`, `proxy_set_tick_period_milliseconds`. Every **other** import the guest
+  declares is **dynamically stubbed** (matching its `FuncType`) → `Status::Unimplemented` (so a real filter always
+  instantiates, never fails on a missing import). **Lesson from the real SDK filter**: the SDK *declares* every
+  import regardless of use → "degraded" is **not** derivable from declared imports (the boot report is
+  **informational**). The accurate signal is at **runtime**: on the **first actual invocation** of a *semantic*
+  stub (`proxy_http_call`/`shared_data`/`set_header*`/grpc/queue/foreign-call) the host emits a `warn!` and marks
+  the instance (`semantic_stub_hit`). *Cosmetic* stubs (metrics/tick) do not change detection.
+- **DoS (on record)**: **fuel** reset per request (`set_fuel`) is a **latency ceiling**, not just a kill-switch
+  (it runs on every request); a **memory cap** (`StoreLimits`); no I/O host call beyond the subset (no filesystem,
+  no `proxy_http_call` → anti-SSRF). Any **trap** (fuel/memory/runtime error) **fails closed** → `Reject{500}`
+  (reuses the `on_internal_error` binary). The B3-0 probe proved that a trap **inside the reentrant malloc**
+  (host→guest), from fuel **or** the memory cap, unwinds cleanly to `Reject{500}` with no host panic. *Measured*
+  (`examples/wasm_bench`, release, a guest that reads+scans the header map, benign 5-header request): p50 ~7 µs,
+  **p99 ~9 µs**, p99.9 ~12 µs → ~100× under the p99 budget (<1 ms).
+- **Concurrency + isolation (paletto #1)**: `Module` compiled once (shared); a **pool** of `(Store, Instance)`
+  behind `Mutex`+`Condvar`. `inspect(&self)` does a **checkout** (a `Store` is **never** shared across threads),
+  populates `HostState` (host-reset: `req`/`captured`), `set_fuel`, runs, reads the disposition, **checkin**. The
+  guest's own state is isolated per request via the Proxy-Wasm lifecycle (`on_context_create`/`on_delete`): a
+  plugin that does not clean up is a **plugin bug** (declared trust boundary). **Pool exhaustion** (paletto #3):
+  checkout **blocks-with-timeout** (`checkout_timeout_ms`); on expiry → fail-closed (`on_internal_error`).
+  *Bite-tests*: two consecutive requests **on the same instance** (2nd benign → `Allow` even if the 1st blocked) +
+  a concurrent variant (32 threads, no leakage/panic).
+- **Declared v1 limits**: request-path only (response callbacks deferred); headers **read-only** (`set_header_*` =
+  semantic stub); ABI fidelity proven against a **real** Proxy-Wasm Rust-SDK filter (env-gated smoke
+  `WAF_WASM_FIXTURE`; the in-CI oracle is inline-compiled WAT guests — readable source, no opaque binary).
 
 ---
 
-## 10. Strategia di test
+## 10. Testing strategy
 
-- **Unit**: ogni parser e modulo con payload puliti e offuscati.
-- **Integration**: pipeline end-to-end attraverso il proxy.
-- **Suite esterne**: GoTestWAF, OWASP ModSecurity CRS test suite.
-- **Performance**: benchmark throughput/latency, test regex contro ReDoS.
-- **Regressione**: corpus di falsi positivi noti per evitare ricomparse.
+- **Unit**: every parser and module with clean and obfuscated payloads.
+- **Integration**: end-to-end pipeline through the proxy.
+- **External suites**: GoTestWAF, OWASP ModSecurity CRS test suite.
+- **Performance**: throughput/latency benchmarks, regex tests against ReDoS.
+- **Regression**: a corpus of known false positives to avoid recurrences.
 
-### Corpus di validazione (Fase 7 / Pilastro 1)
+### Validation corpus (Phase 7 / Pillar 1)
 
-Crate-libreria `waf-corpus`: un insieme **unico, versionato e riproducibile** di
-casi malevoli (devono scattare) e benigni (non devono), che **misura** la detection
-**congelata** invece di cambiarla. È libreria per riuso: stessa evidenza per il
-tuning soglie (Pilastro 2) e oracolo di equivalenza per il fast-path (Pilastro 3).
+A library crate `waf-corpus`: a **single, versioned and reproducible** set of malicious cases
+(must fire) and benign ones (must not), which **measures** the **frozen** detection instead of
+changing it. It is a library for reuse: the same evidence for threshold tuning (Pillar 2) and
+the equivalence oracle for the fast-path (Pillar 3).
 
-- **Formato**: tabelle statiche Rust (`Case`), zero-parsing e type-safe. Ogni caso:
-  `id`, `module`, `field` (Query/RawQuery/FormBody/JsonBody/Cookie/Header/Path/
-  Smuggling — porta il payload **grezzo**), `min_pl`, `expect`
-  (`Triggers`/`Clean`/`ExpectedMiss`) e `rules` (atteso rule_id).
-- **Builder grezzi via `waf-core` feature `testkit`** (additiva, mai abilitata dal
-  proxy → zero-cost in produzione): costruiscono i campi **pre-normalizzazione**;
-  il corpus poi gira il **vero `Normalizer`**, così esercita la pipeline reale e non
-  la bypassa (a differenza delle scorciatoie `normalized.*` degli unit dei moduli).
-- **Runner = flusso del proxy**: `run_connection` → `normalize` → `run_inspection`,
-  in Blocking con `block_threshold = u32::MAX` (la soglia non corto-circuita mai
-  l'inspection → si raccoglie ogni match e lo score cumulato completo). **Invariante
-  del runner**: **context fresco per caso** (ogni caso parte da `score = 0`, nessuno
-  stato condiviso) + **rate-limit neutralizzato** per i casi non-rate-limit (nessun
-  429 spurio da `client_ip` condivisa). La **paranoia è parametro** del runner,
-  baseline **PL3** (worst-case = tutte le regole attive); `min_pl` per-caso fa
-  **skippare** un caso quando `execution_pl < min_pl`, così un miss non è mai un
-  artefatto di aver girato la regola sotto la sua attivazione.
-- **Metriche, tre libri distinti**:
-  - **recall / FP-rate** attribuiti a `case.module` (gli overlap **non** gonfiano il
-    modulo bersaglio); un malevolo è "rilevato" se il verdetto è coerente e almeno
-    una delle `rules` attese è scattata;
-  - **score-distribution** col **`ctx.score` cumulato reale** (overlap inclusi) —
-    ciò che la pipeline produrrebbe in produzione, input diretto a Pilastro 2;
-  - **overlap dichiarati (§8)** elencati a parte e resi visibili (es. `rfi-remote-url`
-    sui target SSRF con URL, `ssrf-private-ip` su `169.254.169.254`); **ExpectedMiss**
-    (gap §8) contabilizzati a parte, né recall né FP.
-- **Esecuzione**: `tests/validation.rs` gira **sempre in CI** come guardia
-  anti-regressione — (a) 0 trigger-fail, (b) 0 FP, (c) overlap §8 presenti, (d)
-  ExpectedMiss tutti ancora missed, più i target **misura-poi-fissa** (recall 100% /
-  FP 0% sul baseline misurato + floor di copertura malevoli≥50/benigni≥26).
-  Il report verboso (tabella metriche + score-distribution + overlap) è on-demand:
-  `cargo run -p waf-corpus --example report`.
+- **Format**: static Rust tables (`Case`), zero-parsing and type-safe. Each case: `id`,
+  `module`, `field` (Query/RawQuery/FormBody/JsonBody/Cookie/Header/Path/Smuggling — carries the
+  **raw** payload), `min_pl`, `expect` (`Triggers`/`Clean`/`ExpectedMiss`) and `rules` (the
+  expected rule_id).
+- **Raw builders via the `waf-core` `testkit` feature** (additive, never enabled by the proxy →
+  zero-cost in production): they build the **pre-normalization** fields; the corpus then runs
+  the **real `Normalizer`**, so it exercises the real pipeline and does not bypass it (unlike
+  the `normalized.*` shortcuts of the module unit tests).
+- **Runner = the proxy's flow**: `run_connection` → `normalize` → `run_inspection`, in Blocking
+  with `block_threshold = u32::MAX` (the threshold never short-circuits inspection → every match
+  and the complete cumulative score are collected). **Runner invariant**: **a fresh context per
+  case** (every case starts from `score = 0`, no shared state) + **rate-limit neutralized** for
+  the non-rate-limit cases (no spurious 429 from a shared `client_ip`). **Paranoia is a runner
+  parameter**, baseline **PL3** (worst-case = all rules active); a per-case `min_pl` makes a
+  case **skip** when `execution_pl < min_pl`, so a miss is never an artifact of having run the
+  rule below its activation.
+- **Metrics, three distinct ledgers**:
+  - **recall / FP-rate** attributed to `case.module` (overlaps do **not** inflate the target
+    module); a malicious case is "detected" if the verdict is consistent and at least one of the
+    expected `rules` fired;
+  - **score-distribution** with the **real cumulative `ctx.score`** (overlaps included) — what
+    the pipeline would produce in production, a direct input to Pillar 2;
+  - **declared overlaps (§8)** listed separately and made visible (e.g. `rfi-remote-url` on SSRF
+    targets with a URL, `ssrf-private-ip` on `169.254.169.254`); **ExpectedMiss** (§8 gaps)
+    counted separately, neither recall nor FP.
+- **Execution**: `tests/validation.rs` **always runs in CI** as an anti-regression guard — (a)
+  0 trigger-fails, (b) 0 FP, (c) §8 overlaps present, (d) all ExpectedMiss still missed, plus
+  the **measure-then-pin** targets (recall 100% / FP 0% on the measured baseline + a coverage
+  floor of malicious≥50/benign≥26). The verbose report (metrics table + score-distribution +
+  overlap) is on-demand: `cargo run -p waf-corpus --example report`.
+- **Pentest report regressions**: every finding fixed in 0.5.x is pinned end to end against the
+  real pipeline by a dedicated suite — `tests/juiceshop_report_regression.rs` (0.5.0: F-1 null byte,
+  F-2 ERB, F-3 Shellshock in UA and cookie), `tests/extreme_report_regression.rs` (0.5.2: E-2,
+  E-3a, E-4) and `tests/dvwa_report_regression.rs` (0.5.3: the D-1 error-based SQLi forms). They
+  were written **red-first** (failing with score 0 before the fix, which is also what proved the
+  gap) and stay as permanent regressions; the individual payloads and their FP traps also live
+  in the static corpus.
 
 ---
 
-## 11. Roadmap per fasi (sintesi)
+## 11. Phased roadmap (summary)
 
-- **Fase 0** — Setup repo + reverse proxy passthrough.
-- **Fase 1** — Pipeline + contratto moduli + detection-only + logging.
-- **Fase 2** — Parsing + normalizzazione + limiti difensivi.
-- **Fase 3** — Primi moduli (SQLi, XSS) con engine regex compilato.
-- **Fase 4** — Anomaly scoring con soglia configurabile.
-- **Fase 5** — Espansione moduli + rate limiting L7.
-- **Fase 6 ✅** — Robustezza operativa (4 pilastri): config esterna ✅, fail-open/closed ✅, hot reload ✅, anti smuggling ✅.
-- **Fase 7** — tre pilastri: **Pilastro 1 ✅** suite di validazione (`waf-corpus`, §10);
-  **Pilastro 2 ✅** tuning soglie → config **C2** (`critical=6`, resto CRS,
-  `block_threshold=5`), validata sul corpus con cinque proprietà-ladder (§7);
-  **Pilastro 3 ✅** fast-path di equivalenza: prefiltro scope-aware sound (skip
-  dell'ispezione sul benigno provabilmente pulito), equivalenza provata sull'oracolo
-  (79 casi, gate di produzione), 11.74× sul path benigno (§7).
-- **Fase 8 ✅ (sanitizer: smoke batch; fuzzing lungo in CI)** — Robustezza (fuzzing,
-  ReDoS, differential): fuzzing dei 7 parser custom (cargo-fuzz/ASan, Linux/CI) +
-  invarianti proptest cross-platform sempre-attive; ReDoS = motore `regex` lineare →
-  backtracking impossibile per costruzione (test = guardia anti-regressione + scaling
-  della composizione); differential canonicalization con oracolo indipendente
-  (relazione A/B/C). 0 finding; policy canonicalization-vs-freeze in §13.
-- **Fase 9** — Performance e resilienza sotto carico. **Latenza d'ispezione**
-  (`enqueue→verdetto`, il numero che dipende SOLO dal nostro codice) sotto **criterion**
-  con baseline versionata + **gate di REGRESSIONE relativo** in CI; il `<1ms p99`
-  ASSOLUTO si dichiara on-demand su hardware pinnato, non su CI condiviso (CI varia
-  3-10× → un assoluto lì è rumore). **Load-test e2e open-loop** rate-based (oha/wrk2/k6,
-  arrival-rate costante → niente coordinated omission) come overhead informativo (delta
-  WAF-in-path vs passthrough), MAI il gate. Bench sui **79 casi P1 reali** (§10), non
-  sintetici; worst-case = i casi a più regole accumulate dalla score-distribution di P2
-  (§7), non la media; gate **p99**, report p99.9/max come early-warning. **Resilienza**
-  = bite-test e2e del contratto **§9 GIÀ dichiarato** (panic-modulo `on_internal_error`
-  fail_open additivo / kill-upstream 502↔503 / corrupt-reload last-good — provati
-  ENTRAMBI i `FailMode`, non solo il default), nessuna policy nuova e nessun re-pin. Il
-  razionale **additive-control** del `fail_open`-su-panic è a verbale come contratto, non
-  assunto: il WAF è un controllo *additivo* → un suo bug (panic) non deve ridurre la
-  disponibilità sotto la baseline no-WAF; fail_open salta **solo** il modulo che panica
-  (gli altri girano) → degrada-un-segnale, **non** bypass del WAF.
-  - **Baseline pinnata (DEC 1/DEC 4)**: **~2 µs** ispezione worst-case PL3 (regole sature,
-    `enqueue→verdetto`, bench `inspect_worst_case_pl3` su `lfi-rfi-remote-script-query`).
-    NON è il regime fast-path (130–1520 ns) né deve esserlo — è il worst-case a regole
-    sature. È il **riferimento versionato** del gate di regressione **relativa** (DEC 4).
-    **Headroom dichiarato (storia di DEC 1)**: ~2 µs worst-case vs contratto **p99 1 ms**
-    ≈ **500×** di margine — il numero che dipende SOLO dal nostro codice, isolato da
-    upstream/rete.
-  - **Distribuzione worst-case-set** (`examples/latency_distribution.rs`, on-demand): p50
-    ~2.1 µs / **p99 ~3.1 µs** / p99.9 ~5.3 µs; il caso più pesante `ssrf-cloud-metadata`
-    (3 regole) corona il p99 (~3.8 µs). **Riferimento del gate (d) = il single-case pinnato
-    `inspect_worst_case_pl3`, NON l'aggregato** (l'aggregato varia col corpus; il single-case
-    è stabile). **`max` NON è il contratto**: `max` (~97 µs nelle run osservate) è **jitter
-    di scheduler**, non proprietà del codice — provato dal fatto che il caso più pesante
-    corona il **p99**, non il `max`. DEC 2 gatea **p99**, mai `max`; il gate (d) DEVE
-    ignorare `max` per costruzione. Lo split di tooling (criterion=gate stabile sempre-verde
-    / example=distribuzione on-demand) ricalca il pattern P2/Fase9.
-  - **Requisito permanente dei test di resilienza (lezione del finding)**: il traffico di
-    **fault-injection deve essere prefilter-candidate** (raggiungere l'ispezione). Il
-    prefiltro di Pilastro-3 salta l'ispezione sul benigno (§7), quindi traffico
-    "dall'aspetto benigno" corto-circuita **proprio il percorso sotto test** e la guardia
-    non misura nulla — stessa classe del `prop_path_invariants`-verde-col-resolver-rotto
-    di Fase 8 (§13). Esposto dal bite-test col **contatore atomico** nel modulo che panica;
-    vale per **tutti** gli scenari (panic, kill-upstream, corrupt-reload).
-  - **Chiusura Fase 9 — ledger netto (provato vs in attesa dell'AMBIENTE, non del lavoro)**:
-    - **PROVATO**: ispezione worst-case ~2 µs / p99 3.1 µs / p99.9 5.3 µs senza cliff
-      alloc/lock (a); gate di regressione **relativa** bite-verificato (d, `examples/
-      regression_gate.rs`); resilienza **kill-upstream + corrupt-reload + isolamento-panic**
-      tutti bite-verificati e2e (b); anti-pattern §13 nominato (3 istanze); **candidacy bite
-      e2e** verde (c, `examples/load_overhead.rs`: candidate→403/benign→200, immune al rumore).
-    - **REFACTOR 1b** (freeze-safe, provato): `forward_to_backend` estratto (fwd/passthrough
-      verdi prima E dopo, 17/17); `Proxy::bind_passthrough` `#[doc(hidden)]`, **non
-      raggiungibile da config** (la linea vs il bypass dell'opzione-3 rifiutata); un solo
-      forward → drift §13 rimosso alla radice.
-    - **ASPETTA L'AMBIENTE (harness costruito + noto-corretto, manca solo dove misurare)**:
-      curva overhead e2e 1k/5k/10k → **oha su box silenzioso** (in-process Windows: segnale
-      ~3 µs sotto il noise floor e2e ~344 µs → delta perfino negativo = il sanity-check che
-      SCATTA, DEC-C2 confermato; l'e2e **non è e non è mai stato** il contratto, che resta
-      l'isolato (a)/(d)); wiring pipeline CI → ambiente git/CI; asserzione **assoluta <1 ms**
-      e2e → hardware pinnato (mai su CI condiviso).
-- **Fase 10a ✅** — Copertura detection: le rule-set che bypassavano anche in Plain/URL
-  (interi moduli mancanti), derivate da `gotestwaf-report.json`. **5 moduli nuovi**
-  (ldap, nosql, mail — B1; **ssti, scanner** — B2) + **2 estensioni** (B2:
-  `header_injection` ispeziona ora il **path** per il CRLF response-splitting smuggla­to
-  in URL; `rce` ispeziona il **path** per la command-injection in URL — gotestwaf
-  `crlf` / `rce-urlpath`). Ogni modulo cabla gli 8 punti (file regola + `pub mod` +
-  **`content_rules_split`** [HARD GATE: prefiltro = OR-union di quelle tabelle] +
-  `ModulesConfig` + `build_modules` + `Module` enum/`name()` + `runner::build_pipeline` +
-  casi corpus + asserzione union in `validation.rs`). Severità per decisione-3: firma
-  inequivocabile = Critical block-alone (ssti template-arith/freemarker, scanner
-  tool-UA/OOB-domain, rce chained-command), segnale debole = accumulo (rce backtick).
-  - **Scoping per encoder (invariante 10a→10c):** misurato SOLO sul subset URL/Plain
-    dedotto. I duplicati **Base64Flat → `ExpectedMiss{until_phase:"10c"}`** (servono il
-    base64-decode di §6; l'oracolo `expected_miss_phase_deferrals_honored` FORZA il flip a
-    Triggers quando `CURRENT_PHASE` raggiunge 10c). L'overlong-unicode CRLF `%e5%98%8d` →
-    `ExpectedMiss{until:None}` (limite documentato: è UTF-8 valido `U+560D 嘍`, il
-    normalizer NON fa best-fit mapping → nessun CR/LF appare mai; §6).
-  - **Tutto bite-verificato** (metodologia §13): attribuzione esclusiva provata dal
-    report contributi (ogni Triggers B2 accende SOLO le regole del suo modulo) + bite
-    distruttivi (rotta la regola/lo scope-path → il caso va RED con NIENTE che lo salvi →
-    ripristino → green): rce-path (3 casi), header-path (3), ssti (3), scanner (8).
-  - **Re-baseline perf (decisione esplicita, "sforamento" accettato):** ispezione
-    worst-case PL3 **~2.65 µs (fine B1) → ~4.3 µs (fine B2)**; il caso più pesante
-    `ssrf-cloud-metadata-query` ~4.9 µs. Attribuibile ai 2 nuovi `RegexSet`/richiesta
-    (ssti su query/cookie/body; scanner solo su User-Agent) + il path aggiunto a
-    rce/header_injection. **ACCETTATO**: headroom ancora **~230×** vs il contratto p99
-    1 ms (la storia di DEC 1 regge con ampio margine). Nuova baseline criterion `pinned`
-    ri-salvata = riferimento del gate di regressione relativo (DEC 4) da qui in avanti.
-  - **ASPETTA L'AMBIENTE (lavoro fatto, manca dove eseguire):** re-run gotestwaf →
-    server live + tool (stessa classe di oha/CI assente, Fase 9); 10b/10c (encoder
-    avanzati, base64-decode in §6) chiuderanno i deferral `until_phase:"10c"`.
+- **Phase 0** — Repo setup + passthrough reverse proxy.
+- **Phase 1** — Pipeline + module contract + detection-only + logging.
+- **Phase 2** — Parsing + normalization + defensive limits.
+- **Phase 3** — First modules (SQLi, XSS) with a compiled regex engine.
+- **Phase 4** — Anomaly scoring with a configurable threshold.
+- **Phase 5** — Module expansion + L7 rate limiting.
+- **Phase 6 ✅** — Operational robustness (4 pillars): external config ✅, fail-open/closed ✅, hot reload ✅, anti smuggling ✅.
+- **Phase 7** — three pillars: **Pillar 1 ✅** validation suite (`waf-corpus`, §10); **Pillar 2
+  ✅** threshold tuning → config **C2** (`critical=6`, the rest CRS, `block_threshold=5`),
+  validated on the corpus with five ladder properties (§7); **Pillar 3 ✅** equivalence
+  fast-path: a sound scope-aware prefilter (skip inspection on provably-clean benign), the
+  equivalence proven on the oracle (79 cases, the production gate), 11.74× on the benign path
+  (§7).
+- **Phase 8 ✅ (sanitizer: smoke batch; long fuzzing in CI)** — Robustness (fuzzing, ReDoS,
+  differential): fuzzing of the 7 custom parsers (cargo-fuzz/ASan, Linux/CI) + always-on
+  cross-platform proptest invariants; ReDoS = the linear `regex` engine → backtracking
+  impossible by construction (the test = an anti-regression guard + composition scaling);
+  differential canonicalization with an independent oracle (the A/B/C relation). 0 findings;
+  the canonicalization-vs-freeze policy is in §13.
+- **Phase 9** — Performance and resilience under load. **Inspection latency**
+  (`enqueue→verdict`, the number that depends ONLY on our code) under **criterion** with a
+  versioned baseline + a **relative REGRESSION gate** in CI; the ABSOLUTE `<1ms p99` is declared
+  on-demand on pinned hardware, not on a shared CI (CI varies 3-10× → an absolute there is
+  noise). **e2e open-loop load-test** rate-based (oha/wrk2/k6, constant arrival-rate → no
+  coordinated omission) as an informative overhead (WAF-in-path vs passthrough delta), NEVER the
+  gate. Benchmarks on the **79 real P1 cases** (§10), not synthetic; worst-case = the cases with
+  the most accumulated rules from P2's score-distribution (§7), not the average; the gate is
+  **p99**, p99.9/max reported as early-warning. **Resilience** = an e2e bite-test of the
+  **§9 ALREADY-declared** contract (module-panic `on_internal_error` additive fail_open /
+  kill-upstream 502↔503 / corrupt-reload last-good — BOTH `FailMode`s proven, not just the
+  default), no new policy and no re-pin. The **additive-control** rationale of `fail_open`-on
+  -panic is on record as a contract, not assumed: the WAF is an *additive* control → a bug of
+  its own (panic) must not lower availability below the no-WAF baseline; fail_open skips **only**
+  the module that panics (the others run) → degrade-one-signal, **not** a WAF bypass.
+  - **Pinned baseline (DEC 1/DEC 4)**: **~2 µs** worst-case PL3 inspection (saturated rules,
+    `enqueue→verdict`, the `inspect_worst_case_pl3` bench on `lfi-rfi-remote-script-query`). It
+    is NOT the fast-path regime (130–1520 ns) nor should it be — it is the worst-case at
+    saturated rules. It is the **versioned reference** of the **relative** regression gate (DEC
+    4). **Declared headroom (the DEC 1 story)**: ~2 µs worst-case vs the **p99 1 ms** contract ≈
+    **500×** of margin — the number that depends ONLY on our code, isolated from upstream/network.
+  - **Worst-case-set distribution** (`examples/latency_distribution.rs`, on-demand): p50 ~2.1 µs
+    / **p99 ~3.1 µs** / p99.9 ~5.3 µs; the heaviest case `ssrf-cloud-metadata` (3 rules) crowns
+    the p99 (~3.8 µs). **The gate (d) reference = the pinned single-case `inspect_worst_case_pl3`,
+    NOT the aggregate** (the aggregate varies with the corpus; the single-case is stable). **`max`
+    is NOT the contract**: `max` (~97 µs in the observed runs) is **scheduler jitter**, not a
+    property of the code — proven by the fact that the heaviest case crowns the **p99**, not the
+    `max`. DEC 2 gates the **p99**, never `max`; the gate (d) MUST ignore `max` by construction.
+    The tooling split (criterion=a stable always-green gate / example=an on-demand distribution)
+    mirrors the P2/Phase9 pattern.
+  - **Permanent requirement of the resilience tests (the finding's lesson)**: the
+    **fault-injection** traffic **must be prefilter-candidate** (reach inspection). The Pillar-3
+    prefilter skips inspection on benign (§7), so "benign-looking" traffic short-circuits
+    **exactly the path under test** and the guard measures nothing — the same class as the
+    `prop_path_invariants`-green-with-the-broken-resolver of Phase 8 (§13). Exposed by the
+    bite-test with the **atomic counter** in the panicking module; it holds for **all** scenarios
+    (panic, kill-upstream, corrupt-reload).
+  - **Phase 9 closure — net ledger (proven vs awaiting the ENVIRONMENT, not the work)**:
+    - **PROVEN**: worst-case inspection ~2 µs / p99 3.1 µs / p99.9 5.3 µs with no alloc/lock
+      cliff (a); the **relative** regression gate bite-verified (d, `examples/regression_gate.rs`);
+      resilience **kill-upstream + corrupt-reload + panic-isolation** all bite-verified e2e (b);
+      the §13 anti-pattern named (3 instances); the **candidacy bite e2e** green (c,
+      `examples/load_overhead.rs`: candidate→403/benign→200, immune to noise).
+    - **REFACTOR 1b** (freeze-safe, proven): `forward_to_backend` extracted (fwd/passthrough
+      green before AND after, 17/17); `Proxy::bind_passthrough` `#[doc(hidden)]`, **not reachable
+      from config** (the line vs the bypass of the rejected option-3); a single forward → the §13
+      drift removed at the root.
+    - **AWAIT THE ENVIRONMENT (harness built + known-correct, only where to measure is missing)**:
+      the e2e overhead curve 1k/5k/10k → **oha on a quiet box** (in-process Windows: the ~3 µs
+      signal is below the e2e noise floor ~344 µs → even a negative delta = the sanity-check that
+      FIRES, DEC-C2 confirmed; the e2e **is not and never was** the contract, which remains the
+      isolated (a)/(d)); CI pipeline wiring → git/CI environment; the **absolute <1 ms** e2e
+      assertion → pinned hardware (never on shared CI).
+- **Phase 10a ✅** — Detection coverage: the rule-sets that bypassed even in Plain/URL (whole
+  missing modules), derived from `gotestwaf-report.json`. **5 new modules** (ldap, nosql, mail —
+  B1; **ssti, scanner** — B2) + **2 extensions** (B2: `header_injection` now inspects the **path**
+  for CRLF response-splitting smuggled in the URL; `rce` inspects the **path** for command
+  injection in the URL — gotestwaf `crlf` / `rce-urlpath`). Each module wires the 8 points (rule
+  file + `pub mod` + **`content_rules_split`** [HARD GATE: prefilter = the OR-union of those
+  tables] + `ModulesConfig` + `build_modules` + `Module` enum/`name()` + `runner::build_pipeline`
+  + corpus cases + the union assertion in `validation.rs`). Severity by decision-3: an
+  unambiguous signature = Critical block-alone (ssti template-arith/freemarker, scanner tool-UA
+  /OOB-domain, rce chained-command), a weak signal = accumulation (rce backtick).
+  - **Per-encoder scoping (the 10a→10c invariant):** measured ONLY on the deduced URL/Plain
+    subset. The **Base64Flat** duplicates → `ExpectedMiss{until_phase:"10c"}` (they need the §6
+    base64-decode; the `expected_miss_phase_deferrals_honored` oracle FORCES the flip to Triggers
+    when `CURRENT_PHASE` reaches 10c). The overlong-unicode CRLF `%e5%98%8d` →
+    `ExpectedMiss{until:None}` (a documented limit: it is valid UTF-8 `U+560D 嘍`, the normalizer
+    does NOT do best-fit mapping → no CR/LF ever appears; §6).
+  - **All bite-verified** (the §13 methodology): exclusive attribution proven by the contributions
+    report (every B2 Triggers fires ONLY its module's rules) + destructive bites (break the
+    rule/the scope-path → the case goes RED with NOTHING saving it → restore → green): rce-path (3
+    cases), header-path (3), ssti (3), scanner (8).
+  - **Perf re-baseline (an explicit decision, "overrun" accepted):** worst-case PL3 inspection
+    **~2.65 µs (end of B1) → ~4.3 µs (end of B2)**; the heaviest case
+    `ssrf-cloud-metadata-query` ~4.9 µs. Attributable to the 2 new `RegexSet`s/request (ssti on
+    query/cookie/body; scanner only on User-Agent) + the path added to rce/header_injection.
+    **ACCEPTED**: headroom still **~230×** vs the p99 1 ms contract (the DEC 1 story holds with a
+    wide margin). A new criterion `pinned` baseline re-saved = the reference of the relative
+    regression gate (DEC 4) from here on.
+  - **AWAITS THE ENVIRONMENT (work done, where to run it is missing):** re-run gotestwaf → live
+    server + tool (the same class as the absent oha/CI, Phase 9); 10b/10c (advanced encoders,
+    base64-decode in §6) will close the `until_phase:"10c"` deferrals.
 
-- **Fase 10b ✅** — Copertura detection (continua): allargare regole ESISTENTI ma deboli
-  (block <25% in URL/Plain) + chiudere gli ultimi moduli mancanti. Rischio invertito vs
-  10a (allargare su moduli alto-traffico ri-apre il trade-off FP), quindi **precisione
-  STRUTTURALE** (il crate `regex` è automa finito: NO lookaround → le fix di precisione
-  sono strutturali, non `(?!…)`). Source = `gotestwaf-report.json`, **scoping per-payload**
-  (URL/Plain → 10b; solo Base64Flat → `until_phase:"10c"`). Metodo chiave **PROBE-FIRST**:
-  misurato il gap contro il CODICE attuale, non il report stale (molti payload erano GIÀ
-  presi dall'evoluzione post-snapshot).
-  - **B1 — `sqli` + `xss` (broadening):** 3 nuove Critical SQLi CRS-aligned alta-precisione
+- **Phase 10b ✅** — Detection coverage (continued): broaden EXISTING but weak rules (block <25%
+  in URL/Plain) + close the last missing modules. Inverted risk vs 10a (broadening on
+  high-traffic modules re-opens the FP trade-off), hence **STRUCTURAL precision** (the `regex`
+  crate is a finite automaton: NO lookaround → precision fixes are structural, not `(?!…)`).
+  Source = `gotestwaf-report.json`, **per-payload scoping** (URL/Plain → 10b; only Base64Flat →
+  `until_phase:"10c"`). The key method **PROBE-FIRST**: the gap measured against the CURRENT
+  code, not the stale report (many payloads were ALREADY caught by the post-snapshot evolution).
+  - **B1 — `sqli` + `xss` (broadening):** 3 new high-precision CRS-aligned Critical SQLi
     (`sqli-mysql-versioned-comment` `/*!…`, `sqli-information-schema` underscore-anchored,
-    `sqli-json-function`); XSS reso preciso (`xss-javascript-proto` → scheme-CALL
-    `javascript\s*:[^()]*…\(` uccide il FP "JavaScript: Basics…") + recall
-    (`xss-js-sink-call`/`xss-js-sink-invocation` per i bypass senza tag/handler).
-  - **B2 — `shell-injection`/`rce`/`ss-include`:** rce esteso (chained `getent|host`,
-    windows `set /[ap]`, `rce-yaml-deserialization` `!!python/…`); **nuovo modulo `ssi`**
-    (`ssi-directive` `<!--#<verb>`, Critical/PL1) che sostituisce la mis-attribuzione
-    fragile a `sqli-quote-comment` sul `"-->`.
-  - **B3 — `xml`/XXE + `path-traversal`:** **nuovo modulo `xxe`** (Phase::Body, 3 regole
-    Critical/PL1): `xxe-entity-declaration` `<!ENTITY`, `xxe-doctype-external`
-    `<!DOCTYPE…SYSTEM` (**SYSTEM-only**, non PUBLIC → il doctype XHTML legacy con `PUBLIC`
-    NON è FP), `xxe-utf7-encoding` `encoding="UTF-7"` (charset-smuggling: il vero
-    `<!DOCTYPE`/`<!ENTITY` è UTF-7-encoded). **path-traversal** esteso: `pt-unc-path`
-    allarga la host-class con `:` per la UNC a host IPv6-literal (`\\::1\c$\…`, i backslash
-    sopravvivono alla normalizzazione → era solo la char-class a mancare).
-  - **Limiti documentati (`ExpectedMiss{None}` — servono §6, fuori 10b rules-only):**
-    XInclude/schema esterno (`xsi:schemaLocation`/`<xs:include>`) indistinguibile da SOAP/XSD
-    benigno senza parsing semantico + URL-reputation → **deferito per non aprire un FP-factory
-    SOAP** (catturato cmq come Notice da `rfi-remote-url` sull'URL esterno, defense-in-depth);
-    overlong-UTF8 `%C0%AE`=`.`/`%C0%AF`=`/` → `from_utf8_lossy`→U+FFFD, nessuna firma
-    `/etc/passwd` si forma (serve decode overlong §6).
-  - **Bite-verificato (§13):** attribuzione ESCLUSIVA provata sul report contributi (i
-    Triggers clean accendono SOLO la regola del loro modulo, set di size-1 → rompere la
-    regola → RED senza nulla che salvi); i payload gotestwaf verbatim con `http://` tengono
-    l'overlap `rfi-remote-url` DICHIARATO.
-  - **P2 GATE verde** (`recommended_config_ladder_properties` + `baseline_targets_met`):
-    nuove Critical SQLi/XXE + sink XSS → benign-blocking resta **0**, C2 regge, nessuna
-    ri-taratura soglie. `CURRENT_PHASE="10b"`.
-  - **Re-baseline perf (decisione, "sforamento" accettato):** ispezione worst-case PL3
-    **~4.3 µs (fine 10a) → ~5.1 µs (fine 10b)**, caso più pesante `ssrf-cloud-metadata-query`
-    ~5.5 µs. Attribuibile ai 2 nuovi `RegexSet`/richiesta (`ssi`, `xxe`) + le regole extra
-    nei set esistenti. **ACCETTATO**: headroom ancora **~195×** vs il contratto p99 1 ms.
-    Baseline criterion `pinned` ri-salvata (riferimento gate DEC 4).
-  - **B1-cont — `path-traversal` `../`-base + field-coverage multipart:** due gap dal
-    `gotestwaf-report-after-10b.json` chiusi. (1) **Recall `../`-base senza FP**: il faro
-    `/static/img/../../etc/passwd` in querystring resta preso, ma `pt-dotdot-traversal` è
-    **ristretto strutturalmente** `\.\.[\\/]` → `(?:\.\.[\\/]){2,}` (≥2 segmenti *consecutivi*
-    = vera escape) così un `../` relativo benigno (`docs/../report.pdf`, `../images/logo.png`)
-    resta **Clean**; i target sensibili restano coperti da `pt-sensitive-*` a prescindere.
-    (2) **Field-coverage multipart**: `body_str_values` ora ispeziona anche il **filename**
-    di ogni part (oltre al dato del part), prima punto cieco — il payload LFI/traversal in
-    `filename="…/../../etc/passwd"` (gotestwaf `community-lfi-multipart`) ora viene ispezionato;
-    i NOMI dei field restano fuori (metadati di controllo, non contenuto attaccante).
-    **D1**: UNC `\\::1\c$\…` URL/Plain è GIÀ preso da `pt-unc-path` (host-class `:`, B3) → nessun
-    broadening backslash Windows-specifico (rinvio a 10b-bis confermato); solo la forma Base64Flat
-    resta deferita a 10c. **D2**: profondità multipart = filename + valore-part (i part testuali
-    sono già coperti dal dato). **D3**: `file:///etc/./passwd` è coperto dallo scheme `file://`
-    esistente in `lfi-stream-wrapper` (il `/./` è cosmetico) → estensione di copertura, non di
-    pattern. **Limite `ExpectedMiss`**: overlong-UTF8 `%C0%AE%C0%AE%C0%AF…` resta distinto da
-    `../`-base (ora coperto) — è un limite §6 (`from_utf8_lossy`→U+FFFD, vedi §6), non `../`.
-    Faro/UNC Base64Flat → `until_phase:"10c"`. Bite/smoke red→green dimostrato (multipart-filename
-    `[]`→preso; trap `../` benigno FP→Clean) prima dell'harvest. **P2 GATE verde** (recall corpus
-    100% 103/103, FP **0/62**, ladder C2 invariata); **perf** worst-case PL3 ~4.5 µs (+~4.5% vs
-    `pinned`, < gate 10% — il clone del filename multipart pesa solo sul traffico multipart, non
-    sul worst-case query). Nessun re-pin (sotto-batch). `CURRENT_PHASE` resta `"10b"`.
-  - **B1-cont FIX — multipart `name`/valore + overlong/double-encoding.** Il fix B1-cont
-    iniziale guardava SOLO `filename`; gotestwaf (`community-lfi-multipart`, confermato a
-    pcap) mette il traversal nel **`name=`** del Content-Disposition (senza filename) o nel
-    **valore**, spesso **double-encoded/overlong** (`%25C0%25AE…`). Tre interventi: (1)
-    `body_str_values` ispeziona ora **name + filename + valore** di ogni part; (2)
-    parsing Content-Disposition **case-insensitive** su header e attributi (`name`/`filename`);
-    (3) nuova `canonicalize_multipart_field` (waf-normalizer) = percent-decode + collapse
-    **overlong-UTF8** ricorsivi a punto fisso (cap 5) + NFKC, applicata PRIMA del match
-    (`%25C0%25AE`→`.`, `..%2f`→`/`). Smoke red→green: name-traversal `[]`→bloccato,
-    overlong-value `[]`→bloccato, trap multipart benigno→Clean. **`pt-dotdot {2,}` invariato**
-    (entrambi i casi-pcap risolvono a `../../` ≥2 + `/etc/passwd` → presi; NO ritorno a `{1,}`
-    che riaprirebbe l'FP su `../` singolo benigno approvato in B1-cont). Overlong su QUERY
-    resta `ExpectedMiss` (decode scoped al multipart, vedi §6). **GATE verde**: recall
-    path_traversal **11/11**, aggregato **105/105**, **FP 0/63**, fast-path-equivalence verde;
-    **perf** worst-case query ~5.3 µs (stabile su 2 misure, "no change" — invariato dal mio
-    codice: il path query non tocca il multipart; cross-session vs ~5.1 µs end-10b). Costo
-    multipart limitato (≤5 passate, stringhe corte, solo su traffico multipart). Nessun re-pin.
-  - **B2-cont — `xss` URL: VALUTATO, CHIUSO SENZA AZIONE.** Probe-first sui 40 payload
-    XSS-URL distinti (superficie canonica, PL3): **38/40 già intercettati**; gli unici 2
-    veri pattern-miss sono i limiti §6 noti (entity-obfuscation, mutation/tag-split).
-    I "bypass" residui del report NON sono pattern-miss: una regola matcha ma è
-    `Warning`/PL2 sub-soglia (accumulo anti-FP). L'unico lever sarebbe alzare la severity
-    → **escluso (severity congelati, decisione ciclo b)**, tanto più a paranoia massima.
-    Zero modifiche; finding documentato in §6.
-  - **B3-cont — `sqli` URL: VALUTATO, CHIUSO SENZA AZIONE.** Probe-first sulle 3 famiglie
-    medie + le sofisticate (score C2, T=5): inline-comment / `information_schema` / blind
-    `sleep()` **bloccano già** (`Critical` 6), come `JSON_EXTRACT`/`JSON_DEPTH`
-    (`sqli-json-function`). Le Triggers-regression sono già nel corpus (B1-10b). Unico
-    residuo `xp_cmdshell`: **rilevato** (`sqli-cast-convert`) ma sub-soglia (Notice/PL3) —
-    NON un pattern-miss e NON tagabile `ExpectedMiss` (l'oracolo usa `still_missed =
-    !triggered`: una regola scatta → risulterebbe "caught ahead of phase"). Regola MSSQL
-    dedicata **rinviata a 10b-bis**. Severity congelati. Zero modifiche; finding in §6.
-  - **Chiusura ciclo b — nota di metodo.** **Probe-first** ha guidato B1-cont (gap reale =
-    field-coverage multipart, non broadening), B2-cont e B3-cont (gap reale = severità
-    sub-soglia *by-design*, non copertura). Distinzione chiave del ciclo: **copertura vs
-    severità** — un payload che bypassa il *blocco* non è un pattern-miss se una regola lo
-    *rileva*; lo si chiude congelando gli score, non alzandoli. Gli `severity_scores` non
-    sono MAI stati sbloccati a paranoia massima (il trade-off FP che P2 aveva congelato
-    resta congelato). Aperto come deferral esplicito: **10b-bis** (UNC Windows-backslash
-    broadening, `xp_cmdshell`/MSSQL stacked-with-comments) e **10c** (encoder Base64Flat +
-    base64-decode §6). `CURRENT_PHASE` resta `"10b"`.
+    `sqli-json-function`); XSS made precise (`xss-javascript-proto` → scheme-CALL
+    `javascript\s*:[^()]*…\(` kills the FP "JavaScript: Basics…") + recall
+    (`xss-js-sink-call`/`xss-js-sink-invocation` for the bypasses without a tag/handler).
+  - **B2 — `shell-injection`/`rce`/`ss-include`:** rce extended (chained `getent|host`, windows
+    `set /[ap]`, `rce-yaml-deserialization` `!!python/…`); a **new module `ssi`** (`ssi-directive`
+    `<!--#<verb>`, Critical/PL1) that replaces the fragile mis-attribution to `sqli-quote-comment`
+    on `"-->`.
+  - **B3 — `xml`/XXE + `path-traversal`:** a **new module `xxe`** (Phase::Body, 3 Critical/PL1
+    rules): `xxe-entity-declaration` `<!ENTITY`, `xxe-doctype-external` `<!DOCTYPE…SYSTEM`
+    (**SYSTEM-only**, not PUBLIC → a legacy XHTML doctype with `PUBLIC` is NOT an FP),
+    `xxe-utf7-encoding` `encoding="UTF-7"` (charset-smuggling: the real `<!DOCTYPE`/`<!ENTITY` is
+    UTF-7-encoded). **path-traversal** extended: `pt-unc-path` widens the host-class with `:` for
+    UNC to an IPv6-literal host (`\\::1\c$\…`, the backslashes survive normalization → it was only
+    the char-class that was missing).
+  - **Documented limits (`ExpectedMiss{None}` — they need §6, outside 10b rules-only):**
+    XInclude/external schema (`xsi:schemaLocation`/`<xs:include>`) indistinguishable from benign
+    SOAP/XSD without semantic parsing + URL-reputation → **deferred to avoid opening a SOAP
+    FP-factory** (caught anyway as Notice by `rfi-remote-url` on the external URL,
+    defense-in-depth); overlong-UTF8 `%C0%AE`=`.`/`%C0%AF`=`/` → `from_utf8_lossy`→U+FFFD, no
+    `/etc/passwd` signature forms (the §6 overlong decode is needed).
+  - **Bite-verified (§13):** EXCLUSIVE attribution proven on the contributions report (the clean
+    Triggers fire ONLY their module's rule, a size-1 set → break the rule → RED with nothing
+    saving it); the verbatim gotestwaf payloads with `http://` keep the DECLARED `rfi-remote-url`
+    overlap.
+  - **P2 GATE green** (`recommended_config_ladder_properties` + `baseline_targets_met`): the new
+    Critical SQLi/XXE + XSS sinks → benign-blocking stays **0**, C2 holds, no threshold re-tuning.
+    `CURRENT_PHASE="10b"`.
+  - **Perf re-baseline (a decision, "overrun" accepted):** worst-case PL3 inspection **~4.3 µs
+    (end of 10a) → ~5.1 µs (end of 10b)**, the heaviest case `ssrf-cloud-metadata-query` ~5.5 µs.
+    Attributable to the 2 new `RegexSet`s/request (`ssi`, `xxe`) + the extra rules in the existing
+    sets. **ACCEPTED**: headroom still **~195×** vs the p99 1 ms contract. The criterion `pinned`
+    baseline re-saved (the DEC 4 gate reference).
+  - **B1-cont — `path-traversal` `../`-base + multipart field-coverage:** two gaps from
+    `gotestwaf-report-after-10b.json` closed. (1) **`../`-base recall without FP**: the
+    `/static/img/../../etc/passwd` beacon in the querystring stays caught, but `pt-dotdot-traversal`
+    is **structurally narrowed** `\.\.[\\/]` → `(?:\.\.[\\/]){2,}` (≥2 *consecutive* segments = a
+    real escape) so a benign relative `../` (`docs/../report.pdf`, `../images/logo.png`) stays
+    **Clean**; sensitive targets stay covered by `pt-sensitive-*` regardless. (2) **Multipart
+    field-coverage**: `body_str_values` now inspects the **filename** of every part too (beyond the
+    part's data), previously a blind spot — the LFI/traversal payload in
+    `filename="…/../../etc/passwd"` (gotestwaf `community-lfi-multipart`) is now inspected; field
+    NAMES stay out (control metadata, not attacker content). **D1**: UNC `\\::1\c$\…` URL/Plain is
+    ALREADY caught by `pt-unc-path` (host-class `:`, B3) → no Windows-specific backslash broadening
+    (the 10b-bis deferral confirmed); only the Base64Flat form stays deferred to 10c. **D2**:
+    multipart depth = filename + part-value (the textual parts are already covered by the data).
+    **D3**: `file:///etc/./passwd` is covered by the existing `file://` scheme in
+    `lfi-stream-wrapper` (the `/./` is cosmetic) → a coverage extension, not a pattern one.
+    **`ExpectedMiss` limit**: overlong-UTF8 `%C0%AE%C0%AE%C0%AF…` stays distinct from `../`-base
+    (now covered) — it is a §6 limit (`from_utf8_lossy`→U+FFFD, see §6), not `../`. Beacon/UNC
+    Base64Flat → `until_phase:"10c"`. Bite/smoke red→green demonstrated (multipart-filename
+    `[]`→caught; benign `../` trap FP→Clean) before the harvest. **P2 GATE green** (corpus recall
+    100% 103/103, FP **0/62**, C2 ladder unchanged); **perf** worst-case PL3 ~4.5 µs (+~4.5% vs
+    `pinned`, < the 10% gate — the multipart filename clone weighs only on multipart traffic, not
+    the worst-case query). No re-pin (a sub-batch). `CURRENT_PHASE` stays `"10b"`.
+  - **B1-cont FIX — multipart `name`/value + overlong/double-encoding.** The initial B1-cont fix
+    only looked at `filename`; gotestwaf (`community-lfi-multipart`, confirmed by pcap) puts the
+    traversal in the Content-Disposition **`name=`** (without a filename) or in the **value**,
+    often **double-encoded/overlong** (`%25C0%25AE…`). Three interventions: (1) `body_str_values`
+    now inspects **name + filename + value** of every part; (2) **case-insensitive**
+    Content-Disposition parsing on the header and attributes (`name`/`filename`); (3) a new
+    `canonicalize_multipart_field` (waf-normalizer) = recursive percent-decode + **overlong-UTF8**
+    collapse to a fixed point (cap 5) + NFKC, applied BEFORE the match (`%25C0%25AE`→`.`,
+    `..%2f`→`/`). Smoke red→green: name-traversal `[]`→blocked, overlong-value `[]`→blocked, benign
+    multipart trap→Clean. **`pt-dotdot {2,}` unchanged** (both pcap cases resolve to `../../` ≥2 +
+    `/etc/passwd` → caught; NO return to `{1,}` which would re-open the FP on a single benign `../`
+    approved in B1-cont). Overlong on QUERY stays `ExpectedMiss` (decode scoped to multipart, see
+    §6). **GATE green**: path_traversal recall **11/11**, aggregate **105/105**, **FP 0/63**,
+    fast-path-equivalence green; **perf** worst-case query ~5.3 µs (stable over 2 measurements, "no
+    change" — unchanged by my code: the query path does not touch multipart; cross-session vs ~5.1
+    µs end-10b). The multipart cost is limited (≤5 passes, short strings, only on multipart
+    traffic). No re-pin.
+  - **B2-cont — `xss` URL: EVALUATED, CLOSED WITHOUT ACTION.** Probe-first over the 40 distinct
+    XSS-URL payloads (canonical surface, PL3): **38/40 already intercepted**; the only 2 real
+    pattern-misses are the known §6 limits (entity-obfuscation, mutation/tag-split). The report's
+    residual "bypasses" are NOT pattern-misses: a rule matches but is `Warning`/PL2 sub-threshold
+    (anti-FP accumulation). The only lever would be raising the severity → **excluded (severities
+    frozen, the cycle-b decision)**, even more so at max paranoia. Zero changes; the finding is
+    documented in §6.
+  - **B3-cont — `sqli` URL: EVALUATED, CLOSED WITHOUT ACTION.** Probe-first over the 3 medium
+    families + the sophisticated ones (C2 score, T=5): inline-comment / `information_schema` /
+    blind `sleep()` **already block** (`Critical` 6), like `JSON_EXTRACT`/`JSON_DEPTH`
+    (`sqli-json-function`). The Triggers-regressions are already in the corpus (B1-10b). The only
+    residual `xp_cmdshell`: **detected** (`sqli-cast-convert`) but sub-threshold (Notice/PL3) — NOT
+    a pattern-miss and NOT taggable as `ExpectedMiss` (the oracle uses `still_missed = !triggered`:
+    a rule fires → it would read as "caught ahead of phase"). A dedicated MSSQL rule **deferred to
+    10b-bis**. Severities frozen. Zero changes; the finding is in §6.
+  - **Cycle-b closure — a method note.** **Probe-first** drove B1-cont (the real gap = multipart
+    field-coverage, not broadening), B2-cont and B3-cont (the real gap = sub-threshold severity
+    *by-design*, not coverage). The cycle's key distinction: **coverage vs severity** — a payload
+    that bypasses the *block* is not a pattern-miss if a rule *detects* it; you close it by
+    freezing the scores, not raising them. `severity_scores` were NEVER unlocked at max paranoia
+    (the FP trade-off P2 had frozen stays frozen). Opened as explicit deferrals: **10b-bis** (UNC
+    Windows-backslash broadening, `xp_cmdshell`/MSSQL stacked-with-comments) and **10c**
+    (Base64Flat encoder + §6 base64-decode). `CURRENT_PHASE` stays `"10b"`.
 
-- **Fase 10c ✅** — Encoder avanzati: chiude i deferral `until_phase:"10c"` aprendo il
-  canale §6 **base64-decode + overlong pipeline-wide** (`decode-then-match-then-discard`,
-  vedi §6). `CURRENT_PHASE` → `"10c"`.
-  - **15 deferral flippati a `Triggers`** (l'oracolo `expected_miss_phase_deferrals_honored`
-    li FORZA caught a 10c): `ldap` 3, `mail` 3, `nosql` 3, `ssti` 3, `path_traversal` 3
-    (faro base64 `/static/img/../../etc/passwd`, UNC IPv6, **overlong-UTF8 query** — ora
-    pipeline-wide). Zero residui non-flippati. L'unico `ExpectedMiss` aperto è il **10d**
-    `hdr-overlong-crlf-header-value` (cambio canonico CRLF senza bite in 10c — §6/§13).
-  - **Bite per-stadio (§13, red→green dei due fari).** Doppia proprietà dimostrata su
-    `pt-faro-base64` e `pt-overlong`: (1) **necessità indipendente** — `base64-decode→None`
-    fa cadere SOLO il faro base64 (overlong resta 🟢), `overlong-collapse→identity` fa cadere
-    SOLO il faro overlong (base64 resta 🟢); (2) **nessun salvataggio per altra via** —
-    rompendo lo stadio il `prefilter_candidate` collassa a `false` INSIEME al `caught` (non è
-    il prefiltro né un altro modulo a tenerlo su, è esattamente quel decode). Restore → 🟢🟢.
-  - **Harvest recall-lock (1/modulo, non gotestwaf-tracked).** Aggiunti 4 Triggers-regression
-    base64 su moduli non-coperti dai deferral del report — `xss-script-tag-b64`,
-    `sqli-information-schema-b64`, `rce-chained-command-b64`, `ssi-exec-directive-b64` — per
-    pinnare che il canale derivato alimenta anche xss/sqli/rce/ssi. **Tutti 🟢** (nessun RED
-    da triare). Scopo: bloccare la recall sotto-test, non gonfiare il corpus.
-  - **GATE verde** (tutti e 10 i test di validazione): `fastpath_equivalence` ✓,
-    `no_false_positives` ✓, `recommended_config_ladder_properties` (P2) ✓ — la P2 ladder
-    NON è ri-tarata (il canale derived contribuisce solo decode-then-match, niente shift
-    di score sul benigno; FP 0), `expected_miss_phase_deferrals_honored` ✓.
-  - **PERF — re-baseline (lettura onesta, pin NON ri-salvato).** Inspection worst-case PL3
-    `lfi-rfi-remote-script-query` ~3.74 µs, heaviest `ssrf-cloud-metadata-query` ~4.11 µs,
-    famiglia ssrf/rce 3.7–4.2 µs — tutti **≤ il pin end-10b ~5.1 µs**, nessuno sforamento del
-    gate 10%. Criterion segna -14/-30% ma è **fuorviante**: la baseline salvata era di una run
-    sotto carico (~5.3 µs); la lettura corretta è **flat/dentro l'envelope, nessuna regressione
-    dalla `.chain(derived)`**. Il pin end-10b è lasciato com'è (heavy-load) e **dichiarato tale**:
-    ri-salvarlo su una run possibilmente "leggera" falserebbe il confronto. **Caveat**: questo
-    bench misura **inspection, non normalization** — il costo nuovo dei due stadi vive in
-    normalization (candidacy pre-check O(1)-reject sul traffico non-base64 + fixpoint overlong
-    bounded da `PIPELINE_CAP=5`); headroom **~165–270×** sotto il contratto p99 1ms anche col
-    delta normalization. Un re-pin perf pulito è un item dedicato ("re-pin su misura controllata"),
-    NON forzato dentro 10c.
-  - **Aperto come deferral esplicito:** **10d** (`hdr-overlong-crlf-header-value` —
-    cambio canonico CRLF con bite + re-gate P1/P2/P3 completo) e **10b-bis** (UNC
-    Windows-backslash broadening, `xp_cmdshell`/MSSQL stacked-with-comments).
-  - **REOPEN 10c (pcap-driven, probe-first) — leaf JSON canonicalize.** Un pcap tcpdump del
-    traffico gotestwaf LIVE (`bypass.txt`) ha smentito il verde-corpus: due classi di bypass sul
-    wire. Lo **STEP-1 probe** (sul normalizer+pipeline LIVE, non l'harness) ha **REFUTATO** le
-    root-cause ipotizzate: (#1 JSON) serde fa GIÀ l'unescape `\u` → la causa è la
-    **canonicalizzazione mancante sul leaf JSON** (body_str_values lo clona RAW), provata col
-    control isolante "stesso byte: query score 12, JSON-leaf score 0"; (#2 multipart name) il
-    field-name è **già instradato** dal fix 10b-cont (score 12 in-process) → il 200 sul wire era
-    **binario live STALE**. **FIX #1** = `json_leaf_derived` (vedi §6): decode del leaf JSON nel
-    canale **derivato** (CAP condiviso, storage non mutato, ricorsivo su oggetti+array, NESSUNO
-    stadio unescape). Fixture wire RED→GREEN: `pt-wire-json-unicode-overlong` (score 12),
-    `xss-wire-json-unicode-svg-onload` (score 9), + lock ricorsione `pt-wire-json-nested-overlong`.
-    **FP-gate** dimostrato sulla superficie JSON-leaf (3 trap base64-like/overlong/percent →
-    `benign_FP=[]`). **GATE 10/10** verde, perf worst-case query **3.58 µs (−4.5%, flat)** — il
-    canale JSON non tocca il path query. **CARVE-OUT UNC**: `\\::1\c$\…` come multipart-name resta
-    **200** (pt-unc-path score 2, sotto-soglia) = severità congelata, **10b-bis fuori scope** (NON
-    è un falso-rosso del gate). Oracolo finale = **pcap re-catturato** (gotestwaf live + tcpdump):
-    step ENV-GATED che ricompila il binario (chiude anche #2) e conferma 403 su tutte le varianti
-    tranne il carve-out UNC. `severity_scores` e `pt-dotdot {2,}` **congelati**. `CURRENT_PHASE="10c"`.
+- **Phase 10c ✅** — Advanced encoders: closes the `until_phase:"10c"` deferrals by opening the
+  §6 channel **base64-decode + overlong pipeline-wide** (`decode-then-match-then-discard`, see §6).
+  `CURRENT_PHASE` → `"10c"`.
+  - **15 deferrals flipped to `Triggers`** (the `expected_miss_phase_deferrals_honored` oracle
+    FORCES them caught at 10c): `ldap` 3, `mail` 3, `nosql` 3, `ssti` 3, `path_traversal` 3 (the
+    base64 beacon `/static/img/../../etc/passwd`, UNC IPv6, **overlong-UTF8 query** — now
+    pipeline-wide). Zero un-flipped residuals. The only open `ExpectedMiss` is the **10d**
+    `hdr-overlong-crlf-header-value` (a CRLF canonical change without a bite in 10c — §6/§13).
+  - **Per-stage bite (§13, red→green of the two beacons).** A double property demonstrated on
+    `pt-faro-base64` and `pt-overlong`: (1) **independent necessity** — `base64-decode→None` drops
+    ONLY the base64 beacon (overlong stays 🟢), `overlong-collapse→identity` drops ONLY the overlong
+    beacon (base64 stays 🟢); (2) **no rescue via another path** — breaking the stage collapses
+    `prefilter_candidate` to `false` TOGETHER with `caught` (it is not the prefilter nor another
+    module keeping it up, it is exactly that decode). Restore → 🟢🟢.
+  - **Harvest recall-lock (1/module, not gotestwaf-tracked).** Added 4 base64 Triggers-regressions
+    on modules not covered by the report's deferrals — `xss-script-tag-b64`,
+    `sqli-information-schema-b64`, `rce-chained-command-b64`, `ssi-exec-directive-b64` — to pin that
+    the derived channel feeds xss/sqli/rce/ssi too. **All 🟢** (no RED to triage). Purpose: lock the
+    under-tested recall, not inflate the corpus.
+  - **GATE green** (all 10 validation tests): `fastpath_equivalence` ✓, `no_false_positives` ✓,
+    `recommended_config_ladder_properties` (P2) ✓ — the P2 ladder is NOT re-tuned (the derived
+    channel only contributes decode-then-match, no benign score shift; FP 0),
+    `expected_miss_phase_deferrals_honored` ✓.
+  - **PERF — re-baseline (honest reading, pin NOT re-saved).** Worst-case PL3 inspection
+    `lfi-rfi-remote-script-query` ~3.74 µs, heaviest `ssrf-cloud-metadata-query` ~4.11 µs, the
+    ssrf/rce family 3.7–4.2 µs — all **≤ the end-10b pin ~5.1 µs**, no 10% gate overrun. Criterion
+    shows -14/-30% but that is **misleading**: the saved baseline was from a run under load (~5.3
+    µs); the correct reading is **flat/within the envelope, no regression from the `.chain(derived)`**.
+    The end-10b pin is left as-is (heavy-load) and **declared as such**: re-saving it on a possibly
+    "light" run would skew the comparison. **Caveat**: this bench measures **inspection, not
+    normalization** — the new cost of the two stages lives in normalization (an O(1)-reject candidacy
+    pre-check on non-base64 traffic + an overlong fixpoint bounded by `PIPELINE_CAP=5`); headroom
+    **~165–270×** under the p99 1ms contract even with the normalization delta. A clean perf re-pin is
+    a dedicated item ("re-pin on a controlled measurement"), NOT forced inside 10c.
+  - **Opened as explicit deferrals:** **10d** (`hdr-overlong-crlf-header-value` — a CRLF canonical
+    change with a bite + full P1/P2/P3 re-gate) and **10b-bis** (UNC Windows-backslash broadening,
+    `xp_cmdshell`/MSSQL stacked-with-comments).
+  - **REOPEN 10c (pcap-driven, probe-first) — JSON leaf canonicalize.** A tcpdump pcap of LIVE
+    gotestwaf traffic (`bypass.txt`) refuted the corpus-green: two bypass classes on the wire. The
+    **STEP-1 probe** (on the LIVE normalizer+pipeline, not the harness) **REFUTED** the hypothesized
+    root causes: (#1 JSON) serde ALREADY unescapes `\u` → the cause is the **missing canonicalization
+    on the JSON leaf** (body_str_values clones it RAW), proven by the isolating control "same byte:
+    query score 12, JSON-leaf score 0"; (#2 multipart name) the field-name is **already routed** by
+    the 10b-cont fix (score 12 in-process) → the 200 on the wire was a **STALE live binary**. **FIX
+    #1** = `json_leaf_derived` (see §6): decode the JSON leaf into the **derived** channel (shared
+    CAP, storage not mutated, recursive over objects+arrays, NO unescape stage). Wire fixtures
+    RED→GREEN: `pt-wire-json-unicode-overlong` (score 12), `xss-wire-json-unicode-svg-onload` (score
+    9), + the recursion lock `pt-wire-json-nested-overlong`. **FP-gate** demonstrated on the JSON-leaf
+    surface (3 base64-like/overlong/percent traps → `benign_FP=[]`). **GATE 10/10** green, perf
+    worst-case query **3.58 µs (−4.5%, flat)** — the JSON channel does not touch the query path.
+    **UNC CARVE-OUT**: `\\::1\c$\…` as a multipart-name stays **200** (pt-unc-path score 2,
+    sub-threshold) = frozen severity, **10b-bis out of scope** (NOT a false-red of the gate). The
+    final oracle = a **re-captured pcap** (live gotestwaf + tcpdump): an ENV-GATED step that
+    recompiles the binary (closing #2 too) and confirms 403 on all variants except the UNC carve-out.
+    `severity_scores` and `pt-dotdot {2,}` **frozen**. `CURRENT_PHASE="10c"`.
 
-  - **Ciclo recapture-driven (10c, probe-first sul wire) — CHIUSO.** Re-catture gotestwaf
-    live (pcap `bypass-*.txt`) usate come **oracolo** al posto del verde-corpus. Journey bypass
-    466→…→59→~28. Chiusi in sequenza, ognuno re-gated (validation 10/10, FP=0):
-    - **P0 (fedeltà-al-wire)**: candidacy base64 NON-paddato (`len%4!=1`, gotestwaf Base64Flat non
-      paddа), scansione del **path** sui moduli content (`std::iter::once(ctx.normalized.path)`),
-      base64-in-path dal **raw-path** case-preservato, scanner `openvas\w*`. **Regola meta**: i casi
-      corpus DEVONO essere fedeli al wire (base64 non-paddato, UA esatti, payload nel path/header).
-    - **P1**: regola `rce-expression-language` (`${@print(…)}`/SpEL) + **header-surface allowlist**
-      (`header_content_inspectable`: Referer/X-Forwarded-*/`x-*` meno deny-list) su 10 moduli.
-    - **§6-D1/D2/D2b** via `derive_variants` (vedi §6): entity-evasion-decode, mid-token tag-strip
-      (`o<x>nfocus`), mid-token control-strip (`<<scr\0ipt>`). **Bug di composizione** trovato col
-      probe (le trasformazioni partivano dal raw → no-op sul blob Base64Flat) → fix = comporle anche
-      sulle varianti **base64-decodate**.
-    - **§6-D3 (VBScript/ASP webshell)**: regole `rce-vbscript-on-error`/`rce-asp-server-intrinsic`/
-      `rce-vbscript-createobject` (Critical) — il `&`-concat è LETTERALE sul wire → frammenta la query,
-      ma gli intrinseci (`On Error Resume Next`, `Server.ScriptTimeout`) sopravvivono INTATTI in un
-      frammento; + de-obf `strip_vbscript_concat` (`"&"`-join) per la variante well-formed `%26`.
-    - **§6-D5 (external-XML-schema)**: regole `xxe-xs-include-namespace` (include con attr `namespace`
-      = malformato) e `xxe-schemalocation-single-url` (schemaLocation a URL singolo vs coppia legit) —
-      ancorate sulla **forma anomala**, FP-probed=0 su SOAP/XSD reali (un blanket sarebbe FP-factory).
+  - **Recapture-driven cycle (10c, probe-first on the wire) — CLOSED.** Live gotestwaf re-captures
+    (pcap `bypass-*.txt`) used as the **oracle** instead of the corpus-green. Bypass journey
+    466→…→59→~28. Closed in sequence, each one re-gated (validation 10/10, FP=0):
+    - **P0 (wire-fidelity)**: NON-padded base64 candidacy (`len%4!=1`, gotestwaf Base64Flat does not
+      pad), scanning the **path** in the content modules (`std::iter::once(ctx.normalized.path)`),
+      base64-in-path from the case-preserved **raw-path**, scanner `openvas\w*`. **Meta rule**: the
+      corpus cases MUST be faithful to the wire (non-padded base64, exact UAs, payload in the
+      path/header).
+    - **P1**: the `rce-expression-language` rule (`${@print(…)}`/SpEL) + a **header-surface
+      allowlist** (`header_content_inspectable`: Referer/X-Forwarded-*/`x-*` minus a deny-list) over
+      10 modules.
+    - **§6-D1/D2/D2b** via `derive_variants` (see §6): entity-evasion-decode, mid-token tag-strip
+      (`o<x>nfocus`), mid-token control-strip (`<<scr\0ipt>`). A **composition bug** found with the
+      probe (the transforms started from the raw → no-op on the Base64Flat blob) → fix = compose them
+      over the **base64-decoded** variants too.
+    - **§6-D3 (VBScript/ASP webshell)**: the rules `rce-vbscript-on-error`/`rce-asp-server-intrinsic`/
+      `rce-vbscript-createobject` (Critical) — the `&`-concat is LITERAL on the wire → it fragments the
+      query, but the intrinsics (`On Error Resume Next`, `Server.ScriptTimeout`) survive INTACT in a
+      fragment; + the `strip_vbscript_concat` de-obf (`"&"`-join) for the well-formed `%26` variant.
+    - **§6-D5 (external-XML-schema)**: the rules `xxe-xs-include-namespace` (an include with a
+      `namespace` attr = malformed) and `xxe-schemalocation-single-url` (a single-URL schemaLocation vs
+      a legit pair) — anchored on the **anomalous form**, FP-probed=0 on real SOAP/XSD (a blanket would
+      be an FP-factory).
     - **10b-bis**: `sqli-mssql-dangerous-proc` (xp_cmdshell/sp_oacreate/… **invocation-anchored**
-      `[.;(=]`/`exec` → no FP su prosa "disable xp_cmdshell") e `pt-unc-admin-share` (`\\host\<share>$\`
-      Critical, l'UNC generico resta Notice). Probe-first ha **refutato** 2 gap (sleep-nested score 6,
-      lfi-multipart-name score 12 GIÀ bloccavano: il 200 sul wire era **binario stale**).
-    - **Frozen-by-design residui (documentati, NON gap di copertura)**: **D4** overlong-CRLF
-      (`%e5%98%8d`=U+560D 喍 CJK valido; il best-fit→CR è backend-specifico → trattarlo da CRLF
-      farebbe FP su testo cinese — **limite permanente**); **Bucket-B** sink-call XSS sub-soglia
-      (`alert(1)`: soglia→3 = FP reale su `alert(message)`/`$or`); **D2b-2** whitespace-collapse
-      (alto FP su prosa, 0 payload wire). `severity_scores` congelati. **DoD finale = re-capture
-      gotestwaf env-gated** (atteso 200→403 su tutte le classi chiuse). **Ciclo 10c CHIUSO.**
+      `[.;(=]`/`exec` → no FP on the prose "disable xp_cmdshell") and `pt-unc-admin-share`
+      (`\\host\<share>$\` Critical, the generic UNC stays Notice). Probe-first **refuted** 2 gaps
+      (sleep-nested score 6, lfi-multipart-name score 12 ALREADY blocked: the 200 on the wire was a
+      **stale binary**).
+    - **Residual frozen-by-design (documented, NOT coverage gaps)**: **D4** overlong-CRLF
+      (`%e5%98%8d`=U+560D 喍, valid CJK; the best-fit→CR is backend-specific → treating it as CRLF would
+      FP on Chinese text — a **permanent limit**); **Bucket-B** sub-threshold XSS sink-call (`alert(1)`:
+      threshold→3 = a real FP on `alert(message)`/`$or`); **D2b-2** whitespace-collapse (high FP on
+      prose, 0 wire payloads). `severity_scores` frozen. **Final DoD = an env-gated gotestwaf
+      re-capture** (expected 200→403 on all closed classes). **10c cycle CLOSED.**
 
-- **Fase 11 ✅** — **GraphQL** (protezioni strutturali). Non copertura content (l'injection negli
-  argomenti/variabili è già presa da §6: JSON-leaf/derived); il gap reale erano le **protezioni
-  SEMANTICHE GraphQL** (DoS/abuse) che la regex non dà. **Approccio probe-first con 3 paletti
-  utente** (canonico-non-raw / due-colonne-separate / trap paren-aware): lo Step-0 ha REFUTATO il
-  sospetto sul GET (canonicalizza) e SCOPERTO che `application/graphql` era **raw** (fix §6 raw-body,
-  vedi §6/§8). Pezzi:
-  - **Lexer `graphql_lex` (8° parser custom, fuzzato §13)**: passata lessicale lineare, **depth
-    paren-aware** (input-object negli argomenti non gonfia la profondità), salta string/block-string/
-    commenti → `max_depth`/`aliases`/`fields`/`directives`/`has_introspection`.
-  - **Modulo `graphql` STRUTTURALE** (`Phase::Body`, `structural()=true`): cap → `Reject{400}`,
-    introspection → `Block{403}`. Config `[modules.graphql]` default **OFF** (opt-in, cap tarabili),
-    transport JSON/GET su `paths` + `application/graphql` per Content-Type.
-  - **BUG ARCHITETTURALE trovato dal re-gate (`fastpath_equivalence`)**: un modulo strutturale
-    `Phase::Body` girava dentro l'ispezione **gated dal content fast-path** → un DoS senza firma
-    content-regex veniva **skippato** (bypass di produzione, non solo corpus). FIX: trait
-    `WafModule::structural()` + `Pipeline::run_phases_filtered(structural_only)` (gli strutturali
-    girano anche sul fast-path-skip) + semantica `fastpath_skipped` corretta (`!inspect && Allow`).
-    Lezione durevole a verbale in §8.
-  - **Confine open/enterprise**: cap strutturali = core; **schema-enforcement = enterprise**
-    (`BOUNDARY.md` §3.1). **gRPC = Fase 12** (richiederà HTTP/2, oggi assente).
-  - Re-gate: **validation 10/10, FP 0**, workspace verde, clippy clean. Corpus graphql: 5 cap DoS +
-    introspection + 3 transport + path-gating + trap paren-aware. **Fase 11 CHIUSA.**
-  - **11-bis (re-capture gotestwaf, wire-driven)** — 4 bypass d'introspection (2 payload × 2 transport)
-    analizzati col probe-first sul percorso reale: REFUTATI doppio-encoding (il fixpoint lo risolve) e
-    modulo-off (era ON). **Due cause distinte, contabilità separata** (vedi note §8):
-    - **(a) buco §6 body-parsing CT-less**: body senza `Content-Type` → `ParsedBody::Raw` → canale
-      per-leaf §6 saltato. Matrice di falsificazione: **plaintext non bypassa**, **encoded-in-leaf
-      (base64 / JSON `\u`) sì**. Fix = `body.rs::sniff_json` (sniff `{`/`[` → `JsonFlattened`),
-      a beneficio di **tutti** i moduli; chiude anche l'introspection POST CT-less.
-    - **(b) gap transport GraphQL**: busta JSON `{"query":…}` nel GET `?query=` → `unwrap_query_envelope`
-      + `operations()`→`expand()` (envelope-or-raw). serde resta confinato in `waf-normalizer`.
-    Re-gate validation 10/10 FP 0; lock: 9 unit `ctless_json` + 3 unit envelope + 6 integration
-    `waf-detection/tests/graphql.rs` + 4 casi corpus (2 con stringhe **verbatim dal pcap**). **Wire
-    confermato 200→403.** Lezione: l'oracolo finale è il **wire**; un body senza `Content-Type` non è
-    un caso di bordo ma una **superficie d'evasione** (il CT è controllato dall'attaccante).
+- **Phase 11 ✅** — **GraphQL** (structural protections). Not content coverage (injection in
+  arguments/variables is already caught by §6: JSON-leaf/derived); the real gap was the
+  **semantic GraphQL protections** (DoS/abuse) that regex cannot give. **Probe-first with 3 user
+  guardrails** (canonical-not-raw / two-columns-separate / paren-aware trap): Step-0 REFUTED the
+  GET suspicion (it canonicalizes) and DISCOVERED that `application/graphql` was **raw** (§6
+  raw-body fix, see §6/§8). Pieces:
+  - **Lexer `graphql_lex` (8th custom parser, fuzzed §13)**: a linear lexical pass, **paren-aware
+    depth** (an input object inside arguments does not inflate the depth), skipping
+    strings/block-strings/comments → `max_depth`/`aliases`/`fields`/`directives`/`has_introspection`.
+  - **STRUCTURAL `graphql` module** (`Phase::Body`, `structural()=true`): caps → `Reject{400}`,
+    introspection → `Block{403}`. Config `[modules.graphql]` default **OFF** (opt-in, tunable caps),
+    JSON/GET transports on `paths` + `application/graphql` by Content-Type.
+  - **ARCHITECTURAL BUG found by the re-gate (`fastpath_equivalence`)**: a structural `Phase::Body`
+    module ran inside the inspection **gated by the content fast-path** → a DoS with no content
+    signature was **skipped** (a production bypass, not just corpus). FIX: trait
+    `WafModule::structural()` + `Pipeline::run_phases_filtered(structural_only)` (structural modules
+    run on the skip path too) + corrected `fastpath_skipped` semantics (`!inspect && Allow`). A
+    durable lesson on record in §8.
+  - **Core/component boundary**: structural caps = core; **schema enforcement = component**
+    (`BOUNDARY.md` §3.1). **gRPC = Phase 12** (will need HTTP/2, absent today).
+  - Re-gate: **validation 10/10, FP 0**, workspace green, clippy clean. GraphQL corpus: 5 DoS caps +
+    introspection + 3 transports + path-gating + the paren-aware trap. **Phase 11 CLOSED.**
+  - **11-bis (gotestwaf re-capture, wire-driven)** — 4 introspection bypasses (2 payloads × 2
+    transports) analysed probe-first on the real path: REFUTED double-encoding (the fixpoint resolves
+    it) and module-off (it was ON). **Two distinct causes, separate accounting** (see §8 notes):
+    - **(a) CT-less §6 body-parsing hole**: a body with no `Content-Type` → `ParsedBody::Raw` → the
+      per-leaf §6 channel was skipped. Falsification matrix: **plaintext does not bypass**,
+      **encoded-in-leaf (base64 / JSON `\u`) does**. Fix = `body.rs::sniff_json` (sniff `{`/`[` →
+      `JsonFlattened`), benefiting **all** modules; it also closes the CT-less POST introspection.
+    - **(b) GraphQL transport gap**: a JSON envelope `{"query":…}` in the GET `?query=` →
+      `unwrap_query_envelope` + `operations()`→`expand()` (envelope-or-raw). serde stays confined to
+      `waf-normalizer`.
+    Re-gate validation 10/10 FP 0; locks: 9 `ctless_json` unit + 3 envelope unit + 6 integration
+    `waf-detection/tests/graphql.rs` + 4 corpus cases (2 with **verbatim pcap strings**). **Wire
+    confirmed 200→403.** Lesson: the final oracle is the **wire**; a body with no `Content-Type` is
+    not an edge case but an **evasion surface** (the CT is attacker-controlled).
 
-- **Fase 12 ✅** — **Terminazione TLS** (base, cert-da-file → **core/OPEN**, `BOUNDARY.md` §3.2). Vedi §9
-  "Terminazione TLS" per il dettaglio. **Probe-first (Step 0)**: prima di toccare il datapath, un throwaway
-  ha provato l'**invariante fondazione** `body h2 == body h1` a `handle()` (`body.collect()` protocol-agnostic)
-  + ALPN h2 negozia + toolchain TLS Windows ok (ring, no aws-lc-rs/cmake) → "se l'invariante regge, il resto
-  è meccanico". Pezzi:
-  - **rustls + tokio-rustls (ring) + rustls-pemfile**, no OpenSSL (unica eccezione legittima al no-hand-roll).
-  - **serving `auto::Builder`** (h1+h2/h2c su una porta); `run()` → `serve_connection<I>` generico
-    (TcpStream | TlsStream); **`handle()` invariato**.
-  - **config `[tls]`** (default off) + validate (`TlsPathEmpty`/`TlsAlpnInvalid`); **seam `TlsCertSource`**
-    + `FileCertSource` (§4: ACME/rotation/mTLS = enterprise).
-  - **fail-closed**: cert illeggibile = boot error fatale; **no downgrade-a-chiaro** (acceptor immutabile
-    post-bind); handshake-error per-conn non-fatale. **Postura DoS-h2** a verbale (default hyper/h2,
-    Rapid-Reset CVE-2023-44487; nessun knob in F12).
-  - Re-gate: **validation 10/10**, workspace verde, clippy `-D warnings` clean. Test: matrice
-    `waf-proxy/tests/tls.rs` (4 protocolli + 2 fail-safe + **bite SQLi-su-h2-TLS→403** + seam unit) +
-    3 test validazione `[tls]` in waf-core. **gRPC = fase successiva** (de-framing + protobuf + backend h2).
+- **Phase 12 ✅** — **TLS termination** (basic, cert-from-file → **core/OPEN**, `BOUNDARY.md` §3.2). See
+  §9 "TLS termination" for detail. **Probe-first (Step 0)**: before touching the datapath, a throwaway
+  proved the **foundation invariant** `body h2 == body h1` at `handle()` (`body.collect()` is
+  protocol-agnostic) + ALPN h2 negotiates + the TLS toolchain builds on Windows (ring, no
+  aws-lc-rs/cmake) → "if the invariant holds, the rest is mechanical". Pieces:
+  - **rustls + tokio-rustls (ring) + rustls-pemfile**, no OpenSSL (the one legitimate exception to
+    no-hand-roll).
+  - **`auto::Builder` serving** (h1+h2/h2c on one port); `run()` → generic `serve_connection<I>`
+    (TcpStream | TlsStream); **`handle()` unchanged**.
+  - **config `[tls]`** (default off) + validate (`TlsPathEmpty`/`TlsAlpnInvalid`); **`TlsCertSource`
+    seam** + `FileCertSource` (§4: ACME/rotation/mTLS = enterprise).
+  - **fail-closed**: unreadable cert = fatal boot error; **no cleartext downgrade** (acceptor immutable
+    post-bind); per-conn handshake error non-fatal. **HTTP/2 DoS posture** on record (hyper/h2 defaults,
+    Rapid Reset CVE-2023-44487; no knob in P12).
+  - Re-gate: **validation 10/10**, workspace green, clippy `-D warnings` clean. Tests: matrix
+    `waf-proxy/tests/tls.rs` (4 protocols + 2 fail-safes + **bite SQLi-over-h2-TLS→403** + seam units) +
+    3 `[tls]` validation tests in waf-core. **gRPC = next phase** (de-framing + protobuf + h2 backend).
 
-- **Fase gRPC ✅** — **inspection gRPC** (`OPEN`, sopra l'HTTP/2 di Fase 12). Vedi §8 "Note gRPC". **Due
-  paletti utente** a guida: (A) caso-trappola del nesting nel corpus PRIMA del parser; (B) contabilità
-  separata (content→§6, strutturale→modulo grpc). **Probe-first (Step 0)**: l'invariante-fondazione era la
-  tensione **buffer-vs-trailer** — un throwaway ha provato che `Collected` tiene body E trailer e che un
-  `FramedBody` (data+trailers) li rilancia su unary senza tornare allo streaming, + client h2 dedicato. Pezzi:
-  - **Parser `grpc_extract`** (9° hand-rolled, fuzz): framing + protobuf wire-format; content **best-effort**,
-    strutturale garantito (§8).
-  - **Modulo `grpc` strutturale** (`structural()=true`): size/field/depth/compressed/malformed → `Reject`;
-    `[modules.grpc]` default OFF; `on_compressed: reject|passthrough`. **Hook normalizer**: leaf protobuf →
-    `derived_decoded` → moduli content (§6). **Bug colto**: per body binario `body_str_values` non vede la
-    leaf → spingerla SEMPRE in derived.
-  - **Datapath**: `forward_to_backend` → client h2c **dedicato** (`http2_only`, non flag globale) + relay
-    trailer (`collect_with_trailers`/`FramedBody`) + `te: trailers`; non-gRPC = path h1 invariato.
-  - Re-gate: **validation 10/10** (4 casi corpus: SQLi-in-campo→sqli [paletto B], benign-field, **nesting
-    benigno→Clean** [paletto A], depth-bomb→Reject), clippy `-D warnings` clean. Test: parser 9 unit +
-    `waf-detection/tests/grpc.rs` 12 (modulo + §6 content) + `waf-proxy/tests/grpc.rs` 2 e2e (forward+trailer
-    bidirezionale; SQLi-in-campo→403). **Streaming + backend h2-TLS = deferiti dichiarati.**
+- **gRPC phase ✅** — **gRPC inspection** (`OPEN`, over the Phase-12 HTTP/2). See §8 "gRPC notes". **Two
+  user guardrails**: (A) the nesting trap in the corpus BEFORE the parser; (B) separate accounting
+  (content→§6, structural→grpc module). **Probe-first (Step 0)**: the foundation invariant was the
+  **buffer-vs-trailer** tension — a throwaway proved `Collected` keeps body AND trailers and that a
+  `FramedBody` (data+trailers) re-emits them on unary without going back to streaming, + a dedicated h2
+  client. Pieces:
+  - **Parser `grpc_extract`** (9th hand-rolled, fuzzed): framing + protobuf wire-format; content
+    **best-effort**, structural guaranteed (§8).
+  - **Structural `grpc` module** (`structural()=true`): size/field/depth/compressed/malformed → `Reject`;
+    `[modules.grpc]` default OFF; `on_compressed: reject|passthrough`. **Normalizer hook**: protobuf
+    leaves → `derived_decoded` → content modules (§6). **Bug caught**: for a binary body
+    `body_str_values` cannot see the leaf → push it to derived ALWAYS.
+  - **Datapath**: `forward_to_backend` → **dedicated** h2c client (`http2_only`, not a global flag) +
+    trailer relay (`collect_with_trailers`/`FramedBody`) + `te: trailers`; non-gRPC = the unchanged h1 path.
+  - Re-gate: **validation 10/10** (4 corpus cases: SQLi-in-field→sqli [paletto B], benign-field,
+    **benign nesting→Clean** [paletto A], depth-bomb→Reject), clippy `-D warnings` clean. Tests: parser 9
+    units + `waf-detection/tests/grpc.rs` 12 (module + §6 content) + `waf-proxy/tests/grpc.rs` 2 e2e
+    (forward+trailer both ways; SQLi-in-field→403). **Streaming + h2-TLS backend = declared deferrals.**
+- **Pentest remediation 0.5.0 – 0.5.3 ✅** — three external pentests with real backends behind the
+  WAF (OWASP Juice Shop twice, DVWA), in blocking mode. Coverage was already broad; each
+  report left a few gaps, and every root cause was **verified in the source before fixing**
+  (several differed from the report's hypothesis, e.g. F-1 was a normalizer flag never scored, not a
+  missing regex; E-3a was a dead regex branch; E-3b turned out not reproducible).
+  - **0.5.0** (pentest #1): F-1 null byte / double encoding in the path → `evasion` module (§6,
+    §8); F-2 ERB/JSP SSTI; F-3 Shellshock incl. the User-Agent. Minor bump: `normalize_path` changed
+    signature.
+  - **0.5.1** (pentest #2): G-1 `UNION/**/SELECT` block-comment evasion; G-2 Jinja object access;
+    G-3 NoSQL operator in key position (§6).
+  - **0.5.2** (pentest #2 follow-ons): E-2 tautologies with comparison operators and `LIKE`; E-3a
+    IPv6 loopback; E-4 Thymeleaf/Razor/Smarty SSTI + prototype pollution in keys (§8). E-1 (Log4Shell
+    obfuscation) went to the curated CRS component.
+  - **0.5.3** (DVWA): D-1 error-based SQLi (`extractvalue`/`updatexml`/`exp(~`/`EXISTS(SELECT`), a
+    real data exfiltration; D-2/D-3 declared as trade-offs (§8).
+  - **Gate for every release**: red-first regression (§10) → fix + FP traps in the corpus → full
+    `validation.rs` (0 FP, fast-path equivalence) → clippy `-D warnings` → replay of the report's
+    payloads against a live WAF (attacks → 403, baselines → 200).
 
 ---
 
-## 12. Convenzioni di sviluppo
+## 12. Development conventions
 
-- Un task = un modulo/feature con i suoi test (test-first dove possibile).
-- Commit atomici per fase.
-- Aggiornare questo file quando cambia un'interfaccia o una scelta architetturale.
-- Review/refactor a fine di ogni fase prima di procedere.
-- **Nuovo vettore di detection ⇒ nuovo caso nel corpus** (§10), contestualmente:
-  un `Triggers` per la regola e, se restringi un pattern per un FP, il `Clean`/trap
-  corrispondente. Il test-first si estende al corpus, non solo agli unit del modulo.
+- One task = one module/feature with its tests (test-first where possible).
+- Atomic commits per phase.
+- Update this file when an interface or an architectural choice changes.
+- Review/refactor at the end of every phase before proceeding.
+- **A new detection vector ⇒ a new corpus case** (§10), at the same time: a `Triggers` for the
+  rule and, if you narrow a pattern for an FP, the corresponding `Clean`/trap. Test-first extends
+  to the corpus, not only to the module unit tests.
 
 ---
 
-## 13. Robustezza: fuzzing, ReDoS, differential (Fase 8)
+## 13. Robustness: fuzzing, ReDoS, differential (Phase 8)
 
-Tre fronti distinti, da non confondere:
-1. **Fuzzing dei parser/normalizzatori** → zero panic, zero hang su input ostile.
-2. **ReDoS** → ogni regex limitata nel tempo su input avversari.
-3. **Differential canonicalization** → la normalizzazione ≡ un oracolo di riferimento.
+Three distinct fronts, not to be confused:
+1. **Fuzzing of the parsers/normalizers** → zero panics, zero hangs on hostile input.
+2. **ReDoS** → every regex time-bounded on adversarial input.
+3. **Differential canonicalization** → normalization ≡ a reference oracle.
 
-### Policy canonicalization-vs-freeze (cardine)
+### Canonicalization-vs-freeze policy (cornerstone)
 
-Triage di una divergenza per **sfruttabilità** (threat-model = interpretazione del backend):
-- **Bug di robustezza** (panic/hang/OOB/overflow) → fix immediato; non cambia *quali*
-  regole matchano, nessun conflitto col freeze.
-- **Divergenza di canonicalizzazione SFRUTTABILE** (il WAF vede un canonico benigno
-  mentre il backend ricava un payload, o viceversa) → **fix anche se sposta il
-  canonico**, come **sblocco cosciente e documentato** del freeze: si rieseguono
-  P1/P2/P3 e si dichiarano verdi. Il finding diventa un **regression test permanente**
-  (input minimizzato del vecchio bypass + assert che ora è neutralizzato).
-- **Divergenza NON sfruttabile** → documenta + schedula, freeze mantenuto.
-Ogni divergenza porta scritta nel finding la classificazione sfruttabile/non (è un
-giudizio di sicurezza rivedibile in futuro).
+Triage a divergence by **exploitability** (threat-model = the backend's interpretation):
+- **Robustness bug** (panic/hang/OOB/overflow) → immediate fix; does not change *which* rules
+  match, no conflict with the freeze.
+- **EXPLOITABLE canonicalization divergence** (the WAF sees a benign canonical while the backend
+  derives a payload, or vice versa) → **fix even if it moves the canonical**, as a **conscious,
+  documented unlock** of the freeze: P1/P2/P3 are re-run and declared green. The finding becomes
+  a **permanent regression test** (the minimized input of the old bypass + an assert that it is
+  now neutralized).
+- **NON-exploitable divergence** → document + schedule, freeze maintained.
+Every divergence carries the exploitable/non classification written in the finding (it is a
+security judgment, revisable in the future).
 
-### Toolchain e collocazione
+### Toolchain and placement
 
-- **proptest** (puro Rust, nightly-free): invarianti **sempre-attive in `cargo test`**,
-  cross-platform — la rete che un dev vede a ogni commit.
-- **cargo-fuzz/libFuzzer + ASan/UBSan** (nightly, Linux/CI): profondità coverage-guided,
-  trova OOB/overflow/hang che proptest in safe-Rust non genera. Crate `fuzz/` **escluso
-  dal workspace** (non rompe `cargo build/test --workspace` su toolchain stabile/Windows).
-- **Crash → minimizzato (`cargo fuzz tmin`) → regression test permanente** nel suite del
-  crate proprietario (modello del corpus P1).
+- **proptest** (pure Rust, nightly-free): invariants **always-on in `cargo test`**,
+  cross-platform — the net a dev sees at every commit.
+- **cargo-fuzz/libFuzzer + ASan/UBSan** (nightly, Linux/CI): coverage-guided depth, finds
+  OOB/overflow/hang that proptest in safe-Rust does not generate. The `fuzz/` crate **excluded
+  from the workspace** (it does not break `cargo build/test --workspace` on a stable/Windows
+  toolchain).
+- **Crash → minimized (`cargo fuzz tmin`) → a permanent regression test** in the owning crate's
+  suite (the P1 corpus model).
 
-### Inventario target: custom vs lib
+### Target inventory: custom vs lib
 
-Fuzzati perché **codice nostro** (9 parser custom in `waf-normalizer`): percent-decode/
-`canonicalize_value`, multipart, `normalize_path`/`resolve_path`, `parse_query`,
-`flatten_json` (ricorsione), cookie, form-urlencoded, `graphql_lex` (8°, Fase 11),
-`grpc_extract` (9°, framing gRPC + protobuf wire-format, Fase gRPC). **Delegati a lib** (fuori scope,
-fiducia sulla lib): NFKC → `unicode-normalization`; parse JSON → `serde_json`; parsing
-header/request-line **e chunked transfer-decoding** → **hyper/`http`** (riceviamo header
-già parsati e body già collezionato via `collect().await`). ⚠️ **Confine di fiducia
-esplicito su hyper**: la robustezza del transport-layer è delegata; se un domani si
-parsasse qualcosa del transport a mano, quel target rientra in scope.
+Fuzzed because they are **our code** (9 custom parsers in `waf-normalizer`):
+percent-decode/`canonicalize_value`, multipart, `normalize_path`/`resolve_path`, `parse_query`,
+`flatten_json` (recursion), cookie, form-urlencoded, `graphql_lex` (8th, Phase 11), `grpc_extract`
+(9th, gRPC framing + protobuf wire-format, gRPC phase). **Delegated to libs** (out of scope, trust
+in the lib): NFKC → `unicode-normalization`; JSON parse → `serde_json`; header/request-line
+parsing **and chunked transfer-decoding** → **hyper/`http`** (we receive already-parsed headers
+and an already-collected body via `collect().await`). ⚠️ **Explicit trust boundary on hyper**:
+the transport-layer robustness is delegated; if one day something of the transport were parsed
+by hand, that target re-enters scope.
 
-> **Nota metodologica** (lezione di #3): generatori **non mirati** danno coverage,
-> generatori **biased** danno detection. Solo il **bite-test** distingue quale dei due
-> sta mordendo — es. con il resolver di `..` deliberatamente rotto, la property su input
-> arbitrario restava verde mentre quella biased verso `..` diventava rossa.
+> **Methodological note** (the lesson of #3): **untargeted** generators give coverage, **biased**
+> generators give detection. Only the **bite-test** distinguishes which of the two is biting —
+> e.g. with the `..` resolver deliberately broken, the property over arbitrary input stayed green
+> while the one biased toward `..` went red.
 
-### Relazione di equivalenza del differential (percent-decode)
+### The differential equivalence relation (percent-decode)
 
-Non è uguaglianza globale (la nostra canonicalize fa di più: 2 passi condizionali + NFKC):
-- **(A)** decode single-pass == oracolo indipendente, **byte-esatto**.
-- **(B)** il canonico è un **fixed-point di NFKC** (prova che NFKC è applicato).
-- **(C)** vs `decode_until_stable`, divergenza **caratterizzata**: ESATTAMENTE l'insieme
-  degli input **>2-encoded** (es. `%252527` → noi `%27`, stable → `'`). Il bound "2 passi"
-  (§6) è esso stesso sotto test (witness `>2` che DEVONO divergere). L'**overlong UTF-8**
-  (`%C0%AE`) è neutralizzato a replacement char (lossy) — residuo WAF-vs-backend
-  documentato, non divergenza WAF-vs-oracolo.
+It is not a global equality (our canonicalize does more: 2 conditional passes + NFKC):
+- **(A)** single-pass decode == the independent oracle, **byte-exact**.
+- **(B)** the canonical is a **fixed-point of NFKC** (proof that NFKC is applied).
+- **(C)** vs `decode_until_stable`, the divergence is **characterized**: EXACTLY the set of
+  **>2-encoded** inputs (e.g. `%252527` → us `%27`, stable → `'`). The "2 passes" bound (§6) is
+  itself under test (`>2` witnesses that MUST diverge). The **overlong UTF-8** (`%C0%AE`) is
+  neutralized to the replacement char (lossy) — a documented WAF-vs-backend residual, not a
+  WAF-vs-oracle divergence.
 
-### ReDoS: realtà del motore
+### ReDoS: the engine's reality
 
-Il motore è la crate **`regex`** (automi finiti, **tempo lineare garantito**, nessun
-backtracking) — **ReDoS-da-backtracking è impossibile per costruzione**. Pattern tutti
-`&'static` (no regex da input → no DoS in compilazione), input limitato dai limiti
-difensivi. Quindi il test ReDoS **non** cerca catastrophic-backtracking ma è: (1) **guardia
-anti-regressione** contro l'introduzione futura di un motore backtracking; (2) check di
-**scaling lineare della COMPOSIZIONE** (45 regex × input grande × scan per-campo del
-prefiltro — la super-linearità nasce dall'aggregato, non dalla singola regex). **Budget =
-assert di test, NON guard runtime** (match sync CPU-bound non cancellabile + linearità con
-input bounded ⟹ timeout runtime non necessario; `upstream_timeout_ms` copre il round-trip,
-non l'ispezione). **Trigger di revisione esplicito**: rivedere SOLO se si introduce
-regex-da-input o un motore backtracking.
+The engine is the **`regex`** crate (finite automata, **guaranteed linear time**, no
+backtracking) — **backtracking-ReDoS is impossible by construction**. Patterns all `&'static`
+(no regex from input → no DoS in compilation), input bounded by the defensive limits. So the
+ReDoS test does **not** look for catastrophic backtracking but is: (1) an **anti-regression
+guard** against the future introduction of a backtracking engine; (2) a check of the **linear
+scaling of the COMPOSITION** (45 regex × large input × per-field prefilter scan — super-linearity
+arises from the aggregate, not from a single regex). **Budget = a test assert, NOT a runtime
+guard** (a sync CPU-bound match is non-cancellable + linearity with bounded input ⟹ a runtime
+timeout is unnecessary; `upstream_timeout_ms` covers the round-trip, not the inspection).
+**Explicit review trigger**: revisit ONLY if regex-from-input or a backtracking engine is
+introduced.
 
-### Note a verbale (confini di policy dichiarati)
+### On-record notes (declared policy boundaries)
 
-- **Cookie non canonicalizzati in `parse_cookies_limited`**: fa solo split+trim; la
-  canonicalizzazione è downstream (`canonicalize_value(_, false)`, `+` **letterale**,
-  RFC 6265). Intenzionale (nomi cookie = token ristretti).
-- **Form body: `from_utf8` strict → vuoto** (all-or-nothing) su UTF-8 invalido — politica
-  **opposta** al canonicalizzatore di valore (#1/#3, lossy→replacement). Un byte invalido
-  fa cadere l'intero body (mai parsing parziale del prefisso valido = anti-smuggling).
+- **Cookies not canonicalized in `parse_cookies_limited`**: it only does split+trim; the
+  canonicalization is downstream (`canonicalize_value(_, false)`, **literal** `+`, RFC 6265).
+  Intentional (cookie names = restricted tokens).
+- **Form body: strict `from_utf8` → empty** (all-or-nothing) on invalid UTF-8 — a policy
+  **opposite** to the value canonicalizer (#1/#3, lossy→replacement). A single invalid byte drops
+  the whole body (never partial parsing of the valid prefix = anti-smuggling).
 
-### Disciplina e stato
+### Discipline and status
 
-Ogni guardia è provata col **bite-test**: bug iniettato → property/witness rosso →
-ripristino verde (un oracolo mai visto fallire è speranza, non garanzia). **Stato**: 7/7
-target coperti; proptest cross-platform **verde**; batch sanitizer **verde** (no crash nel
-budget esplorato; fuzzing lungo schedulato in CI); **0 finding reali**.
+Every guard is proven with the **bite-test**: an injected bug → property/witness red → restore
+green (an oracle never seen to fail is hope, not a guarantee). **Status**: 7/7 targets covered;
+proptest cross-platform **green**; sanitizer batch **green** (no crash in the explored budget;
+long fuzzing scheduled in CI); **0 real findings**.
 
-> **Anti-pattern noto del codebase — "test che non esercita il percorso che crede di
-> testare"** (proprietà del codebase, non sfortuna: 3 istanze). Un test resta **verde per
-> il motivo sbagliato** quando il traffico non raggiunge il percorso sotto test, o quando
-> l'asserzione è soddisfatta da un percorso diverso. Radici strutturali ricorrenti qui:
-> (1) il **prefiltro** (§7) salta l'ispezione sul benigno → fault-injection su traffico
-> non-**candidate** non raggiunge mai i moduli; (2) **detection-only** rende 200 la
-> risposta a prescindere dalla protezione → un test in detection-only non distingue
-> protezione-attiva da protezione-caduta. Istanze: `prop_path_invariants` verde col
-> resolver `..` rotto (Fase 8, input arbitrario non genera `/../`); `integration.rs` panic
-> mai raggiunto (prefiltro salta il benigno, smoke Fase 9); `reload_invalid_keeps_old_config`
-> 200-either-way (detection-only, Fase 9 b). **Unico rilevatore affidabile = il bite-test**
-> (rompi il percorso → il test DEVE diventare rosso; se resta verde, non testava nulla).
-> **Regola operativa**: fault-injection/misura su traffico **candidate** + asserzione che
-> *cambia* tra percorso-ok e percorso-rotto (es. blocking 403-vs-200, contatore atomico),
-> mai un verde/200 che un secondo percorso può produrre.
+> **Known codebase anti-pattern — "a test that does not exercise the path it thinks it tests"**
+> (a property of the codebase, not bad luck: 3 instances). A test stays **green for the wrong
+> reason** when the traffic does not reach the path under test, or when the assertion is satisfied
+> by a different path. Recurring structural roots here: (1) the **prefilter** (§7) skips inspection
+> on benign → fault-injection on non-**candidate** traffic never reaches the modules; (2)
+> **detection-only** makes the response 200 regardless of protection → a test in detection-only
+> does not distinguish protection-active from protection-fallen. Instances: `prop_path_invariants`
+> green with the `..` resolver broken (Phase 8, arbitrary input does not generate `/../`);
+> `integration.rs` panic never reached (the prefilter skips the benign, Phase 9 smoke);
+> `reload_invalid_keeps_old_config` 200-either-way (detection-only, Phase 9 b). **The only reliable
+> detector = the bite-test** (break the path → the test MUST go red; if it stays green, it was
+> testing nothing). **Operational rule**: fault-injection/measurement on **candidate** traffic + an
+> assertion that *changes* between ok-path and broken-path (e.g. blocking 403-vs-200, atomic counter),

@@ -13,7 +13,7 @@
 use std::time::SystemTime;
 
 use waf_core::{Bytes, Config, Normalized, RequestContext, WafMode, WafModule};
-use waf_modules_premium::{rules, ApiSchemaEnforcementConfig, ApiSchemaModule};
+use waf_schema_enforcement::{rules, ApiSchemaEnforcementConfig, ApiSchemaModule};
 use waf_pipeline::{Pipeline, PipelineVerdict};
 
 // A 3.0 spec (with the nullable field, to keep the normalization on the datapath too).

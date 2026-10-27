@@ -26,6 +26,22 @@ one version.
   a Contributor License Agreement.
 - `BOUNDARY.md` now describes an architectural boundary (core vs components and the seams
   between them) rather than a commercial one.
+- **Renamed before their first publication:** `waf-modules-premium` → **`waf-schema-enforcement`**
+  (GraphQL/gRPC schema enforcement, OpenAPI positive security, bot detection) and
+  `waf-marketplace` → **`waf-wasm-signing`** (minisign verification of WASM plugins). Config
+  tables (`[enterprise.*]`) are unchanged.
+
+### Published on crates.io
+
+- Core: `waf-core`, `waf-normalizer`, `waf-pipeline`, `waf-detection`, `waf-wasm`, `waf-proxy`
+  (binary `waf`).
+- Components (new on crates.io): `waf-state-redis`, `waf-tls-managed`, `waf-threatintel`,
+  `waf-crs-curated`, `waf-capture`, `waf-schema-enforcement`, `waf-wasm-signing`, and the
+  `waf-enterprise` binary.
+- Not published (`publish = false`), shipped as container images and Helm charts instead:
+  `waf-controlplane`, `waf-governance`, `waf-node-agent`, `waf-operator`. The control plane embeds
+  a dashboard built by npm, which a crates.io build cannot reproduce. `waf-corpus` (the validation
+  corpus) stays unpublished as before.
 
 ### Removed
 
@@ -41,6 +57,8 @@ one version.
   from an inline env value to a Secret. The install notes print how to retrieve generated values.
 - Dashboard dependencies updated to patched versions (`vite` 6.4.5, `postcss` 8.5.32,
   `react-router` 6.30.6, and transitive packages).
+- `chacha20` updated from 0.10.1, which was yanked from crates.io, to 0.10.2 (pulled in through
+  the DNS resolver used by ACME DNS-01).
 - Container images: CVE-2026-84782 (`libssl3` in the distroless base) is accepted until
   2026-11-16 with a documented justification in `.trivyignore` — no shipped binary links OpenSSL,
   and nothing uses DTLS.

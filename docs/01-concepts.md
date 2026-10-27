@@ -83,7 +83,7 @@ Light WAF is built in two layers, both open source (Apache-2.0):
 - **Core** — the proxy engine, the detection pipeline, the native rule modules
   (SQLi, XSS, RCE, path traversal, SSRF, LDAP/NoSQL/SSTI/…), the CRS rule engine, TLS termination
   from a file, and single-node rate limiting. A WAF built only from the core is a complete,
-  standalone product (the `waf-proxy` binary).
+  standalone product (the `waf` binary, crate `waf-proxy`).
 - **Components** — the *at-scale* and *governed* capabilities layered on
   top through the core's extension points, **without forking the core**: cluster-wide rate limiting
   and IP reputation (Redis), managed ACME TLS, curated CRS content, GraphQL/gRPC schema

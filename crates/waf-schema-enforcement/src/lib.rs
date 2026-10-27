@@ -1,22 +1,23 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-//! Premium detection modules (enterprise, §4). This crate hosts logic-driven premium `WafModule`s
-//! injected via the core's `.add_module()` seam — starting with **GraphQL schema-enforcement**
-//! (§4-B): validate each incoming GraphQL operation against the app's REAL schema (`.graphql` SDL).
-//! A field/type/argument NOT in the schema means a query the app's own client would never send —
-//! a strong probing/abuse signal — so it contributes to the SAME cumulative anomaly score the core
-//! already uses (no new decision logic; `Decision::Scores`, severity resolved by the pipeline).
+//! Positive-security detection modules for [Light WAF](https://github.com/0x00spor3/Light-WAF): they
+//! validate requests against **the application's real contract** and score what falls outside it.
 //!
-//! This is **governance of the schema**, NOT baseline detection: value-level injection stays in the
-//! OPEN §6 channel, and the structural DoS caps (depth/size/batch) stay in the OPEN Phase-11 GraphQL
-//! module — which runs FIRST, so apollo-compiler only ever sees already-capped operations.
+//! - [`GraphqlSchemaModule`] — GraphQL operations against the app's SDL (`apollo-compiler`).
+//! - [`GrpcSchemaModule`] — unary gRPC messages against the app's `FileDescriptorSet`
+//!   (`prost-reflect`).
+//! - [`ApiSchemaModule`] — REST/JSON requests against the app's OpenAPI 3.0/3.1 spec (`oas3` +
+//!   `jsonschema`, with no HTTP retriever: a WAF never fetches remote schemas).
+//! - [`BotDetectionModule`] — client integrity: a modern-browser user agent with no `sec-fetch-*`
+//!   headers.
 //!
-//! **STEP 1 (scaffold + rule_id registry).** Steps 0–1 stand up the crate, the [`rules`] namespace
-//! registry (G1/G7 — structural, not by convention) and a working `GraphqlSchemaModule` proven on
-//! the real `Pipeline`. The full multi-transport operation-extraction (mirroring the OPEN
-//! `GraphqlModule::operations`), config wiring and boot-fatal schema load from a path land in
-//! Steps 2–7. See the frozen plan (G1–G7).
+//! Every module returns additive scores into the same cumulative anomaly score as the core modules,
+//! under reserved rule-id namespaces ([`rules`]), with configurable severities. The core's structural
+//! caps run first, so validators only see bounded input; value-level injection stays in the core.
+//! A missing or invalid schema/descriptor/spec is a construction error (fail-closed on configuration,
+//! never on traffic). Build the modules inside a `module_factory` to pick up a changed schema on
+//! reload.
 
 use std::path::Path;
 

@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — OpenAPI positive-security (§4-B part 3)
 
-Verifies the enterprise API-security module (`waf-modules-premium`): each REST/JSON request under a
+Verifies the enterprise API-security module (`waf-schema-enforcement`): each REST/JSON request under a
 guarded path prefix is validated against the app's **real OpenAPI spec** (a JSON file — v1 is
 JSON-only) and injected as a `structural()` `WafModule`. A request to an endpoint/method the spec does
 not declare scores `schema-api-unknown-route` / `schema-api-method-not-allowed` (Critical); a request
@@ -24,7 +24,7 @@ Two layers:
 ## A. Offline suite
 
 ```sh
-cargo test -p waf-modules-premium          # 32 api_schema unit (load/normalize/router/param+body)
+cargo test -p waf-schema-enforcement          # 32 api_schema unit (load/normalize/router/param+body)
                                            # + 6 api_schema_datapath (REAL pipeline: block/control/FP/boundary)
 cargo test -p waf-enterprise               # incl. 3 api_schema config tests
 ```

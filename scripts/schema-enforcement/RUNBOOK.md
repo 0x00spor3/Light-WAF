@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — GraphQL schema-enforcement (§4-B)
 
-Verifies the enterprise GraphQL schema-enforcement module (`waf-modules-premium`): each GraphQL
+Verifies the enterprise GraphQL schema-enforcement module (`waf-schema-enforcement`): each GraphQL
 operation is validated against the app's **real SDL schema** via `apollo-compiler` and injected as a
 `structural()` `WafModule`. A query referencing anything not in the schema (unknown
 field/type/argument, missing subselection, undefined/unused variable) scores
@@ -24,7 +24,7 @@ Two layers:
 ## A. Offline suite
 
 ```sh
-cargo test -p waf-modules-premium
+cargo test -p waf-schema-enforcement
 # lib (20): schema parse/load-from-file/boot-fatal, parse-error vs schema-invalid split, extraction
 #           (application/graphql | JSON leaf + batch | GET ?query= | path-gating | envelope-unwrap),
 #           FP-guard (aliases/fragments/__typename/introspection/variables → Valid), batch dedup,

@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — signed WASM plugin loader (§4-C)
 
-Verifies the enterprise signed-plugin loader (`waf-marketplace`): a Proxy-Wasm plugin is loaded ONLY
+Verifies the enterprise signed-plugin loader (`waf-wasm-signing`): a Proxy-Wasm plugin is loaded ONLY
 after a detached **minisign (ed25519)** signature over the exact `.wasm` bytes verifies against a
 configured trusted key. The OPEN runtime (`waf-wasm`) and its unsigned `[modules.wasm]` loader are
 unchanged; this adds the **trust gate** on top.
@@ -22,13 +22,13 @@ Two layers:
 ## A. Offline suite
 
 ```sh
-cargo test -p waf-marketplace          # 8 unit (minisign verify + gate ordering)
+cargo test -p waf-wasm-signing          # 8 unit (minisign verify + gate ordering)
 cargo test -p waf-enterprise           # incl. wasm config + exclusive_conflict tests
 
 # Env-gated bite-test with a REAL plugin (build the B3 example once if needed):
 #   (cd ../examples/wasm-plugin && cargo build --release --target wasm32-unknown-unknown)
 WAF_WASM_FIXTURE=../examples/wasm-plugin/target/wasm32-unknown-unknown/release/waf_wasm_example.wasm \
-  cargo test -p waf-marketplace --test datapath
+  cargo test -p waf-wasm-signing --test datapath
 ```
 
 ## B. Live wire check
@@ -42,7 +42,7 @@ WAF_WASM_FIXTURE=../examples/wasm-plugin/target/wasm32-unknown-unknown/release/w
 
   ```sh
   WAF_WASM_IN=waf_wasm_example.wasm WAF_SIG_OUT=plugin.minisig \
-    cargo test -p waf-marketplace sign_plugin -- --ignored --nocapture
+    cargo test -p waf-wasm-signing sign_plugin -- --ignored --nocapture
   # → wrote signature to plugin.minisig
   # → trusted_keys = ["RWQ...base64..."]
   ```

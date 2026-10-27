@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Curated CRS/ModSecurity rule content for Light WAF: CVE, application and evasion signatures, loaded through the core CRS engine."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["waf", "security", "modsecurity", "owasp-crs", "cve"]
+categories = ["web-programming"]
 
 [dependencies]
 # Content-only: the ruleset is embedded via include_str!, so the library has NO runtime deps.
