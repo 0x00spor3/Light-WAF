@@ -6,7 +6,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Premium detection modules for Light WAF — enterprise tier (Apache-2.0). §4-B GraphQL schema-enforcement."
+description = "Advanced detection modules for Light WAF: GraphQL and gRPC schema enforcement, OpenAPI positive security, bot detection."
 
 [dependencies]
 # The premium modules are injected via the core's `.add_module()` seam (BOUNDARY §4) — same

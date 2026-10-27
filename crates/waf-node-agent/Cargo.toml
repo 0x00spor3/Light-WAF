@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Per-node rule-management agent for Light WAF — pulls the current ruleset from the control plane, pre-validates it, writes the managed .conf and reloads the WAF (§7 write-path v3, enterprise, Apache-2.0)"
+description = "Per-node rule-management agent for Light WAF: pulls the published ruleset from the control plane, pre-validates it, writes it and reloads the WAF."
 
 # The agent links `waf-detection` (OPEN) ONLY to PRE-VALIDATE a ruleset with the real seclang parser
 # before it ever touches the WAF — it does NOT sit on the datapath. It writes a file the core already

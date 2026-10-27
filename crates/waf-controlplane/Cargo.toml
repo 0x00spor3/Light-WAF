@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Control plane for Light WAF — dashboard/API over the OPEN telemetry (§7, enterprise, Apache-2.0)"
+description = "Control plane for Light WAF: telemetry ingest, dashboard and API, alerting, rule management, governance and SIEM forwarding."
 
 [features]
 # Embed the built web UI (`ui/dist`) into the binary for a single-binary production deploy. Requires

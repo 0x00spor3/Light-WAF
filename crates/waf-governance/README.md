@@ -41,7 +41,7 @@ public key.
 ## Tests
 
 Pure unit tests run with no database. The store integration tests are **env-gated** on
-`WAF_CP_DATABASE_URL` (skipped when unset), mirroring the rest of the enterprise tier:
+`WAF_CP_DATABASE_URL` (skipped when unset), mirroring the other component crates:
 
 ```sh
 docker run -d --name waf-cp-pg -p 5432:5432 -e POSTGRES_PASSWORD=pw postgres:16

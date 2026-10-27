@@ -76,24 +76,25 @@ covered in [Operations](08-operations.md#resilience-posture). The one rule to re
 rate-limiter* (infrastructure) fails **open** so it never blocks legitimate traffic, while a *failed
 inspection* (security) fails **closed**.
 
-## Editions: OPEN core and enterprise
+## Core and components
 
-Light WAF ships in two layers that build into one binary:
+Light WAF is built in two layers, both open source (Apache-2.0):
 
-- **OPEN core** (Apache-2.0) — the proxy engine, the detection pipeline, the native rule modules
+- **Core** — the proxy engine, the detection pipeline, the native rule modules
   (SQLi, XSS, RCE, path traversal, SSRF, LDAP/NoSQL/SSTI/…), the CRS rule engine, TLS termination
   from a file, and single-node rate limiting. A WAF built only from the core is a complete,
-  standalone product.
-- **Enterprise tier** (Apache-2.0, this subtree) — the *at-scale* and *governed* capabilities layered on
+  standalone product (the `waf-proxy` binary).
+- **Components** — the *at-scale* and *governed* capabilities layered on
   top through the core's extension points, **without forking the core**: cluster-wide rate limiting
-  and IP reputation (Redis), managed ACME TLS, curated premium CRS content, GraphQL/gRPC schema
+  and IP reputation (Redis), managed ACME TLS, curated CRS content, GraphQL/gRPC schema
   enforcement, bot detection, signed WASM plugins — and the three off-datapath services (control
   plane, dashboard, node agent) that give you a dashboard, governed rule management, alerting,
-  compliance evidence, and SIEM export.
+  compliance evidence, and SIEM export. The `waf-enterprise` binary is the data plane with
+  every component wired in.
 
-Every enterprise capability is **default-off** and opt-in via an `[enterprise.*]` or
-`[controlplane.*]` config table. Turning them all off leaves you with exactly the OPEN behavior. The
-rest of this guide notes which tier each feature belongs to; operationally you configure them the
-same way.
+Every component capability is **default-off** and opt-in via an `[enterprise.*]` or
+`[controlplane.*]` config table. Turning them all off leaves you with exactly the core
+behavior. The rest of this guide notes which layer each feature belongs to; operationally you configure
+them the same way. See [`BOUNDARY.md`](../BOUNDARY.md) for the full split.
 
 Next: [Getting started](02-getting-started.md).

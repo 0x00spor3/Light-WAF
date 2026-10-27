@@ -8,8 +8,7 @@ layered on afterwards in the per-topic chapters.
 
 ## Prerequisites
 
-- **Rust** (stable toolchain) to build the binaries. The enterprise subtree is a self-contained
-  workspace with its own `[workspace]` root — you build it from the `enterprise/` directory.
+- **Rust** (stable toolchain) to build the binaries — one Cargo workspace, built from the repository root.
 - **Node 22 / npm 10** — only to build the dashboard (`ui/`).
 - **Postgres 16** — only for the control plane.
 - **Redis 7** — only if you enable cluster-wide rate limiting or IP reputation.
@@ -30,7 +29,7 @@ None of these are required by the WAF proxy itself: a standalone WAF needs only 
 
 ## 1 · Run the WAF proxy
 
-The proxy binary is `waf-enterprise`. It reads the same config file as the OPEN core plus the
+The proxy binary is `waf-enterprise`. It reads the same config file as the core `waf-proxy` plus the
 `[enterprise]` tables. Start from the sample [`examples/enterprise.toml`](../examples/enterprise.toml)
 (from the repository root):
 

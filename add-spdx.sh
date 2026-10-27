@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent SPDX applier for the OPEN (Apache-2.0) tier.
+# Idempotent SPDX applier (Apache-2.0) for the whole workspace.
 #   - prepends a 2-line SPDX header to every .rs under crates/ and fuzz/
 #   - sets `license = "Apache-2.0"` in each crate Cargo.toml that has a [package]
 # Safe to re-run: files that already carry the header / license are skipped.

@@ -8,8 +8,8 @@ product is put together, how to install and configure each service, and how to r
 (rule changes, governance, compliance, SIEM export, reloads, troubleshooting).
 
 It is task-oriented — organized around what an operator actually does, not around the source tree.
-For the *why* behind the design (the enterprise/core boundary, the extension seams), see
-[`ARCHITECTURE_ENTERPRISE.md`](../ARCHITECTURE_ENTERPRISE.md) and [`BOUNDARY.md`](../../BOUNDARY.md).
+For the *why* behind the design (the core/component boundary, the extension seams), see
+[`ARCHITECTURE_ENTERPRISE.md`](../ARCHITECTURE_ENTERPRISE.md) and [`BOUNDARY.md`](../BOUNDARY.md).
 For copy-paste runbooks per feature, see [`scripts/*/RUNBOOK.md`](../scripts).
 
 ## The three services
@@ -28,7 +28,7 @@ central dashboard, governed rule management, alerting, compliance evidence, or S
 ## Table of contents
 
 1. [Concepts](01-concepts.md) — how a request is judged, the anomaly score and block threshold,
-   verdicts and severities, editions (OPEN core vs enterprise).
+   verdicts and severities, core and components.
 2. [Getting started](02-getting-started.md) — prerequisites, building, and running each service; ports.
 3. [WAF configuration](03-waf-configuration.md) — the full proxy config by task: TLS, rate limiting,
    client-IP resolution, limits, detection modules, CRS, resilience, and the enterprise modules.

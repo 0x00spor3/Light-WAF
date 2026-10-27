@@ -39,7 +39,7 @@ alpn      = ["h2", "http/1.1"]         # one port serves HTTP/2 and HTTP/1.1 by 
 
 When enabled the listener serves **only** TLS — there is no cleartext fallback, and an
 unreadable cert is a fatal boot error (fail-closed). Cert management at scale (ACME, rotation,
-mTLS) is an enterprise concern; the OPEN core reads a cert from file.
+mTLS) is handled by the `waf-tls-managed` component (`waf-enterprise`); the core reads a cert from file.
 
 ## Extensibility & observability (`strict.toml`)
 
