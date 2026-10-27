@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Distributed state for Light WAF over Redis: cluster-wide rate limiting, IP reputation and a shared certificate store."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["waf", "security", "redis", "rate-limiting", "distributed"]
+categories = ["web-programming", "network-programming"]
 
 [dependencies]
 waf-core.workspace = true

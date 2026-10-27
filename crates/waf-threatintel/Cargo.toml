@@ -5,11 +5,16 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Threat intelligence for Light WAF: reputation feeds and a cluster-wide IP-reputation detection module."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["waf", "security", "threat-intel", "ip-reputation", "redis"]
+categories = ["web-programming", "network-programming"]
 
 [dependencies]
 waf-core = { workspace = true }
 # The ReputationStore/ReputationWriter seams + Reputation live with the Redis impl; consumed here.
-waf-state-redis = { path = "../waf-state-redis" }
+waf-state-redis = { path = "../waf-state-redis", version = "1.0.0" }
 tracing = { workspace = true }
 # Object-safe async trait for `dyn ReputationFeed` (feed sources).
 async-trait = "0.1"

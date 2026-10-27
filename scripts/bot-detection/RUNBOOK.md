@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — client-integrity / bot detection (§4-A)
 
-Verifies the enterprise bot-detection module (`waf-modules-premium`): native cross-header heuristics
+Verifies the enterprise bot-detection module (`waf-schema-enforcement`): native cross-header heuristics
 injected as a `structural()` `WafModule`. v1 = **browser impersonation (S1)**: a request whose
 User-Agent advertises a *modern* browser (Chromium/Firefox with a 3-digit major version) but which
 carries **no** `sec-fetch-*` headers scores `bot-browser-impersonation` (Critical). A crude bot
@@ -21,7 +21,7 @@ Two layers:
 ## A. Offline suite
 
 ```sh
-cargo test -p waf-modules-premium          # bot: classifier + S1 + 6 bot_datapath (REAL pipeline + FP-guard)
+cargo test -p waf-schema-enforcement          # bot: classifier + S1 + 6 bot_datapath (REAL pipeline + FP-guard)
 cargo test -p waf-enterprise               # incl. 3 bot_detection config tests
 ```
 

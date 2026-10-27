@@ -92,14 +92,14 @@ All opt-in, built on the core's public extension points ([`BOUNDARY.md`](BOUNDAR
 ## Architecture
 
 ```
-                   ┌────────────────────────── data plane (per node) ──────────────────────────┐
-  client ──HTTP/S──▶  waf-proxy  or  waf-enterprise   ──▶  your backend                          │
+                   ┌────────────────────────── data plane (per node) ────────────────────────────┐
+  client ──HTTP/S──▶  waf  or  waf-enterprise   ────────▶  your backend                          │
                    │    core pipeline + components         (Redis: shared rate limit/reputation) │
                    │        │ decision log, /metrics            ▲                                │
                    │        │                                   │ ruleset + reload               │
                    │        ▼                                   │                                │
                    │   log shipper ─────────┐          waf-node-agent                            │
-                   └────────────────────────┼───────────────────▲───────────────────────────────┘
+                   └────────────────────────┼───────────────────▲────────────────────────────────┘
                                             ▼                   │
                                   waf-controlplane (dashboard, API, governance) ── Postgres
                                             └──▶ webhooks, SIEM
@@ -109,7 +109,7 @@ Five binaries:
 
 | Binary | Role | On the request path? |
 |---|---|---|
-| `waf-proxy` | the core WAF: single node, no external services | yes |
+| `waf` (crate `waf-proxy`) | the core WAF: single node, no external services | yes |
 | `waf-enterprise` | the same WAF with every component wired in (Redis state, managed TLS, advanced modules, capture) | yes |
 | `waf-controlplane` | telemetry ingest, dashboard + API, governance, alerting, SIEM | no |
 | `waf-node-agent` | pulls published rulesets onto a node and triggers a reload | no |
@@ -129,7 +129,7 @@ waf-core ────────┐ (base types, no internal dependencies)
    └───────────── waf-wasm         (Proxy-Wasm runtime on wasmi)
                    ▲
          ┌─────────┴──────────┐
-   waf-proxy (binary)   waf-corpus (validation corpus: lib + tests + examples)
+   waf-proxy (bin: waf)   waf-corpus (validation corpus: lib + tests + examples)
 ```
 
 | Crate | Role |
@@ -150,8 +150,8 @@ waf-core ────────┐ (base types, no internal dependencies)
 | `waf-tls-managed` | ACME (TLS-ALPN-01, DNS-01) with hitless rotation, mTLS verifier |
 | `waf-threatintel` | reputation feed writer + IP-reputation module |
 | `waf-crs-curated` | curated SecRule content pack |
-| `waf-modules-premium` | GraphQL/gRPC schema enforcement, OpenAPI positive security, bot detection |
-| `waf-marketplace` | minisign signature verification for WASM plugins |
+| `waf-schema-enforcement` | GraphQL/gRPC schema enforcement, OpenAPI positive security, bot detection |
+| `waf-wasm-signing` | minisign signature verification for WASM plugins |
 | `waf-capture` | denied-request capture and shipping |
 | `waf-enterprise` | the data-plane binary wiring all of the above ([README](crates/waf-enterprise/README.md)) |
 | `waf-controlplane` | control-plane service + embedded dashboard ([README](crates/waf-controlplane/README.md)) |
@@ -295,8 +295,8 @@ Coverage-guided fuzzing (`fuzz/`, nightly + Linux) is excluded from the workspac
 | [`docs/`](docs/README.md) — Operator Guide | concepts, installation, full configuration, control plane, rule management, governance, compliance & SIEM, operations, Kubernetes |
 | [`examples/`](examples/README.md) | ready-to-adapt configurations |
 | [`BOUNDARY.md`](BOUNDARY.md) | what is core and what is a component, the extension seams, API stability policy |
-| [`ARCHITECTURE-en.md`](ARCHITECTURE-en.md) | core design: pipeline, normalization, detection, scoring, performance, robustness ([Italian original](ARCHITECTURE.md)) |
-| [`ARCHITECTURE_ENTERPRISE.md`](ARCHITECTURE_ENTERPRISE.md) | component design (Italian) |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | core design: pipeline, normalization, detection, scoring, performance, robustness |
+| [`ARCHITECTURE_ENTERPRISE.md`](ARCHITECTURE_ENTERPRISE.md) | component design: distributed state, managed TLS, extra modules, control plane, governance, SIEM, Kubernetes, request capture |
 | [`scripts/*/RUNBOOK.md`](scripts) | per-feature runbooks with copy-paste checks |
 | [`CHANGELOG.md`](CHANGELOG.md) | release history |
 
@@ -314,7 +314,8 @@ Please report vulnerabilities — including detection bypasses — privately, as
 ## Contributing
 
 Contributions are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md). Commits must be signed off
-under the [Developer Certificate of Origin](https://developercertificate.org/) (`git commit -s`).
+under the [Developer Certificate of Origin](https://developercertificate.org/) (`git commit -s`), and everyone
+taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

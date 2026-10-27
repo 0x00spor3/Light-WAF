@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Managed TLS for Light WAF: ACME certificates with hitless rotation (TLS-ALPN-01, DNS-01) and mTLS client authentication."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["waf", "tls", "acme", "mtls", "letsencrypt"]
+categories = ["network-programming", "cryptography"]
 
 [dependencies]
 waf-proxy.workspace = true

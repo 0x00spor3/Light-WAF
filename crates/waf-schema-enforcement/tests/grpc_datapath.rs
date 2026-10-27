@@ -8,7 +8,7 @@
 
 use prost::Message;
 use waf_core::{Bytes, Config, Normalized, ParsedBody, RequestContext, WafMode};
-use waf_modules_premium::{grpc::GrpcSchemaModule, rules};
+use waf_schema_enforcement::{grpc::GrpcSchemaModule, rules};
 use waf_pipeline::{Pipeline, PipelineVerdict};
 
 /// Compile the fixture `.proto` to FileDescriptorSet bytes (no `protoc` — protox), mirroring the

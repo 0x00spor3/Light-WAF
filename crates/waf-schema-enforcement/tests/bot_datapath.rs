@@ -7,7 +7,7 @@
 //! default-off are inert. Exercises the `Phase::Headers` + `structural()` path.
 
 use waf_core::{Bytes, Config, Normalized, RequestContext, WafMode, WafModule};
-use waf_modules_premium::{rules, BotDetectionModule};
+use waf_schema_enforcement::{rules, BotDetectionModule};
 use waf_pipeline::{Pipeline, PipelineVerdict};
 
 const CHROME: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like \

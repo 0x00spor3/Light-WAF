@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Governance for the Light WAF control plane: RBAC, local auth and sessions, OIDC SSO, and a tamper-evident signed audit log."
+# Shipped as a container image / Helm chart, not on crates.io (see BOUNDARY.md and the release notes).
+publish = false
 
 # Control-plane-only, like `waf-controlplane`: this is a LIBRARY the control plane links to add
 # identities, roles, sessions and a tamper-evident audit log. It NEVER touches the datapath and does

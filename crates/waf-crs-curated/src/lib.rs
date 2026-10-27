@@ -1,23 +1,20 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-//! Curated **premium** CRS/ModSecurity ruleset content (ARCHITECTURE_ENTERPRISE §6).
+//! Curated OWASP CRS / ModSecurity rule content for [Light WAF](https://github.com/0x00spor3/Light-WAF).
 //!
-//! The `seclang` parser/engine is OPEN (`waf_detection::crs`, B2); this crate ships only the
-//! *content* (`BOUNDARY §2.4`). The rules are **premium-additive** — high-cura CVE / app-specific /
-//! evasion signatures that ADD to the OPEN native detection modules and contribute to the SAME
-//! cumulative anomaly score. They never re-implement the baseline (SQLi/XSS/PT/RCE/LFI-RFI stay
-//! OPEN); removing the native modules and relying on this would be a "gutted core".
+//! The core ships the `SecRule` parser and engine (`waf_detection::crs`); this crate ships only
+//! **content**: high-confidence CVE, application and evasion signatures that **add** to the core's
+//! native detection modules and contribute to the same cumulative anomaly score. It never
+//! re-implements the baseline (SQLi/XSS/traversal/RCE/LFI-RFI stay in the core).
 //!
-//! ## Shape
-//! - Content-only: the `.conf` files are embedded at compile time via `include_str!` — no runtime
-//!   deps. The enterprise binary builds a `CrsModule` from [`curated_source`] and injects it via
-//!   `Proxy::builder().add_module(..)`, gated by `[enterprise.crs_curated]`.
-//! - Only v1-subset constructs (`@rx`/`@pm` on supported targets). The compat gate
-//!   (`tests/gate.rs`) loads the content through the OPEN engine and asserts [`EXPECTED_LOADED`]
-//!   rules load with **zero** skipped — so an edit that reaches outside the subset (which the
-//!   engine would *skip*, not load) fails the build instead of silently shrinking coverage.
-//! - Rule IDs live in the reserved **9000000+** range.
+//! - The `.conf` files are embedded at compile time. Build a module from [`curated_source`] with
+//!   `waf_detection::crs::CrsModule::from_source` and inject it with
+//!   `Proxy::builder(&cfg).add_module(..)` (or a `module_factory`).
+//! - Only constructs supported by the core engine are used. A test loads the content through that
+//!   engine and asserts that exactly [`EXPECTED_LOADED`] rules load with **zero** skipped, so a rule the
+//!   engine could not run fails the build instead of silently shrinking coverage.
+//! - Rule ids live in the reserved `9000000+` range.
 
 /// The curated `.conf` files, embedded at compile time in include order.
 const FILES: &[&str] = &[

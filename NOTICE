@@ -6,7 +6,7 @@ See the LICENSE file for the full license text, or visit
 http://www.apache.org/licenses/LICENSE-2.0
 
 The enterprise components (crates waf-state-redis, waf-tls-managed,
-waf-threatintel, waf-crs-curated, waf-modules-premium, waf-marketplace,
+waf-threatintel, waf-crs-curated, waf-schema-enforcement, waf-wasm-signing,
 waf-controlplane, waf-capture, waf-governance, waf-node-agent,
 waf-enterprise, waf-operator, and the Helm charts) were originally released
 under the Business Source License 1.1 and were relicensed under Apache-2.0

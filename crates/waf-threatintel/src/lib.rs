@@ -1,19 +1,18 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-//! Threat intelligence (enterprise). Two halves of cluster-wide IP-reputation:
+//! Threat intelligence for [Light WAF](https://github.com/0x00spor3/Light-WAF): cluster-wide IP
+//! reputation, in two halves.
 //!
-//! - **Read** (ARCHITECTURE_ENTERPRISE §3): the [`ReputationModule`] `WafModule` reads a
-//!   [`ReputationStore`] (e.g. the Redis store that also backs rate-limit) at `Phase::Connection`
-//!   and contributes to the **same** cumulative anomaly score the core already uses — no new
-//!   decision logic. Injected via the core's existing `.add_module()` seam.
-//! - **Write** (§6): the [`start_reputation_feed`] driver polls [`ReputationFeed`] sources
-//!   ([`FileFeed`] / [`HttpListFeed`]) and *populates* the `rep:<ip>` keyspace via the
-//!   `ReputationWriter` seam, gated by a per-cycle single-writer lock.
+//! - **Read**: [`ReputationModule`] is a detection module that runs at the connection phase, looks up
+//!   the client IP in a `waf_state_redis::ReputationStore` and adds a severity to the request's
+//!   cumulative anomaly score (`Malicious` / `Suspicious`; `Unknown` adds nothing). A store outage
+//!   reads as `Unknown`: it neither blocks nor unblocks traffic.
+//! - **Write**: [`start_reputation_feed`] polls [`ReputationFeed`] sources ([`FileFeed`],
+//!   [`HttpListFeed`]) and populates the store, with a per-cycle single-writer lock and per-entry TTL
+//!   so de-listed IPs age out.
 //!
-//! Deliberately enterprise-only: the OPEN datapath never queries or writes reputation, so it stays
-//! out of the frozen core ABI (the reputation seams live on `waf-state-redis`, not
-//! `waf_core::StateStore`).
+//! Reputation stays out of the core's API: the core datapath never reads or writes it.
 
 use std::sync::Arc;
 

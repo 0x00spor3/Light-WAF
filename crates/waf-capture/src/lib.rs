@@ -1,35 +1,22 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-//! Request Capture — enterprise, optional (default OFF).
+//! Request capture for [Light WAF](https://github.com/0x00spor3/Light-WAF): keep the **full** HTTP
+//! request (method, path, query, headers, cookies, body) of every request the WAF blocks or rejects,
+//! and ship it to the control plane for the event drill-down. Optional, default off.
 //!
-//! Saves the **full HTTP request** (method/path/query/headers/cookies/body) of the requests the WAF
-//! **blocks or rejects**, ships them on a dedicated side-channel to the control-plane, and surfaces
-//! them in the event drill-down. The goal is forensic detail an operator can inspect after a block.
+//! Three pieces, no change to the core:
 //!
-//! # Design (zero-core)
-//! No change to `waf-core`/`waf-proxy`. The feature is three enterprise pieces, all in this crate:
-//!   1. a `WafModule` (injected via the core-0.3 `module_factory` seam) that clones each request into
-//!      a **bounded ring** keyed by `request_id` — cheap, because the body is already a ref-counted
-//!      `Bytes` (**C1**);
-//!   2. a `tracing::Layer` (installed in the enterprise subscriber) that reads the `request blocked` /
-//!      `request rejected` decision-log events, extracts the `request_id`, and pulls the matching
-//!      capture from the ring — the join on the verdict the module cannot see itself (**C2**);
-//!   3. an HTTP shipper that `POST`s captures to the control-plane `/ingest/captures`, best-effort
-//!      with a bounded queue (never back-pressures the datapath) (**C2**).
+//! 1. [`CaptureModule`] — a detection module that never scores: it clones each request into a bounded
+//!    [`CaptureRing`] keyed by request id (cheap: the body is a ref-counted `Bytes`).
+//! 2. [`CaptureLayer`] — a `tracing` layer that watches the `request blocked` / `request rejected`
+//!    decision-log events and pulls the matching capture out of the ring.
+//! 3. [`CaptureShipper`] — a bounded queue with best-effort retry that POSTs captures to the control
+//!    plane's `/ingest/captures`; it drops on overflow and never puts backpressure on the datapath.
 //!
-//! # Privacy
-//! Capture is **raw by default** (decision 2026-07-22): the operator gets full fidelity. Two guards
-//! are configurable and applied **node-side** so redacted data never leaves the node:
-//!   - [`RedactionConfig`] — header names and body field names to replace with `***REDACTED***`;
-//!   - a body byte cap ([`CaptureConfig::max_body_bytes`]) that truncates oversized bodies.
-//!
-//! Retention (hard-delete after N days) is a **control-plane** concern and lives in the CP config, not
-//! here — the node only produces captures.
-//!
-//! C0 carried the configuration surface; **C1 adds** the [`CapturedRequest`] DTO, the bounded
-//! [`CaptureRing`] and the [`CaptureModule`]. The verdict-join `tracing::Layer` and the HTTP shipper
-//! land in C2.
+//! Privacy: capture is raw by default; [`RedactionConfig`] replaces header and body-field values with
+//! `***REDACTED***` on the node, and [`CaptureConfig::max_body_bytes`] caps the body. Retention and
+//! access control are enforced by the control plane.
 
 mod capture;
 mod layer;

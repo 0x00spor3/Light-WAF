@@ -11,7 +11,7 @@
 //! (`enabled=false`) never contributes.
 
 use waf_core::{Bytes, Config, Normalized, ParsedBody, RequestContext, Severity, WafMode, WafModule};
-use waf_modules_premium::{rules, GraphqlSchemaModule};
+use waf_schema_enforcement::{rules, GraphqlSchemaModule};
 use waf_pipeline::{Pipeline, PipelineVerdict};
 
 const SDL: &str = r#"

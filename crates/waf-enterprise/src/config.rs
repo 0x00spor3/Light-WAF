@@ -17,8 +17,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use waf_capture::{CaptureConfig, RedactionConfig};
 use waf_core::Severity;
-use waf_marketplace::WasmOptions;
-use waf_modules_premium::{
+use waf_wasm_signing::WasmOptions;
+use waf_schema_enforcement::{
     ApiSchemaEnforcementConfig, BotDetectionConfig, GrpcSchemaEnforcementConfig,
     SchemaEnforcementConfig,
 };
@@ -483,7 +483,8 @@ impl SchemaEnforcementSection {
 #[serde(default)]
 pub struct ApiSchemaEnforcementSection {
     pub enabled: bool,
-    /// Path to the app's OpenAPI 3.0/3.1 spec (JSON; loaded once at boot, no hot-reload in v1).
+    /// Path to the app's OpenAPI 3.0/3.1 spec (JSON). Loaded at boot and re-compiled on every config
+    /// reload; a spec that turns invalid on reload aborts that reload and keeps the previous module.
     pub spec_path: String,
     /// Path prefixes this module guards. A request outside them is left alone (non-API surfaces).
     pub paths: Vec<String>,

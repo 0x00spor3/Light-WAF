@@ -1,20 +1,19 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-//! Managed TLS for Light WAF — the ENTERPRISE implementation of the core's
-//! `waf_proxy::tls::TlsCertSource` seam (BOUNDARY.md §3.2/§4).
+//! Managed TLS for [Light WAF](https://github.com/0x00spor3/Light-WAF): an implementation of the
+//! core's `waf_proxy::tls::TlsCertSource` trait, injected with `Proxy::builder(&cfg).cert_source(..)`
+//! without forking the core (which itself only ships a static certificate from disk).
 //!
-//! The OPEN core ships `FileCertSource` (a static cert from disk). This crate plugs two
-//! at-scale capabilities into the SAME trait, via the additive seams added in core 0.2,
-//! injected with `Proxy::builder(&cfg).cert_source(..)` WITHOUT forking the core:
+//! - **ACME, hitless** (`resolver()`): server certificates via TLS-ALPN-01 ([`acme`]) or DNS-01 with
+//!   Cloudflare/Route53 ([`acme_dns01`], [`dns`]), with background renewal that rotates the live
+//!   certificate without rebuilding the acceptor. In cluster mode one node issues and renews and every
+//!   node serves the same certificate from a shared store (`waf-state-redis`).
+//! - **mTLS** (`client_verifier()`): require and verify client certificates against a configured CA
+//!   bundle ([`mtls`]).
 //!
-//! - **ACME, hitless** (`resolver()`): TLS-ALPN-01 server-cert provisioning + background
-//!   renewal that rotates the live cert without rebuilding the acceptor. See [`acme`].
-//! - **mTLS / managed PKI** (`client_verifier()`): require + verify client certs against a
-//!   configured CA bundle. See [`mtls`].
-//!
-//! A source may carry either, both, or neither (with a file fallback for the server cert
-//! when ACME is off but mTLS is on).
+//! A source may carry either, both, or neither (with a file fallback for the server certificate when
+//! ACME is off but mTLS is on).
 
 pub mod acme;
 pub mod acme_dns01;

@@ -248,7 +248,7 @@ lock_ttl_secs        = 90              # TTL del lock single-writer per-ciclo (~
 [enterprise.crs_curated]
 enabled = false
 
-# ── ENTERPRISE: GraphQL schema-enforcement (waf-modules-premium, §4-B) ───────────
+# ── ENTERPRISE: GraphQL schema-enforcement (waf-schema-enforcement, §4-B) ───────────
 # Valida OGNI operazione GraphQL contro lo SCHEMA REALE dell'app (file SDL .graphql):
 # un campo/tipo/argomento NON nello schema = query che il client reale non manda mai =
 # segnale di probing → contribuisce allo STESSO score cumulativo (governance dello schema,
@@ -263,7 +263,7 @@ enabled = false
 # parse_error_severity = "warning"           # body non-GraphQL (client rotto / probing generico)
 # unknown_field_severity = "critical"        # query valida ma fuori-schema (probing mirato)
 
-# ── ENTERPRISE: gRPC schema-enforcement (waf-modules-premium, §4-B parte 2) ──────
+# ── ENTERPRISE: gRPC schema-enforcement (waf-schema-enforcement, §4-B parte 2) ──────
 # Valida OGNI messaggio gRPC (protobuf) contro il DESCRITTORE REALE dell'app (FileDescriptorSet
 # .bin da `protoc`/`buf build -o app.bin`): il `:path` (/pkg.Service/Method) seleziona l'input-type
 # e il messaggio viene decodificato contro di esso. Metodo inesistente o messaggio indecodificabile
@@ -280,7 +280,29 @@ enabled = false
 # decode_error_severity  = "warning"          # messaggio che non decodifica (malformato)
 # unknown_field_severity = "notice"           # usato solo con flag_unknown_fields
 
-# ── ENTERPRISE: client-integrity / bot detection (waf-modules-premium, §4-A) ─────
+# ── ENTERPRISE: OpenAPI positive-security (waf-schema-enforcement, §4-B parte 3) ─────
+# Valida OGNI richiesta REST/JSON sotto i prefissi `paths` contro la SPEC OPENAPI REALE dell'app
+# (3.0/3.1, file JSON). Routing sul path NORMALIZZATO (decodificato, traversal risolto → resistente
+# all'evasion); le richieste fuori da `paths` non vengono toccate. Due famiglie di segnali, additivi
+# allo STESSO score cumulativo: rotta/metodo non dichiarati (`schema-api-unknown-route`/
+# `-method-not-allowed`, unknown_route_severity) e violazioni di contratto su un'operazione nota
+# (param sconosciuto/mancante/di tipo errato, proprietà del body non prevista, content-type, body
+# non parsabile → violation_severity). L'injection nel VALORE di un parametro resta ai moduli core.
+# Nessun Redis. DEFAULT OFF. spec_path OBBLIGATORIO se enabled (boot-fatal se manca/invalida/non
+# compilabile); ricompilata a ogni reload (spec diventata invalida → reload annullato, resta la
+# precedente). Nessun fetch di $ref remoti. Con i punteggi di default (warning=3, critical=6, soglia 5)
+# una sola violazione non blocca, due diverse sì, una rotta sconosciuta blocca da sola.
+[enterprise.api_schema]
+enabled = false
+# spec_path = "/etc/waf/openapi.json"        # spec OpenAPI dell'app, JSON (obbligatorio se enabled)
+# paths = ["/api"]                           # prefissi di path protetti (default ["/api"])
+# unknown_route_severity = "critical"        # path o metodo non dichiarati (probing mirato)
+# violation_severity = "warning"             # violazione di contratto su un'operazione dichiarata
+# strict_params = true                       # segnala query param non dichiarati per l'operazione
+# strict_body = true                         # body trattato come additionalProperties:false anche se
+#                                            # la spec non lo dice
+
+# ── ENTERPRISE: client-integrity / bot detection (waf-schema-enforcement, §4-A) ─────
 # Heuristiche NATIVE cross-header (non UA-tool-matching, che è il modulo `scanner` OPEN, né contenuto
 # firma, che è CRS-curated). v1 = browser-impersonation (S1): una UA che dichiara un browser MODERNO
 # (Chrome/Edge/Firefox versione a 3 cifre; Safari escluso) MA senza NESSUN header `sec-fetch-*` =
@@ -292,7 +314,7 @@ enabled = false
 enabled = false
 # browser_impersonation_severity = "critical"   # UA-browser-moderna senza Sec-Fetch-*
 
-# ── ENTERPRISE: signed WASM plugin loader (waf-marketplace, §4-C) ────────────────
+# ── ENTERPRISE: signed WASM plugin loader (waf-wasm-signing, §4-C) ────────────────
 # Il runtime Proxy-Wasm è OPEN (`[modules.wasm]`, carica .wasm NON firmati skip-on-error). Qui si
 # aggiunge il GATE DI FIDUCIA: si verifica una firma STACCATA minisign (ed25519) del .wasm contro
 # `trusted_keys` PRIMA di caricarlo. Un plugin firmato che NON verifica = BOOT-FATAL (fail-closed;

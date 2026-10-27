@@ -7,6 +7,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Request capture for Light WAF: buffers full denied requests off the datapath and ships them to the control plane for drill-down. Opt-in, with redaction."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["waf", "security", "forensics", "http"]
+categories = ["web-programming", "network-programming"]
 
 [dependencies]
 # C1: the capture DTO, the bounded ring and the `WafModule`. The `tracing::Layer` verdict-join and

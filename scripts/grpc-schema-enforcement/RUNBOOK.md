@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runbook — gRPC schema-enforcement (§4-B part 2)
 
-Verifies the enterprise gRPC schema-enforcement module (`waf-modules-premium`): each unary gRPC
+Verifies the enterprise gRPC schema-enforcement module (`waf-schema-enforcement`): each unary gRPC
 request message (protobuf) is validated against the app's **compiled schema** (a `FileDescriptorSet`
 `.bin` from `protoc`/`buf`) via `prost-reflect` and injected as a `structural()` `WafModule`. The
 `:path` (`/pkg.Service/Method`) selects the RPC's input type; the message bytes are decoded against
@@ -23,7 +23,7 @@ Two layers:
 ## A. Offline suite
 
 ```sh
-cargo test -p waf-modules-premium          # 41 unit (grpc: load/resolve/decode/unknown-field/de-frame/gating)
+cargo test -p waf-schema-enforcement          # 41 unit (grpc: load/resolve/decode/unknown-field/de-frame/gating)
                                            # + 5 grpc_datapath (REAL pipeline: block/control/FP-guard)
 cargo test -p waf-enterprise               # incl. 3 grpc_schema_enforcement config tests
 ```
@@ -44,7 +44,7 @@ cargo test -p waf-enterprise               # incl. 3 grpc_schema_enforcement con
   …or, **without protoc/buf**, emit the same demo descriptor from the crate:
 
   ```sh
-  WAF_FDS_OUT=app.bin cargo test -p waf-modules-premium emit_fixture_descriptor -- --ignored --nocapture
+  WAF_FDS_OUT=app.bin cargo test -p waf-schema-enforcement emit_fixture_descriptor -- --ignored --nocapture
   ```
 
 ### B.2 Node config (`grpc-node.toml`)

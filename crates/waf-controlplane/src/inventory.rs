@@ -13,10 +13,10 @@
 //!
 //! **Core-free by design.** The control plane deliberately does NOT depend on `waf-core` (BOUNDARY:
 //! it consumes the OPEN JSON contract, it does not link the datapath). So the path→route matcher
-//! here is a standalone re-implementation of the datapath [`Router`] (waf-modules-premium A2), using
+//! here is a standalone re-implementation of the datapath [`Router`] (waf-schema-enforcement A2), using
 //! only `serde_json`. A future shared `waf-openapi` crate could unify the two — follow-on.
 //!
-//! [`Router`]: https://docs.rs/waf-modules-premium
+//! [`Router`]: https://docs.rs/waf-schema-enforcement
 
 use std::collections::{BTreeMap, BTreeSet};
 

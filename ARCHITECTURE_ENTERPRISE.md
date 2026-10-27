@@ -1,88 +1,91 @@
 # ARCHITECTURE_ENTERPRISE.md — Light WAF components
 
-> Documento di architettura dei **componenti** (scala, governance, operabilità) — Apache-2.0 come il
-> resto del repository.
-> Presuppone la conoscenza del core (`ARCHITECTURE.md`) e del confine (`BOUNDARY.md`).
+> Architecture of the **components** (scale, governance, operability) — Apache-2.0 like the rest
+> of the repository. It assumes familiarity with the core (`ARCHITECTURE.md`) and with the
+> boundary (`BOUNDARY.md`).
 >
-> **Regola-guida ereditata da `BOUNDARY.md`.** Il core è il **datapath di sicurezza**
-> (single-node, ispezionabile). I componenti aggiungono **scala, governance e operabilità
-> di team** — MAI capacità di detection baseline. *"Capire e ispezionare un protocollo"
-> è core; "gestirlo a scala / con governance" è un componente.*
+> **Guiding rule, inherited from `BOUNDARY.md`.** The core is the **security datapath**
+> (single node, auditable). The components add **scale, governance and team operability** —
+> NEVER baseline detection capability. *"Understanding and inspecting a protocol" is core;
+> "running it at scale / with governance" is a component.*
 >
-> *Terminologia:* "enterprise" in questo documento indica lo strato dei componenti (nato come tier
-> con licenza separata, oggi Apache-2.0 come il core); `OPEN` indica il core. Vedi `BOUNDARY.md`.
+> *Terminology:* in this document "enterprise" names the component layer (it started as a
+> separately licensed tier; it is now Apache-2.0 like the core) and `OPEN` names the core. See
+> `BOUNDARY.md`.
 
 ---
 
-## 1. Obiettivi e non-obiettivi
+## 1. Goals and non-goals
 
-### Obiettivi
-- **Scala multi-nodo**: stato condiviso (rate-limit + IP-reputation) cluster-wide,
-  coerente e non sfruttabile (no over-allow / no TOCTOU).
-- **Governance & compliance**: RBAC, SSO, audit firmato, report SOC2/PCI-DSS.
-- **Operabilità di team**: control plane (dashboard, drill-down, alerting), retention
-  a lungo termine di metriche/telemetria.
-- **Threat intelligence**: feed reputazione/firme premium + regole CRS curate.
-- **Integrazione enterprise**: connettori SIEM, marketplace/signing dei plugin WASM,
-  gestione certificati a scala (ACME, rotation, mTLS con PKI gestita).
+### Goals
+- **Multi-node scale**: shared state (rate limit + IP reputation) cluster-wide, consistent and
+  not exploitable (no over-allow, no TOCTOU).
+- **Governance & compliance**: RBAC, SSO, signed audit log, SOC 2 / PCI DSS reports.
+- **Team operability**: a control plane (dashboard, drill-down, alerting) and long-term
+  retention of metrics/telemetry.
+- **Threat intelligence**: reputation feeds and curated CRS rules.
+- **Integration**: SIEM connectors, signed WASM plugins, certificate management at scale (ACME,
+  rotation, mTLS).
 
-### Non-obiettivi (vincoli di confine, NON negoziabili)
-- **Nessuna detection baseline** vive qui: SQLi/XSS/PT/RCE/LFI-RFI/SSRF/header-inj/
-  smuggling/SSI/XXE, GraphQL e gRPC inspection, scoring, fast-path, normalizzazione →
-  restano **OPEN** (`BOUNDARY.md` §1.3, §3.1). Spostarli sarebbe un "gutted core".
-- **Nessun fork del core**: si **dipende** dai crate pubblicati su crates.io e si
-  **implementano i trait** (`BOUNDARY.md` §4, §5).
-- **Nessuna modifica retroattiva del confine** già rilasciato (`BOUNDARY.md` §5):
-  l'unico spostamento consentito è `ENTERPRISE → OPEN`.
+### Non-goals (boundary constraints, NOT negotiable)
+- **No baseline detection** lives here: SQLi/XSS/PT/RCE/LFI-RFI/SSRF/header injection/
+  smuggling/SSI/XXE, GraphQL and gRPC inspection, scoring, fast path, normalization → they stay
+  in the **core** (`BOUNDARY.md` §1.3, §3.1). Moving them out would leave a "gutted core".
+- **No fork of the core**: components **depend** on the core's public API and **implement its
+  traits** (`BOUNDARY.md` §4, §5); they never reach into its internals.
+- **No moving capabilities out of the core** (`BOUNDARY.md` §5): moving a capability from a
+  component into the core is allowed, never the reverse.
 
 ---
 
-## 2. Principio architetturale: estensione, non fork
+## 2. Architectural principle: extension, not fork
 
-I componenti sono un **insieme di crate separati** (nello stesso workspace del core, ma senza
-accesso ai suoi interni — `BOUNDARY.md`) che **dipendono** dal core come libreria e si
-agganciano ai **tre seam stabili** (ABI congelata, SemVer — `BOUNDARY.md` §5):
+The components are a **set of separate crates** (in the same workspace as the core, but with no
+access to its internals — `BOUNDARY.md`) that **depend** on the core as a library and hook into
+its **three stable seams** (frozen ABI, SemVer — `BOUNDARY.md` §5):
 
 ```rust
-// crate enterprise, dipende dal core PUBBLICATO come libreria:
+// a component binary, using the core as a library:
 let proxy = Proxy::builder(&config)
-    .state_store(Arc::new(RedisStore::connect(&url)?))  // §3 — StateStore distribuito
-    .cert_source(Arc::new(AcmeCertSource::new(..)))      // §5 — TlsCertSource a scala
-    .modules(premium_modules)                            // §4 — WafModule premium
+    .state_store(Arc::new(RedisStore::connect(&url)?))  // §3 — distributed StateStore
+    .cert_source(Arc::new(AcmeCertSource::new(..)))      // §5 — TlsCertSource at scale
+    .module_factory(move || Ok(extra_modules()))         // §4 — extra WafModules (survive reload)
     .build()
     .await?;
 ```
 
-Ogni seam ha un **default OPEN**: un builder senza override è identico a `Proxy::bind`.
-L'enterprise **sostituisce** l'implementazione, non riscrive il datapath. Vincolo
-permanente: ogni nuova capability cluster-wide è un **nuovo metodo di trait con default
-impl** (additivo, non-breaking — `BOUNDARY.md` §4), mai un trait parallelo che bypassa
-la pipeline.
+Every seam has a **core default**: a builder with no overrides is identical to `Proxy::bind`. A
+component **replaces** an implementation; it does not rewrite the datapath. Standing constraint:
+every new cluster-wide capability is a **new trait method with a default impl** (additive,
+non-breaking — `BOUNDARY.md` §4), never a parallel trait that bypasses the pipeline.
 
-### Mappa crate (proposta)
+### Crate map
 
-| Crate enterprise | Seam / area | Dipende da |
+| Component crate | Seam / area | Depends on |
 |---|---|---|
-| `waf-state-redis`     | `StateStore` distribuito (§3) | `waf-core::state` |
+| `waf-state-redis`     | distributed `StateStore` (§3), shared cert store (§5) | `waf-core::state` |
 | `waf-tls-managed`     | `TlsCertSource` ACME/mTLS (§5) | `waf-proxy::tls` |
-| `waf-modules-premium` | `WafModule` firme premium (§4) | `waf-core` (contratto moduli) |
-| `waf-threatintel`     | feed reputazione/firme (§4, §6) | `waf-core`, `waf-state-redis` |
-| `waf-crs-curated`     | contenuto CRS curato (§6) | parser `crs` OPEN (`waf-core`) |
-| `waf-controlplane`    | dashboard/API/alerting (§7) | telemetria OPEN + store |
-| `waf-governance`      | RBAC/SSO/audit firmato (§8) | `waf-controlplane` |
-| `waf-siem`            | connettori SIEM (§9) | logging/metriche OPEN |
-| `waf-marketplace`     | signing/distribuzione WASM (§4) | runtime `waf-wasm` OPEN |
+| `waf-schema-enforcement` | extra `WafModule`s: schema enforcement, OpenAPI, bot detection (§4) | `waf-core` (module contract) |
+| `waf-threatintel`     | reputation feed + reputation module (§3, §6) | `waf-core`, `waf-state-redis` |
+| `waf-crs-curated`     | curated CRS content (§6) | the core CRS engine (`waf-detection`) |
+| `waf-wasm-signing`     | signed WASM plugins (§4) | the core `waf-wasm` runtime |
+| `waf-capture`         | request capture (§13) | `waf-core` |
+| `waf-enterprise`      | the data-plane binary wiring all of the above | all of the above |
+| `waf-controlplane`    | dashboard/API/alerting/SIEM (§7, §9) | core telemetry contract + Postgres |
+| `waf-governance`      | RBAC/SSO/signed audit (§8) | used by `waf-controlplane` |
+| `waf-node-agent`      | per-node ruleset agent (§7) | `waf-controlplane` API |
+| `waf-operator`        | Kubernetes operator (§12) | — |
 
 ---
 
-## 3. Stato distribuito multi-nodo (`StateStore` Redis) — `BOUNDARY.md` §2.1
+## 3. Distributed multi-node state (Redis `StateStore`) — `BOUNDARY.md` §2.1
 
-> **STATO: §3 INTERAMENTE IMPLEMENTATO (2026-06-30).** Rate-limit distribuito (`waf-state-redis`,
-> provato a 2 nodi sul wire) **+** IP-reputation cluster-wide (`waf-threatintel` + `waf-state-redis`).
-> Il **feed §6** che *popola* la reputazione in Redis (capability di scrittura, deliberatamente
-> separata) è ora anch'esso IMPLEMENTATO (2026-07-02) — vedi §6.
+> **STATUS: §3 FULLY IMPLEMENTED (2026-06-30).** Distributed rate limiting (`waf-state-redis`,
+> proven with 2 nodes on the wire) **+** cluster-wide IP reputation (`waf-threatintel` +
+> `waf-state-redis`). The **§6 feed** that *populates* reputation in Redis (a write capability,
+> deliberately separate) is IMPLEMENTED too (2026-07-02) — see §6.
 
-Il seam OPEN `StateStore` (`waf-core::state`) ha **una sola operazione atomica**:
+The core `StateStore` seam (`waf-core::state`) has **a single atomic operation**:
 
 ```rust
 pub trait StateStore: Send + Sync {
@@ -90,657 +93,727 @@ pub trait StateStore: Send + Sync {
 }
 ```
 
-### Invariante cardine: atomicità refill-then-consume
-Il contratto **non** è get/update: il refill-then-consume dev'essere **indivisibile**
-fra nodi, altrimenti due nodi leggono lo stesso livello del bucket ed entrambi
-consentono → **over-allow cluster-wide / TOCTOU**. L'in-memory OPEN lo garantisce sotto
-un lock; **Redis lo garantisce con uno script server-side** (Lua / `EVALSHA`) che
-esegue refill + consume + writeback in **una sola** round-trip atomica.
+### Cornerstone invariant: refill-then-consume atomicity
+The contract is **not** get/update: refill-then-consume must be **indivisible** across nodes,
+otherwise two nodes read the same bucket level and both allow → **cluster-wide over-allow /
+TOCTOU**. The core's in-memory store guarantees it under a lock; **Redis guarantees it with a
+server-side script** (Lua / `EVALSHA`) that runs refill + consume + writeback in **one** atomic
+round trip.
 
-- **Token bucket distribuito**: chiave = `ctx.client_ip` (derivato dal resolver
-  trusted-proxy del core), valore = `{tokens, last_refill_ts}`. Il **clock è di Redis**
-  (`TIME`), così il refill non dipende dallo skew dei nodi WAF. Il **cap memoria** è il
-  TTL di Redis (chiavi idle scadono) → fuori dall'ABI, come per l'in-memory.
-- **Degradazione (fail-open vs fail-closed)**: Redis irraggiungibile è uno scenario
-  operativo critico. `RedisStore` espone una policy `[state.redis].on_backend_error`:
-  - `local_fallback` (default consigliato) → ripiega sul token bucket **in-memory
-    locale** del nodo (rate-limit per-nodo, non cluster-wide) + `warn!` + metrica
-    `waf_state_backend_errors_total`. Coerente con la filosofia *additive-control* del
-    core: un guasto dell'infrastruttura di stato non deve azzerare il throttling.
-  - `fail_closed` → `Reject{503}` (per deployment dove l'esattezza cluster-wide è
-    requisito di compliance).
-- **Non azzerabile al reload** (eredita §9 del core): i bucket vivono in Redis, oltre il
-  process-lifetime del nodo → un reload/restart di un nodo non resetta il throttle.
+- **Distributed token bucket**: key = `ctx.client_ip` (derived by the core's trusted-proxy
+  resolver), value = `{tokens, last_refill_ts}`. The **clock is Redis's** (`TIME`), so refill
+  does not depend on clock skew between WAF nodes. The **memory cap** is the Redis TTL (idle keys
+  expire) → out of the ABI, as with the in-memory store.
+- **Degradation (fail-open vs fail-closed)**: Redis unreachable is a critical operational
+  scenario. `RedisStore` exposes a policy `[state.redis].on_backend_error`:
+  - `local_fallback` (recommended default) → falls back to the node's **local in-memory** token
+    bucket (per-node, not cluster-wide, rate limiting) + `warn!` + the
+    `waf_state_backend_errors_total` metric. Consistent with the core's *additive control*
+    philosophy: a failure of the state infrastructure must not zero out throttling.
+  - `fail_closed` → `Reject{503}` (for deployments where cluster-wide exactness is a compliance
+    requirement).
+- **Not reset by a reload** (inherits core §9): the buckets live in Redis, beyond the node's
+  process lifetime → a reload/restart of a node does not reset the throttle.
 
-### IP-reputation cluster-wide (capability ENTERPRISE-ONLY — NON sul trait core)
+### Cluster-wide IP reputation (component-only capability — NOT on the core trait)
 
-> **Correzione di design (2026-06-30).** Una stesura precedente proponeva un metodo
-> `reputation()` **defaulted sul `StateStore` core**. È sbagliato e va respinto: il datapath
-> OPEN consuma `try_acquire` (rate-limit) e **non chiama mai** `reputation()`. Un metodo che
-> il core non invoca **non appartiene alla ABI core** — sarebbe contaminazione del confine
-> mascherata da "additivo", a costo di una `core 0.3` e di un metodo congelato per sempre, a
-> **beneficio zero**: poiché l'enterprise costruisce comunque lo store e lo inietta nel modulo
-> via `.add_module()`, il modulo ha già in mano il tipo enterprise → il metodo sul trait core
-> non aggiunge alcuna capacità. Resta la regola "ENTERPRISE → OPEN è l'unico movimento".
+> **Design correction (2026-06-30).** An earlier draft proposed a `reputation()` method
+> **defaulted on the core `StateStore`**. That is wrong and was rejected: the core datapath
+> consumes `try_acquire` (rate limiting) and **never calls** `reputation()`. A method the core
+> does not invoke **does not belong in the core ABI** — it would be boundary contamination
+> disguised as "additive", at the cost of a core release and a method frozen forever, for **zero
+> benefit**: since the component builds the store anyway and injects it into the module, the
+> module already holds the component type → a method on the core trait adds no capability.
 
-**IMPLEMENTATO (`waf-threatintel` + `waf-state-redis`).** La reputation vive **interamente
-nell'enterprise**, usando solo i seam core già esistenti (`.add_module()` + `.state_store()`) —
-**nessuna modifica al core**:
+**IMPLEMENTED (`waf-threatintel` + `waf-state-redis`).** Reputation lives **entirely in the
+components**, using only the existing core seams (module injection + `.state_store()`) — **no
+change to the core**:
 
 ```rust
-// crate enterprise (es. waf-state-redis): trait + dato, NON in waf-core
+// component crate (e.g. waf-state-redis): trait + data, NOT in waf-core
 pub trait ReputationStore: Send + Sync {
-    fn reputation(&self, ip: IpAddr) -> Reputation;   // IpAddr, non &str (chiave canonica in UN punto)
+    fn reputation(&self, ip: IpAddr) -> Reputation;   // IpAddr, not &str (canonical key in ONE place)
 }
 pub enum Reputation { Unknown, Suspicious, Malicious }
 ```
 
-- **Un solo `RedisStore`, due capability**: `RedisStore` implementa **sia** `StateStore`
-  (`try_acquire`) **sia** `ReputationStore` (`reputation`), condividendo lo **stesso pool**
-  (keyspace separato dai bucket, popolato dal feed §6). `Arc<RedisStore>` coercia a entrambi i
-  trait. Lookup read-only → **niente atomicità/Lua** (non è refill-then-consume).
-- **Chiave canonica in UN punto**: `IpAddr::to_string()` è già la forma canonica RFC 5952
-  (IPv6 compresso, no brackets/zone-id). Un solo helper `rep_key(ip)` serve sia il lookup sia
-  il popolamento → niente mismatch fra forme dell'IP.
-- **fail → `Unknown`** (fail-to-no-opinion): Redis giù ⇒ `reputation()` ritorna `Unknown`, la
-  pipeline **ispeziona comunque**. Un feed giù non deve né bloccare né sbloccare. È l'analogo
-  del `local_fallback` dello store, per una capability additiva per natura.
-- **Consumo**: un `WafModule` premium (`waf-threatintel`) in `Phase::Connection` legge
-  `ctx.client_ip` → `reputation(ip)` → `Decision::Scores` con **severità** (Malicious/Suspicious
-  → severity, `Unknown` → `Allow`); la pipeline mappa severity→points (§4: nessun punteggio
-  hardcoded). Contribuisce allo **stesso anomaly score** cumulativo del core, nessuna logica di
-  decisione nuova.
-- **Anti doppio-conteggio** (nota di design per §6): se in futuro il feed alimenta anche moduli
-  di firma premium, lo **stesso IP non deve contribuire due volte** allo score cumulativo →
-  namespace di `rule_id` dedicato + dedup. Non un problema per l'MVP (solo modulo reputation),
-  ma vincolo da rispettare quando §6 cresce.
-- **Popolamento**: in produzione = **feed §6** (`ReputationWriter::apply_snapshot`, IMPLEMENTATO —
-  vedi §6). Il crate NON espone un `set_reputation` di prodotto (il feed possiede le scritture); i
-  test seminano `rep:<ip>` grezzo via `redis-cli` sul formato chiave documentato.
+- **One `RedisStore`, two capabilities**: `RedisStore` implements **both** `StateStore`
+  (`try_acquire`) **and** `ReputationStore` (`reputation`), sharing the **same pool** (a keyspace
+  separate from the buckets, populated by the §6 feed). `Arc<RedisStore>` coerces to both traits.
+  The lookup is read-only → **no atomicity/Lua** (it is not refill-then-consume).
+- **Canonical key in ONE place**: `IpAddr::to_string()` is already the canonical RFC 5952 form
+  (compressed IPv6, no brackets/zone id). A single helper `rep_key(ip)` serves both lookup and
+  population → no mismatch between IP forms.
+- **fail → `Unknown`** (fail to no opinion): Redis down ⇒ `reputation()` returns `Unknown` and
+  the pipeline **inspects anyway**. A feed being down must neither block nor unblock. It is the
+  analogue of the store's `local_fallback`, for a capability that is additive by nature.
+- **Consumption**: a `WafModule` (`waf-threatintel`) in `Phase::Connection` reads
+  `ctx.client_ip` → `reputation(ip)` → `Decision::Scores` with a **severity** (Malicious/Suspicious
+  → severity, `Unknown` → `Allow`); the pipeline maps severity → points (§4: no hardcoded
+  scores). It contributes to the **same** cumulative anomaly score as the core, with no new
+  decision logic.
+- **No double counting** (design note for §6): if the feed ever also drives signature modules,
+  the **same IP must not contribute twice** to the cumulative score → a dedicated `rule_id`
+  namespace + dedup. Not an issue for the MVP (reputation module only), but a constraint to keep
+  as §6 grows.
+- **Population**: in production = the **§6 feed** (`ReputationWriter::apply_snapshot`,
+  IMPLEMENTED — see §6). The crate does NOT expose a product-level `set_reputation` (the feed owns
+  the writes); tests seed raw `rep:<ip>` keys via `redis-cli` using the documented key format.
 
 ---
 
-## 4. Moduli di detection premium (`WafModule`) — `BOUNDARY.md` §2.4
+## 4. Additional detection modules (`WafModule`) — `BOUNDARY.md` §2.4
 
-> **Confine rigido**: qui vivono SOLO firme **premium curate** e moduli che consumano
-> stato/intelligence enterprise — MAI riportare nel core capacità baseline.
+> **Hard boundary**: only **curated** signatures and modules that consume component
+> state/intelligence live here — NEVER move baseline capability out of the core.
 
-- **Firme premium** (`waf-modules-premium`): regole ad alta-cura impacchettate come `WafModule`
-  aggiuntivi, iniettati via `.add_module()` **dopo** i built-in. Stesso contratto `inspect -> Decision`,
-  stesso scoring del core: **nessun punteggio hardcoded**, ogni regola dichiara solo una severità.
-  - **Client-integrity / bot detection** (`bot.rs`) — **IMPLEMENTATO (2026-07-03)**: heuristiche
-    **native cross-header** che una regex non esprime — deliberatamente **fuori** dal modulo `scanner`
-    OPEN (che fa UA-tool-matching = baseline) e da `waf-crs-curated` (contenuto firma). v1 = **browser
-    impersonation (S1)**: una UA che dichiara un browser **moderno** (Chromium/Firefox major a 3 cifre;
-    Safari escluso — Sec-Fetch storicamente incoerente) **senza NESSUN header `sec-fetch-*`** → un bot
-    che si spaccia per browser (`curl`/`requests` non manda Fetch-Metadata; un client non-browser non
-    dichiara un browser → non scatta). `Phase::Headers`, `structural()=true`, `Decision::Scores` additive
-    (`bot-browser-impersonation`, `Critical` tarabile). Config `[enterprise.bot_detection]` (default off,
-    niente file/Redis, costruzione infallibile). FP-source = browser vecchi/edge o proxy che strippano
-    header → governata dalla severità. Namespace `rule_id` `bot-*` (registry strutturale).
-  - **Follow-on** dichiarati: **scanner comportamentale** (contatori per-IP nello store §3), **TLS/JA
-    fingerprint** (ClientHello), segnali corroboranti (`sec-ch-ua`/`accept-language`), header-order/casing.
-- **Schema-enforcement GraphQL** (`waf-modules-premium`) — **IMPLEMENTATO (2026-07-03)**: valida
-  ogni operazione GraphQL contro lo **schema reale** dell'app (`.graphql` SDL) — è **gestione schema =
-  governance** → enterprise. Modulo strutturale (`Phase::Body`, `structural() = true`) che gira anche
-  sul fast-path-skip, come i cap strutturali OPEN.
-  - **Validatore = `apollo-compiler`** (l'engine dell'Apollo Router): zero-gap — un validatore
-    hand-rolled sarebbe falsa sicurezza per un security control. **DoS-parser bounded**: i cap
-    strutturali OPEN di Fase 11 (depth/size/batch → `Reject{400}`) girano PRIMA, quindi il validatore
-    vede solo operazioni già limitate.
-  - **Estrazione = specchio del modulo GraphQL OPEN**: `application/graphql` raw-body by Content-Type
-    (any path), JSON `query`-leaf + batch `<i>.query` e GET `?query=` **solo sui `paths` configurati**;
-    riusa `waf_normalizer::graphql::unwrap_query_envelope` così non diverge mai dall'OPEN.
-  - **Contributo = `Decision::Scores` additive** (mai `Reject` secco): due `rule_id` con severità
-    distinte — `schema-graphql-parse-error` (body non-GraphQL, più bassa) vs `schema-graphql-unknown-field`
-    (query valida ma fuori-schema, `Critical`). Dedup per-kind (un batch di N violazioni = un segnale).
-    L'introspection **non** è flaggata qui (è compito del modulo OPEN). Namespace `rule_id` `schema-*`
-    riservato + enforced strutturalmente (registry `rules`), disgiunto dagli id OPEN (anti-doppio-conteggio).
-  - **Confine FP**: l'unica vera fonte-FP è lo **schema-drift** (app aggiornata prima della copia SDL del
-    WAF) — governato dalla severità configurabile, non dall'allentare la validazione (un client conforme
-    non manda mai query fuori-schema; il backend reale le rifiuta comunque).
-  - **Config** `[enterprise.schema_enforcement]` (default off; `schema_path` obbligatorio se enabled →
-    **boot-fatal** se manca/è invalido = fail-closed sulla config, mai sul traffico). Nessun Redis.
-  - ⚠️ **No hot-reload in v1** (G5): lo schema è immutabile in-memory → **drift → restart** (come gli
-    altri moduli premium, non sopravvive a SIGHUP). Il fix è il **follow-on core-0.3 `module_factory`**
-    (i moduli iniettati sopravvivono E si re-init sul reload → hot-reload keep-old-on-invalid gratis per
-    reputation + CRS-curated + schema insieme). La `load_schema(path)` è già una fn pura re-entrant pronta
-    per quel factory.
-- **Schema-enforcement gRPC** (`waf-modules-premium`, stesso crate) — **IMPLEMENTATO (2026-07-03)**: valida
-  ogni messaggio gRPC **unary** contro il **descrittore reale** dell'app (`FileDescriptorSet` `.bin` da
-  `protoc`/`buf`). Il `:path` (`/pkg.Service/Method`) seleziona l'input message-type; il messaggio viene
-  decodificato via **`prost-reflect`** (`DynamicMessage`). Modulo strutturale (`Phase::Body`, `structural()`),
-  riconosciuto via `Content-Type: application/grpc*` (niente lista `paths` — in gRPC il path È il metodo).
-  - **Tre segnali** `Decision::Scores` additive sotto `schema-grpc-*`: `unknown-method` (`:path` non nel
-    descrittore) → `Critical`; `decode-error` (byte che non decodificano) → `Warning`; `unknown-field` (campo
-    top-level fuori descrittore) → **opt-in `flag_unknown_fields`, default off**. Dedup per-kind del batch di frame.
-  - **Differenze dal GraphQL** (a verbale): (1) `GrpcExtract` OPEN non espone i byte grezzi → il modulo **de-frama
-    da sé** (`[flag:1][len:4][msg]`, mirror del framing OPEN) e **salta i frame compressi** (opachi → mai
-    decode-error FP); (2) protobuf **tollera by-design i campi sconosciuti** (forward-compat) → unknown-field è
-    opt-in per non generare FP quando un client usa un `.proto` più nuovo della copia del WAF. Rilevamento
-    unknown-field = tag-walk manuale, **scope v1 = top-level** (nested = follow-on).
-  - **Config** `[enterprise.grpc_schema_enforcement]` (default off; `descriptor_path` obbligatorio se enabled →
-    **boot-fatal** su descrittore mancante/invalido). `load_descriptors(path)` puro reload-ready (come GraphQL, G5).
-  - **Solo unary** in v1 (streaming, grpc-web, validazione risposte, input `.proto`-via-protox = follow-on).
-- **API positive-security OpenAPI** (`waf-modules-premium`, `api_schema.rs`) — **IMPLEMENTATO (2026-07-15)**: valida
-  ogni richiesta REST/JSON sotto un prefisso guardato contro la **spec OpenAPI reale** dell'app (file JSON; v1
-  JSON-only) — è **gestione del contratto = positive security**, non baseline detection. `Phase::Body`,
-  `structural()`, `Decision::Scores` additivo, zero core. Namespace `rule_id` `schema-api-*` (registry strutturale).
-  - **Estrazione mirror-OPEN**: routing/gating su `ctx.normalized.path` (decoded + traversal-resolved →
-    **evasion-resistant**), query/header da `normalized` (lowercased), body JSON da `ctx.body` grezzo.
-  - **Router path** (statico > templato `/users/{id}`, most-specific-first) → `unknown-route`/`method-not-allowed`
-    (Critical, `unknown_route_severity`); operazione nota → validazione param (path/query/header con coercion
-    stringa→scalar) + `requestBody` via **`jsonschema`** (crate maturo, no hand-roll) → `unknown-param`/
-    `missing-required`/`type-violation`/`unknown-property`/`content-type`/`body-parse-error` (Warning,
-    `violation_severity`); dedup per-kind.
-  - **Confine**: injection value-level (SQLi/XSS nel *valore* di un param) resta OPEN §6; i cap DoS/body strutturali
-    OPEN girano PRIMA. **Librerie** (A0): `oas3` (parse 3.0+3.1), `jsonschema` `default-features=false` (NO
-    retriever HTTP — un WAF non fa fetch di schemi remoti); **normalizzazione 3.0→JSON-Schema al load** (il
-    `nullable` 3.0 sarebbe un falso positivo). `from_config`/`CompiledSpec::compile` **boot-fatal** su spec
-    mancante/invalida/non-compilabile; precompilazione per-operazione. Config `[enterprise.api_schema]` (default off).
-  - **Monitor-first naturale** (additivo → non blocca da solo sotto soglia; evita il muro-FP del positive-model
-    ModSecurity). Follow-on: BOLA/BFLA comportamentale, sensitive-data lato risposta, YAML pure-Rust, spec via §7.
-- **IP-reputation module** (consuma §3): `Phase::Connection`, legge `StateStore::reputation`.
+> **Reload (applies to every module in this section).** `waf-enterprise` builds all injected
+> modules inside one core `.module_factory(..)` closure, which the core runs at bind **and on
+> every reload**: the modules survive a SIGHUP and are re-`init`'d, so a changed GraphQL SDL, gRPC
+> descriptor, OpenAPI spec or plugin is picked up by a reload. The factory is fallible as a unit:
+> if any module fails to rebuild (an invalid schema, a plugin that no longer verifies), the reload
+> is aborted and the last-good modules stay active.
 
-### Marketplace / signing dei plugin WASM (`BOUNDARY.md` §1.7, §2.4)
-Il **runtime** Proxy-Wasm (`waf-wasm`, `wasmi`) è **OPEN** e carica già `.wasm` **non firmati** da
-`[modules.wasm]` (skip-on-error). L'enterprise (`waf-marketplace`) aggiunge il **gate di fiducia** — **IMPLEMENTATO
-(2026-07-03)**:
-- **Signing**: `verify_signature` valida una **firma staccata minisign (ed25519)** del `.wasm` contro le
-  `trusted_keys` configurate; `load_verified_plugin` verifica e SOLO se la firma è valida delega a
-  `WasmModule::from_bytes` (API OPEN, **zero core**) — stesso buffer verificato e caricato (no TOCTOU).
-- **Postura fail-closed (divergenza voluta dall'OPEN)**: un plugin firmato che **non** verifica (firma
-  assente/invalida/chiave-non-fidata) è **boot-fatal**, mai skip. Motivo: nel path OPEN l'assenza degrada la
-  copertura; qui una firma che non verifica è **indistinguibile da una manomissione** → si rifiuta.
-- **Config** `[enterprise.wasm]` (default off): `trusted_keys` + `plugins[{wasm_path, sig_path, config?}]` +
-  limiti runtime section-global. **`exclusive = true`** = rifiuta al boot una config con `[modules.wasm]` OPEN
-  popolato (enforcement del lockdown: senza il flag, un `.wasm` non firmato nel blocco OPEN bypasserebbe il gate —
-  limite v1 dichiarato).
-- **Marketplace** completo (distribuzione/versioning/aggiornamento, PKI/cert-chain + revoca, cosign/OCI) = **follow-on**.
+- **Curated modules** (`waf-schema-enforcement`): high-curation rules packaged as additional
+  `WafModule`s, injected **after** the built-ins. Same `inspect -> Decision` contract, same scoring
+  as the core: **no hardcoded scores**, every rule only declares a severity.
+  - **Client integrity / bot detection** (`bot.rs`) — **IMPLEMENTED (2026-07-03)**: **native
+    cross-header** heuristics that a regex cannot express — deliberately **outside** the core
+    `scanner` module (UA-tool matching = baseline) and outside `waf-crs-curated` (signature
+    content). v1 = **browser impersonation (S1)**: a UA claiming a **modern** browser (Chromium/
+    Firefox with a 3-digit major; Safari excluded — historically inconsistent Sec-Fetch) **without
+    ANY `sec-fetch-*` header** → a bot posing as a browser (`curl`/`requests` send no Fetch
+    Metadata; a non-browser client does not claim to be a browser → no trigger). `Phase::Headers`,
+    `structural()=true`, additive `Decision::Scores` (`bot-browser-impersonation`, tunable
+    `Critical`). Config `[enterprise.bot_detection]` (default off, no files/Redis, infallible
+    construction). FP source = old/edge browsers or proxies that strip headers → governed by the
+    severity. `rule_id` namespace `bot-*` (structural registry).
+  - Declared **follow-ons**: **behavioral scanner detection** (per-IP counters in the §3 store),
+    **TLS/JA fingerprinting** (ClientHello), corroborating signals (`sec-ch-ua`/`accept-language`),
+    header order/casing.
+- **GraphQL schema enforcement** (`waf-schema-enforcement`) — **IMPLEMENTED (2026-07-03)**: validates
+  every GraphQL operation against the app's **real schema** (`.graphql` SDL) — this is **schema
+  management = governance** → a component. A structural module (`Phase::Body`,
+  `structural() = true`) that also runs on fast-path skips, like the core's structural caps.
+  - **Validator = `apollo-compiler`** (the Apollo Router engine): zero gap — a hand-rolled
+    validator would be false security for a security control. **Bounded parser DoS**: the core's
+    Phase-11 structural caps (depth/size/batch → `Reject{400}`) run FIRST, so the validator only
+    sees already-bounded operations.
+  - **Extraction mirrors the core GraphQL module**: `application/graphql` raw body by
+    Content-Type (any path), JSON `query` leaf + batch `<i>.query` and GET `?query=` **only on the
+    configured `paths`**; it reuses `waf_normalizer::graphql::unwrap_query_envelope` so it never
+    diverges from the core.
+  - **Contribution = additive `Decision::Scores`** (never a hard `Reject`): two `rule_id`s with
+    distinct severities — `schema-graphql-parse-error` (non-GraphQL body, lower) vs
+    `schema-graphql-unknown-field` (valid query outside the schema, `Critical`). Dedup per kind (a
+    batch of N violations = one signal). Introspection is **not** flagged here (the core module's
+    job). `rule_id` namespace `schema-*` reserved and structurally enforced (`rules` registry),
+    disjoint from the core ids (no double counting).
+  - **FP boundary**: the only real FP source is **schema drift** (the app updated before the WAF's
+    SDL copy) — governed by the configurable severity, not by loosening validation (a conforming
+    client never sends out-of-schema queries; the real backend rejects them anyway).
+  - **Config** `[enterprise.schema_enforcement]` (default off; `schema_path` required when enabled
+    → **boot-fatal** if missing/invalid = fail-closed on the config, never on traffic). No Redis.
+- **gRPC schema enforcement** (`waf-schema-enforcement`, same crate) — **IMPLEMENTED (2026-07-03)**:
+  validates every **unary** gRPC message against the app's **real descriptor**
+  (`FileDescriptorSet` `.bin` from `protoc`/`buf`). The `:path` (`/pkg.Service/Method`) selects the
+  input message type; the message is decoded via **`prost-reflect`** (`DynamicMessage`). A
+  structural module (`Phase::Body`, `structural()`), recognized via
+  `Content-Type: application/grpc*` (no `paths` list — in gRPC the path IS the method).
+  - **Three additive `Decision::Scores` signals** under `schema-grpc-*`: `unknown-method` (`:path`
+    not in the descriptor) → `Critical`; `decode-error` (bytes that do not decode) → `Warning`;
+    `unknown-field` (a top-level field outside the descriptor) → **opt-in
+    `flag_unknown_fields`, default off**. Dedup per kind across the batch of frames.
+  - **Differences from GraphQL** (on record): (1) the core's `GrpcExtract` does not expose the raw
+    bytes → the module **de-frames by itself** (`[flag:1][len:4][msg]`, mirroring the core framing)
+    and **skips compressed frames** (opaque → never a decode-error FP); (2) protobuf **tolerates
+    unknown fields by design** (forward compatibility) → unknown-field is opt-in so that a client
+    using a newer `.proto` than the WAF's copy does not cause FPs. Unknown-field detection = manual
+    tag walk, **v1 scope = top level** (nested = follow-on).
+  - **Config** `[enterprise.grpc_schema_enforcement]` (default off; `descriptor_path` required when
+    enabled → **boot-fatal** on a missing/invalid descriptor).
+  - **Unary only** in v1 (streaming, grpc-web, response validation, `.proto` input via protox =
+    follow-ons).
+- **OpenAPI positive security** (`waf-schema-enforcement`, `api_schema.rs`) — **IMPLEMENTED
+  (2026-07-15)**: validates every REST/JSON request under a guarded prefix against the app's **real
+  OpenAPI spec** (JSON file; v1 JSON-only) — this is **contract management = positive security**,
+  not baseline detection. `Phase::Body`, `structural()`, additive `Decision::Scores`, zero core
+  changes. `rule_id` namespace `schema-api-*` (structural registry).
+  - **Extraction mirrors the core**: routing/gating on `ctx.normalized.path` (decoded +
+    traversal-resolved → **evasion-resistant**), query/headers from `normalized` (lowercased),
+    the JSON body from the raw `ctx.body`.
+  - **Path router** (static > templated `/users/{id}`, most specific first) →
+    `unknown-route`/`method-not-allowed` (Critical, `unknown_route_severity`); a known operation →
+    parameter validation (path/query/header with string→scalar coercion) + `requestBody` via
+    **`jsonschema`** (a mature crate, no hand-roll) → `unknown-param`/`missing-required`/
+    `type-violation`/`unknown-property`/`content-type`/`body-parse-error` (Warning,
+    `violation_severity`); dedup per kind.
+  - **Boundary**: value-level injection (SQLi/XSS in a parameter's *value*) stays in the core's
+    §6 channel; the core's structural DoS/body caps run FIRST. **Libraries** (A0): `oas3` (parses
+    3.0 + 3.1), `jsonschema` with `default-features=false` (NO HTTP retriever — a WAF never fetches
+    remote schemas); **3.0 → JSON Schema normalization at load** (3.0's `nullable` would otherwise
+    be a false positive). `from_config`/`CompiledSpec::compile` are **boot-fatal** on a
+    missing/invalid/non-compilable spec; per-operation precompilation. Config
+    `[enterprise.api_schema]` (default off).
+  - **Naturally monitor-first** (additive → it does not block on its own below the threshold;
+    avoids the FP wall of ModSecurity's positive model). Follow-ons: behavioral BOLA/BFLA,
+    response-side sensitive data, pure-Rust YAML, spec delivery via §7.
+- **IP-reputation module** (consumes §3): `Phase::Connection`, reads the `ReputationStore`.
+
+### Signed WASM plugins (`BOUNDARY.md` §1.7, §2.4)
+The Proxy-Wasm **runtime** (`waf-wasm`, `wasmi`) is **core** and already loads **unsigned**
+`.wasm` files from `[modules.wasm]` (skip on error). The component (`waf-wasm-signing`) adds the
+**trust gate** — **IMPLEMENTED (2026-07-03)**:
+- **Signing**: `verify_signature` checks a **detached minisign (ed25519) signature** of the
+  `.wasm` against the configured `trusted_keys`; `load_verified_plugin` verifies and ONLY if the
+  signature is valid delegates to `WasmModule::from_bytes` (core API, **zero core changes**) — the
+  same buffer is verified and loaded (no TOCTOU).
+- **Fail-closed posture (a deliberate divergence from the core)**: a signed plugin that does
+  **not** verify (signature missing/invalid/untrusted key) is **boot-fatal**, never skipped.
+  Reason: on the core path a missing plugin degrades coverage; here a signature that does not
+  verify is **indistinguishable from tampering** → it is refused.
+- **Config** `[enterprise.wasm]` (default off): `trusted_keys` +
+  `plugins[{wasm_path, sig_path, config?}]` + section-global runtime limits. **`exclusive = true`**
+  = refuse at boot a config whose core `[modules.wasm]` is populated (enforces the lockdown:
+  without the flag, an unsigned `.wasm` in the core block would bypass the gate — a declared v1
+  limit).
+- A full **plugin registry** (distribution/versioning/updates, PKI/cert chain + revocation,
+  cosign/OCI) = **follow-on**.
 
 ---
 
-## 5. Gestione certificati a scala (`TlsCertSource`) — `BOUNDARY.md` §3.2
+## 5. Certificate management at scale (`TlsCertSource`) — `BOUNDARY.md` §3.2
 
-Il core spedisce **solo** `FileCertSource` (PEM, cert-da-file) dietro il seam
-`waf-proxy::tls::TlsCertSource`. L'enterprise fornisce implementazioni **dello stesso
+The core ships **only** `FileCertSource` (PEM, cert from file) behind the
+`waf-proxy::tls::TlsCertSource` seam. The component provides implementations **of the same
 trait** (zero fork).
 
-**IMPLEMENTATO (`waf-tls-managed`, core 0.2).** Il trait ha guadagnato due metodi
-**additivi defaulted** (`BOUNDARY.md` §5): `resolver() -> Option<Arc<dyn ResolvesServerCert>>`
-e `client_verifier() -> Option<Arc<dyn ClientCertVerifier>>` (entrambi default `None` → la
-strada OPEN single-cert via `load()` resta invariata). `build_server_config` ramifica:
-resolver `Some` ⇒ `with_cert_resolver` (e non chiama `load()`); verifier `Some` ⇒
-`with_client_cert_verifier`.
+**IMPLEMENTED (`waf-tls-managed`, core 0.2).** The trait gained two **additive, defaulted**
+methods (`BOUNDARY.md` §5): `resolver() -> Option<Arc<dyn ResolvesServerCert>>` and
+`client_verifier() -> Option<Arc<dyn ClientCertVerifier>>` (both default `None` → the core's
+single-cert path via `load()` is unchanged). `build_server_config` branches: resolver `Some` ⇒
+`with_cert_resolver` (and does not call `load()`); verifier `Some` ⇒ `with_client_cert_verifier`.
 
-- **ACME (TLS-ALPN-01, HITLESS)** via `resolver()`: `ManagedTlsCertSource` espone il
-  `ResolvesServerCert` di `rustls-acme`; issuance + **renewal in background** ruotano il cert
-  vivo **senza ricostruire l'acceptor**. Il core aggiunge `acme-tls/1` all'ALPN quando un
-  resolver è presente, così la challenge negozia sulla stessa `:443`. **DNS-01** = secondo
-  livello (wildcard / CA che non raggiunge `:443`), provider-impl follow-on.
-- **mTLS con PKI gestita** via `client_verifier()`: `WebPkiClientVerifier` da un bundle CA
-  configurato (`[tls.mtls].ca_path`). Roots caricate al boot (rotation = restart).
-- **Cert multi-nodo centralizzati**: distribuzione coerente del materiale TLS sul cluster
-  (store condiviso / control plane) — follow-on.
+- **ACME (TLS-ALPN-01, HITLESS)** via `resolver()`: `ManagedTlsCertSource` exposes
+  `rustls-acme`'s `ResolvesServerCert`; issuance + **background renewal** rotate the live cert
+  **without rebuilding the acceptor**. The core adds `acme-tls/1` to the ALPN list when a resolver
+  is present, so the challenge negotiates on the same `:443`.
+- **ACME DNS-01** (wildcards, or a CA that cannot reach `:443`) via `instant-acme`, with
+  Cloudflare and Route53 providers.
+- **mTLS** via `client_verifier()`: a `WebPkiClientVerifier` from a configured CA bundle
+  (`[tls.mtls].ca_path`). Roots are loaded at boot (rotation = restart).
+- **Multi-node certificates**: a `SharedCertStore` on the shared Redis (single-writer lock, the
+  private key encrypted at rest with AES-256-GCM, `WAF_CERT_STORE_KEY`), DNS-01 only, opt-in via
+  `[tls.acme].cluster`: one node issues and renews, every node serves the same certificate.
 
-Config: `[tls.acme]` / `[tls.mtls]` ri-parsate dal binario enterprise (il `Config` OPEN le
-ignora). Vincoli ereditati dal core (§9 "Terminazione TLS"): `[tls].enabled`/`alpn` restano
-da config (la **sorgente governa solo la provenienza** del cert); **no silent downgrade**
-(fail-closed); un errore di handshake per-connessione resta non-fatale.
+Config: `[tls.acme]` / `[tls.mtls]` are re-parsed by the component binary (the core `Config`
+ignores them). Constraints inherited from the core (§9 "TLS termination"): `[tls].enabled`/`alpn`
+still come from config (the **source only governs where the cert comes from**); **no silent
+downgrade** (fail-closed); a per-connection handshake error stays non-fatal.
 
-> **Rotation vs immutabilità acceptor (RISOLTO).** L'acceptor del core resta immutabile
-> post-bind, ma la rotation NON lo viola: il `resolver()` è un `ResolvesServerCert` consultato
-> **per-handshake**, quindi il cert ruota dentro la sorgente senza toccare l'acceptor né
-> passare da config-reload. Il contratto "solo-TLS quando abilitato" resta invariato.
+> **Rotation vs acceptor immutability (RESOLVED).** The core's acceptor stays immutable after
+> bind, and rotation does NOT violate that: `resolver()` is a `ResolvesServerCert` consulted
+> **per handshake**, so the cert rotates inside the source without touching the acceptor or going
+> through a config reload. The "TLS only when enabled" contract is unchanged.
 
 ---
 
-## 6. Threat intelligence e contenuto curato — `BOUNDARY.md` §2.4
+## 6. Threat intelligence and curated content — `BOUNDARY.md` §2.4
 
-- **Feed reputazione** (`waf-threatintel`) — **IMPLEMENTATO (2026-07-02)**: il *writer* che popola il
-  keyspace `rep:<ip>` letto dal modulo reputation (§3). Simmetrico al read: seam di scrittura
-  `ReputationWriter::apply_snapshot` su `RedisStore` (stessa `rep_key` + encoding valore in UN punto —
-  read e write non possono divergere), sorgenti dietro il trait `ReputationFeed` (v1: `FileFeed` +
-  `HttpListFeed`, lista IP-per-riga, **verdetto per-sorgente**; API di subscription commerciali =
-  follow-on dietro lo stesso trait), driver `start_reputation_feed` in background.
-  - **Single-writer** (`DistributedLock`, chiave `feed_lock:` sullo stesso pool): solo UN nodo per
-    ciclo fa fetch+scrive → N nodi non ripetono lo stesso fetch (subscription potenzialmente metered).
-    Lock per-ciclo, niente heartbeat; leader morto → il ciclo dopo un altro nodo subentra.
-  - **Snapshot TTL-based** (niente swap atomico): ogni `rep:<ip>` scritto con `entry_ttl` (default 3×
-    refresh). Un IP de-listato invecchia da solo; un feed giù fa scadere tutto → `Unknown`
-    (fail-to-no-opinion, coerente col read). **Solo IP esatti** in v1 (il read è `GET rep:<ip>`; i CIDR
-    sono skippati con warn, follow-on).
-  - Config `[enterprise.reputation.feed]` (default off; richiede `redis_url`). Un nodo può essere un
-    **feed-writer puro** (popola per gli altri) anche senza il modulo reputation locale.
-  - Il rinnovo/hot-update è intrinseco al loop (ri-fetch periodico), NON serve un SIGHUP.
-- **Regole CRS/ModSecurity curate** (`waf-crs-curated`) — **IMPLEMENTATO (2026-07-02)**: il
-  **parser/engine `seclang`** è OPEN (`BOUNDARY.md` §1.7, B2); qui vive **solo il contenuto curato**
-  (file `SecRule` premium mantenuti e tarati). **Conta nello stesso anomaly score cumulativo** → con
-  CRS-curated attivo il tuning di soglia è dell'operatore (doppio-conteggio coi nativi accettato,
-  paletto #4 di B2).
-  - **Contenuto premium-ADDITIVO, non baseline**: firme CVE/app/evasion ad alta-cura. **27 regole v1**:
-    (a) categorie generiche (SSRF cloud-metadata, PHP wrapper LFI, webshell, `.git`/`.env` exposure, metodi
-    HTTP pericolosi, deserialization marker, recon UA); (b) **pack CVE nominali** da CISA KEV (`rules/cve.conf`,
-    id 9100000+): Joomla JCE, Mirasvit/Magento object-injection, UniFi/Cisco-SD-WAN/FortiWeb/TeamCity/PAN-OS
-    traversal, Next.js middleware bypass, SharePoint ToolShell, PHP-CGI arg-injection, MOVEit, GoAnywhere,
-    Kentico, PaperCut, Oracle EBS, Log4Shell/Spring4Shell. **Non** reimplementa SQLi/XSS/PT/RCE/LFI-RFI
-    baseline (restano OPEN nei moduli nativi). Solo costrutti del **subset v1** del motore (`@rx`/`@pm`;
-    `@detectSQLi`/`@detectXSS` restano fuori → SQLi/XSS ai nativi). CVE FP-prone (Serv-U deflate, `/_layouts/`
-    generico) **scartati esplicitamente** con nota nel `.conf`.
-  - **Packaging = embed + `.add_module()`**: il crate embedda i `.conf` (`include_str!`) ed espone
-    `curated_source()` + `EXPECTED_LOADED`; il binario enterprise costruisce `CrsModule::from_source`
-    e lo inietta gated da `[enterprise.crs_curated]` (default off, no Redis). Il canale OPEN
-    `[modules.crs].files` resta per le regole DELL'operatore. Caveat: come i moduli premium, **non
-    sopravvive a SIGHUP** (finché il core non espone `module_factory`).
-  - **Gate di compatibilità** (il valore ingegneristico del tier): il test del crate carica il
-    contenuto attraverso il motore OPEN e asserisce `loaded_count() == EXPECTED_LOADED` **esatto** +
-    `skipped()` **vuoto** + un bite-test per-regola → il contenuto è *garantito-compatibile* col
-    subset spedito, niente perdita silenziosa (la lezione del bug setvar B2).
+- **Reputation feed** (`waf-threatintel`) — **IMPLEMENTED (2026-07-02)**: the *writer* that
+  populates the `rep:<ip>` keyspace read by the reputation module (§3). Symmetric with the read
+  side: a write seam `ReputationWriter::apply_snapshot` on `RedisStore` (same `rep_key` + value
+  encoding in ONE place — read and write cannot diverge), sources behind the `ReputationFeed`
+  trait (v1: `FileFeed` + `HttpListFeed`, one IP per line, **per-source verdict**; commercial
+  threat-intel subscription APIs = follow-on behind the same trait), and a background driver
+  `start_reputation_feed`.
+  - **Single writer** (`DistributedLock`, key `feed_lock:` on the same pool): only ONE node per
+    cycle fetches and writes → N nodes do not repeat the same fetch (subscriptions may be
+    metered). Per-cycle lock, no heartbeat; if the leader dies, another node takes over on the next
+    cycle.
+  - **TTL-based snapshot** (no atomic swap): every `rep:<ip>` is written with `entry_ttl` (default
+    3× the refresh interval). A de-listed IP ages out on its own; a feed that is down lets
+    everything expire → `Unknown` (fail to no opinion, consistent with the read side). **Exact IPs
+    only** in v1 (the read is `GET rep:<ip>`; CIDRs are skipped with a warning, follow-on).
+  - Config `[enterprise.reputation.feed]` (default off; requires `redis_url`). A node can be a
+    **pure feed writer** (populating for the others) even without the local reputation module.
+  - Refresh/hot update is built into the loop (periodic re-fetch); no SIGHUP needed.
+- **Curated CRS/ModSecurity rules** (`waf-crs-curated`) — **IMPLEMENTED (2026-07-02)**: the
+  **`seclang` parser/engine** is core (`BOUNDARY.md` §1.7, B2); only the **curated content**
+  lives here (maintained and tuned `SecRule` files). **It counts towards the same cumulative
+  anomaly score** → with curated CRS enabled, threshold tuning is the operator's call (double
+  counting with the native modules accepted, B2 guardrail #4).
+  - **Additive content, not baseline**: high-curation CVE/app/evasion signatures. **28 rules**
+    (27 in v1, plus id 9000004 for Log4Shell lookup obfuscation — `${${lower:j}ndi:…}`,
+    `${::-j}`, `${env:X:-j}` — added after pentest #2, finding E-1): (a) generic categories (cloud-metadata SSRF, PHP-wrapper LFI, webshells, `.git`/`.env`
+    exposure, dangerous HTTP methods, deserialization markers, recon UAs); (b) a **named-CVE pack**
+    from CISA KEV (`rules/cve.conf`, ids 9100000+): Joomla JCE, Mirasvit/Magento object injection,
+    UniFi/Cisco SD-WAN/FortiWeb/TeamCity/PAN-OS traversal, Next.js middleware bypass, SharePoint
+    ToolShell, PHP-CGI argument injection, MOVEit, GoAnywhere, Kentico, PaperCut, Oracle EBS,
+    Log4Shell/Spring4Shell. It does **not** re-implement baseline SQLi/XSS/PT/RCE/LFI-RFI (they stay
+    in the core's native modules). Only constructs from the engine's **v1 subset** (`@rx`/`@pm`;
+    `@detectSQLi`/`@detectXSS` stay out → SQLi/XSS go to the native modules). FP-prone CVEs (Serv-U
+    deflate, generic `/_layouts/`) are **explicitly discarded** with a note in the `.conf`.
+  - **Packaging = embed + module injection**: the crate embeds the `.conf` files
+    (`include_str!`) and exposes `curated_source()` + `EXPECTED_LOADED`; the component binary builds
+    `CrsModule::from_source` and injects it, gated by `[enterprise.crs_curated]` (default off, no
+    Redis). The core's `[modules.crs].files` channel stays for the OPERATOR's own rules.
+  - **Compatibility gate** (the engineering value of this crate): the crate's test loads the
+    content through the core engine and asserts `loaded_count() == EXPECTED_LOADED` **exactly** +
+    `skipped()` **empty** + a per-rule bite test → the content is *guaranteed compatible* with the
+    shipped subset, with no silent loss (the lesson of the B2 setvar bug).
 
 ---
 
 ## 7. Control plane — `BOUNDARY.md` §2.2
 
-> **v1 IMPLEMENTATA (2026-07-05)** — crate `waf-controlplane`. **Osservabilità read-only**:
-> ingestione + retention + drill-down + API-dashboard. Rule-management (write-path → push SIGHUP)
-> **deferito dopo §8** (RBAC/audit). Servizio **axum** + **Postgres**; **DECOUPLED da `waf-core`**
-> (DTO propri sul contratto JSON del decision-log → non linka il datapath). Auth v1 = bearer token
-> statico (RBAC/SSO = §8). Runbook `scripts/controlplane/`. Bite-test e2e con un nodo WAF reale.
+> **v1 IMPLEMENTED (2026-07-05)** — crate `waf-controlplane`. **Read-only observability**:
+> ingest + retention + drill-down + dashboard API. Rule management (write path → SIGHUP push) was
+> **deferred until after §8** (RBAC/audit). An **axum** + **Postgres** service, **DECOUPLED from
+> `waf-core`** (its own DTOs over the decision-log JSON contract → it does not link the datapath).
+> v1 auth = a static bearer token (RBAC/SSO = §8). Runbook `scripts/controlplane/`. End-to-end bite
+> test with a real WAF node.
 >
-> **v2 ALERTING IMPLEMENTATA (2026-07-05)** — regole in config (`[[controlplane.alerts]]`) valutate
-> da un **evaluator** in background: quando il conteggio (per-gruppo `client_ip`/`rule_id`) di
-> `decision_events` negati in finestra supera la soglia (fuori cooldown) → riga `alerts` + **webhook**
-> generico (POST JSON) + `GET /api/alerts`. Modello fired-record + cooldown DB-based. Zero-datapath
-> (legge solo lo store del control plane). e2e col webhook-receiver provato. Migrazione `0003_alerts`.
+> **v2 ALERTING IMPLEMENTED (2026-07-05)** — rules in config (`[[controlplane.alerts]]`) evaluated
+> by a background **evaluator**: when the count (per `client_ip`/`rule_id` group) of denied
+> `decision_events` in a window exceeds the threshold (outside the cooldown) → an `alerts` row + a
+> generic **webhook** (POST JSON) + `GET /api/alerts`. Fired-record model + DB-based cooldown.
+> Zero datapath (it only reads the control plane's store). Proven end to end with a webhook
+> receiver. Migration `0003_alerts`.
 >
-> **DASHBOARD WEB IMPLEMENTATA (2026-07-06)** — SPA **React + Vite + TypeScript** (+ **Recharts**) in
-> `crates/waf-controlplane/ui/`, consumatrice dell'API read (same-origin, **no CORS**). Viste
-> **Overview** (card volumi + bar-chart, area-chart eventi-nel-tempo con range-selector, latenza
-> p50/95/99 per-nodo, stato cluster) · **Events** (filtri → tabella → **drill-down** `/events/:id` col
-> breakdown per-modulo) · **Alerts** (alert scattati + regole). Endpoint di supporto: `GET
-> /api/decisions/series` (bucket whitelist {60,300,3600} + window cappata 7g, aggregazione in SQL) e
-> `GET /api/version` (drift-check UI↔API). **Due modi di serving**: `[controlplane].ui_dir` = override
-> dev (`ServeDir`); **single-binary** di produzione via `rust-embed` dietro feature **`embed-ui`**
-> (`ui/dist` embeddato nel binario; un `cargo build` normale NON richiede il frontend). Asset UI
-> **pubblici**, solo `/api` dietro il bearer. Auth = token in `sessionStorage` (trade-off XSS
-> dichiarato → §8/SSO migra a cookie HttpOnly). Supply-chain: lockfile committato + `npm audit` in CI
-> + deps dirette minime (no UI-kit). Zero-datapath (la UI è solo un altro consumatore dell'API).
-> **E2E Playwright (2026-07-07)**: suite committata (`ui/tests/e2e/`) che guida la SPA in browser reale
-> contro il **backend reale** (2 binari embed-ui token/session + Postgres); copre auth 2-modi, RBAC, ogni
-> vista + flussi (publish rule, compliance generate/verify, audit verify). `npm run e2e`, runbook §M. CI=follow-on.
+> **WEB DASHBOARD IMPLEMENTED (2026-07-06)** — a **React + Vite + TypeScript** SPA (+ **Recharts**)
+> in `crates/waf-controlplane/ui/`, consuming the read API (same origin, **no CORS**). Views
+> **Overview** (volume cards + bar chart, events-over-time area chart with a range selector,
+> per-node p50/95/99 latency, cluster status) · **Events** (filters → table → **drill-down**
+> `/events/:id` with the per-module breakdown) · **Alerts** (fired alerts + rules). Supporting
+> endpoints: `GET /api/decisions/series` (bucket whitelist {60,300,3600} + window capped at 7 days,
+> aggregation in SQL) and `GET /api/version` (UI↔API drift check). **Two serving modes**:
+> `[controlplane].ui_dir` = development override (`ServeDir`); a production **single binary** via
+> `rust-embed` behind the **`embed-ui`** feature (`ui/dist` embedded in the binary; a plain
+> `cargo build` does NOT need the frontend). UI assets are **public**, only `/api` sits behind auth.
+> v1 kept the token in `sessionStorage` (a declared XSS trade-off), since replaced by HttpOnly
+> session cookies with governance (§8). Supply chain: committed lockfile + `npm audit` in CI +
+> minimal direct dependencies (no UI kit). Zero datapath (the UI is just another API consumer).
+> **Playwright E2E (2026-07-07)**: a committed suite (`ui/tests/e2e/`) that drives the SPA in a real
+> browser against the **real backend** (two `embed-ui` binaries, token and session mode, +
+> Postgres); it covers both auth modes, RBAC, every view and the main flows (publish a rule,
+> compliance generate/verify, audit verify). `npm run e2e`, runbook §M; runs in CI
+> (`.github/workflows/e2e.yml`).
 >
-> **WRITE-PATH (RULE-MANAGEMENT v3) IMPLEMENTATO (2026-07-07)** — l'ultimo pezzo di §7, sbloccato da §8.
-> Il control plane versiona **UN file SecRule `.conf` gestito** e lo **pusha** ai nodi, che ricaricano a
-> caldo. **Zero-core** (verificato): il WAF carica il file via `[modules.crs].files` e su **SIGHUP**
-> `reload_from` lo ricarica con **validate-then-swap** (regole invalide → tiene last-good). **Backend**
-> (migr `0004_rules`): `rule_versions` immutabile + `rule_current` singleton (rollback = re-point) +
-> `node_rule_status` (convergenza). API: **manage** (`ManageRules` operator+ + audit `rule.publish`/
-> `rule.rollback`) `POST/GET /api/rules/versions`·`GET /versions/{id}`·`POST /rollback`; **agent**
-> (`ReadObservability`) `GET /api/rules/current`·`POST /api/rules/status`·`GET /api/rules/nodes`.
-> L'estrattore `MaybePrincipal` fa servire le stesse route a governance-ON (RBAC) e OFF (bearer statico =
-> `api-token`). **Agente per-nodo** = NUOVO crate `waf-node-agent` (binario, linka `waf-detection` OPEN
-> **solo per pre-validare**, NON sul datapath): polla `current` → **pre-valida** (parser seclang) → valido:
-> **write-atomico** (temp+rename) + `reload_command` (SIGHUP, configurabile → portabile) + report `applied`;
-> invalido: report `rejected`, **WAF intatto**. **Due livelli fail-safe** (agente pre-valida + WAF
-> validate-then-swap). **UI**: vista **Rules** (Publish editor · Versions con badge current/rollback ·
-> Node-convergence), nav role-gated operator+. Provato e2e (Proxy REALE: publish → agente valida+scrive →
-> `reload_from` in-process = SIGHUP → richiesta 200→**403** + convergenza; reject-path: v2 invalido → WAF
-> intatto) + smoke browser. Runbook §I. **Follow-on**: dry-run server-side, canary/staged rollout, diff
-> versioni, ruleset multipli nominali, firma ruleset, WebSocket convergenza live, reload su Windows.
+> **WRITE PATH (RULE MANAGEMENT v3) IMPLEMENTED (2026-07-07)** — the last piece of §7, unblocked by
+> §8. The control plane versions **ONE managed SecRule `.conf` file** and **pushes** it to the
+> nodes, which hot-reload it. **Zero core changes** (verified): the WAF loads the file via
+> `[modules.crs].files` and on **SIGHUP** `reload_from` reloads it with **validate-then-swap**
+> (invalid rules → keep last-good). **Backend** (migration `0004_rules`): an immutable
+> `rule_versions` table + a `rule_current` singleton (rollback = re-point) + `node_rule_status`
+> (convergence). API: **manage** (`ManageRules`, operator+, audited as `rule.publish`/
+> `rule.rollback`) `POST/GET /api/rules/versions` · `GET /versions/{id}` · `POST /rollback`;
+> **agent** (`ReadObservability`) `GET /api/rules/current` · `POST /api/rules/status` ·
+> `GET /api/rules/nodes`. The `MaybePrincipal` extractor serves the same routes with governance ON
+> (RBAC) and OFF (static bearer = `api-token`). **Per-node agent** = the `waf-node-agent` crate (a
+> binary that links the core `waf-detection` **only to pre-validate**, NOT on the datapath): it
+> polls `current` → **pre-validates** (seclang parser) → if valid: **atomic write** (temp + rename) +
+> `reload_command` (SIGHUP by default, configurable → portable) + reports `applied`; if invalid:
+> reports `rejected`, the **WAF is untouched**. **Two fail-safe levels** (the agent pre-validates +
+> the WAF's validate-then-swap). **UI**: a **Rules** view (publish editor · versions with
+> current/rollback badges · node convergence), navigation role-gated to operator+. Proven end to
+> end (REAL proxy: publish → the agent validates and writes → in-process `reload_from` = SIGHUP →
+> the request goes 200 → **403** + convergence; reject path: an invalid v2 leaves the WAF intact) +
+> a browser smoke test. Runbook §I. **Follow-ons**: server-side dry run, canary/staged rollout,
+> version diff, multiple named rulesets, ruleset signing, live convergence over WebSocket, reload on
+> Windows.
 
-Servizio separato dal datapath (mai sulla porta dati). Consuma la **telemetria baseline
-OPEN** (logging JSON strutturato + metriche Prometheus, esposte dal core) e la persiste a
-lungo termine.
+A service separate from the datapath (never on the data port). It consumes the core's **baseline
+telemetry** (structured JSON logging + Prometheus metrics) and persists it long term.
 
-**Postura di isolamento / prestazioni (il control plane NON tassa il datapath).** È fuori dal
-percorso della richiesta per costruzione: il binario `waf` non dipende nemmeno da `waf-controlplane`.
-Due flussi, entrambi a costo ~zero sul path caldo:
-- **Metriche = PULL**: uno scraper fa `GET /metrics` sul listener **dedicato/loopback** del WAF
-  (default 15s). `render()` legge solo contatori atomici (`relaxed`, nessun lock condiviso con
-  `handle()`). Lo scrape gira su un task di background, non ruba tempo al serving.
-- **Decision-log = PUSH fuori processo**: il WAF scrive i log JSON come già faceva; un **log shipper
-  esterno** li inoltra a `POST /ingest/events`. Il WAF non conosce il control plane. La correlazione
-  `→ request`+`request blocked` e il parsing NDJSON avvengono NEL control plane.
-- **Unica modifica lato-WAF (core 0.4)**: `score_contributions` serializzato nel decision-log **solo
-  su richiesta negata** (Block/Reject) → il traffico benigno paga **zero**.
-Contrasto: il `StateStore` Redis (§3) è on-datapath (per-richiesta); il control plane è puramente
-osservazionale a valle. Verifica empirica nel runbook §D (bench con/senza scrape).
+**Isolation / performance posture (the control plane does NOT tax the datapath).** It is off the
+request path by construction: the core `waf` binary does not even depend on `waf-controlplane`.
+Two flows, both at ~zero cost on the hot path:
+- **Metrics = PULL**: a scraper does `GET /metrics` on the WAF's **dedicated/loopback** listener
+  (every 15 s by default). `render()` only reads atomic counters (`relaxed`, no lock shared with
+  `handle()`). The scrape runs on a background task and steals no serving time.
+- **Decision log = out-of-process PUSH**: the WAF writes its JSON logs as it always did; an
+  **external log shipper** forwards them to `POST /ingest/events`. The WAF does not know about the
+  control plane. Correlating `→ request` + `request blocked` and parsing the NDJSON happen IN the
+  control plane.
+- **The only WAF-side change (core 0.4)**: `score_contributions` is serialized in the decision
+  log **only for a denied request** (Block/Reject) → benign traffic pays **zero**.
+By contrast, the Redis `StateStore` (§3) is on the datapath (per request); the control plane is
+purely observational, downstream. Empirical check in runbook §D (benchmark with/without scraping).
 
-**Architettura v1 (fasi):** Phase-0 arricchimento OPEN core 0.4 (`score_contributions` nel
-decision-log). Phase-1 store Postgres (`decision_events`+`metric_rollups`+`latency_buckets`).
-Phase-2 ingestione (scraper `/metrics` → rollups; `POST /ingest/events` NDJSON → parse+correlazione
-→ `decision_events`). Phase-3 API read (`/api/cluster/status`·`/decisions/volume`·`/latency`
-[p50/95/99]·`/events` ricerca·`/events/{request_id}` drill-down; bearer middleware). Phase-4 bite-test
-e2e (nodo WAF reale → drill-down) + runbook. **v2 = alerting** (config-rules + evaluator + webhook +
-`GET /api/alerts`, migr `0003_alerts`; **FATTA**). **UI = dashboard web FATTA** (SPA React/Vite +
-serving `ui_dir`/`embed-ui`). **Write-path rule-management (v3) = FATTO** (crate `waf-node-agent`,
-migr `0004_rules`, vista Rules; vedi callout sopra). **Follow-on**: alerting metric/latency-based +
-stato firing/resolved, connettori Slack/email nativi, OpenAPI, dry-run server-side + canary rollout per
-il write-path, integrazione Prometheus/Grafana esterni.
+**v1 architecture (phases):** Phase 0 enriched the core decision log in 0.4
+(`score_contributions`). Phase 1 Postgres store (`decision_events` + `metric_rollups` +
+`latency_buckets`). Phase 2 ingest (scraper `/metrics` → rollups; `POST /ingest/events` NDJSON →
+parse + correlation → `decision_events`). Phase 3 read API (`/api/cluster/status` ·
+`/decisions/volume` · `/latency` [p50/95/99] · `/events` search · `/events/{request_id}`
+drill-down; bearer middleware). Phase 4 end-to-end bite test (real WAF node → drill-down) +
+runbook. **v2 = alerting** (config rules + evaluator + webhook + `GET /api/alerts`, migration
+`0003_alerts`; **DONE**). **UI = web dashboard DONE** (React/Vite SPA + `ui_dir`/`embed-ui`
+serving). **Rule-management write path (v3) = DONE** (crate `waf-node-agent`, migration
+`0004_rules`, Rules view; see the callout above). **Follow-ons**: metric/latency-based alerting
++ firing/resolved state, native Slack/email connectors, OpenAPI for the control-plane API,
+server-side dry run + canary rollout for the write path, external Prometheus/Grafana integration.
 
-### 7.1 Due flussi di dati (le metriche NON sono l'unica sorgente)
+### 7.1 Two data flows (metrics are NOT the only source)
 
-Il control plane ha **due input separati**, con due modelli e due store — NON deriva solo dalle metriche:
+The control plane has **two separate inputs**, with two models and two stores — it does NOT derive
+everything from metrics:
 
-| Flusso | Modello | Sorgente | Alimenta |
+| Flow | Model | Source | Feeds |
 |---|---|---|---|
-| **Metriche** | **PULL** — scraper `GET /metrics` | endpoint Prometheus del core (B1) | dashboard aggregate: volumi/decisione, latenze (`metric_rollups`, `latency_buckets`) |
-| **Decision-log** | **PUSH** — `POST /ingest/events` | il file/stdout JSON del WAF, via **log shipper esterno** | **drill-down per-richiesta** (`decision_events`) |
+| **Metrics** | **PULL** — scraper `GET /metrics` | the core's Prometheus endpoint (B1) | aggregate dashboards: volume per decision, latencies (`metric_rollups`, `latency_buckets`) |
+| **Decision log** | **PUSH** — `POST /ingest/events` | the WAF's JSON file/stdout, via an **external log shipper** | **per-request drill-down** (`decision_events`) |
 
-- Il **drill-down NON viene da `/metrics`**: le metriche sono aggregate e, per il **vincolo di cardinalità**
-  (mai `path`/`ip`/`request_id` come label), non portano dettaglio per-richiesta. Il dettaglio viene dal
-  **decision-log JSON**.
-- Il control plane **non legge il file di log**: lo legge un **log shipper** (Vector / Fluent-bit / lo script
-  di riferimento `forward_logs.sh`) che fa `tail -F` e inoltra ogni riga NDJSON a `POST /ingest/events`. Il WAF
-  resta ignaro (out-of-process, zero-datapath). `ingest.rs` correla `→ request` + `request blocked` per
-  `request_id` e scrive `decision_events`.
+- The **drill-down does NOT come from `/metrics`**: metrics are aggregates and, because of the
+  **cardinality constraint** (never `path`/`ip`/`request_id` as labels), carry no per-request
+  detail. The detail comes from the **JSON decision log**.
+- The control plane **does not read the log file**: a **log shipper** (Vector / Fluent Bit / the
+  reference script `forward_logs.sh`) does `tail -F` and forwards every NDJSON line to
+  `POST /ingest/events`. The WAF stays unaware (out of process, zero datapath). `ingest.rs`
+  correlates `→ request` + `request blocked` by `request_id` and writes `decision_events`.
 
 ```text
-WAF ──scrive──> node.jsonl ──tail-F──> [log shipper] ──POST /ingest/events?node=X──┐
-WAF ──espone──> /metrics ─────────────────────────────GET (scraper, 15s)──────────┤──> control plane ──> Postgres
+WAF ──writes──> node.jsonl ──tail -F──> [log shipper] ──POST /ingest/events?node=X──┐
+WAF ──exposes─> /metrics ──────────────────────────────GET (scraper, 15s)──────────┤──> control plane ──> Postgres
 ```
 
-### 7.2 Un solo control plane su WAF multi-nodo
+### 7.2 One control plane for a multi-node WAF
 
-Funziona perché **entrambi i flussi sono per-nodo** e ogni dato porta l'identità del nodo (colonna `node`):
+It works because **both flows are per node** and every datum carries the node's identity (the
+`node` column):
 
-- **Metriche**: la config elenca **tutti i nodi** — `[[controlplane.nodes]]` con il loro `metrics_url`; lo
-  scraper cicla su ognuno e salva rollup taggati `node`. **Reset-aware totals**: `waf_requests_total` e i
-  bucket di latenza sono **counter Prometheus** (cumulativi dall'avvio del processo, si **azzerano al
-  restart** del WAF). Lo scraper mantiene quindi un totale persistente reset-aware in `metric_totals`/
-  `latency_totals` (delta dall'ultimo valore, o il valore grezzo quando rileva un reset), così i volumi
-  dell'Overview **continuano a salire attraverso i restart** invece di crollare all'ultimo snapshot. Lo
-  stato vive in Postgres → sopravvive sia al restart del WAF (rilevamento reset) sia del control plane
-  (lo stato viene riletto). `GET /api/decisions/volume` **somma i cumulativi tra i nodi** per decisione;
-  `GET /api/cluster/status` li elenca (last-seen da `metric_totals`); `GET /api/latency` è per-nodo
-  (percentili **lifetime**). I raw `metric_rollups`/`latency_buckets` restano come storico grezzo.
-- **Decision-log**: ogni nodo ha il suo shipper che fa `POST /ingest/events?node=<nome>` → `decision_events.node`
-  distingue la provenienza (l'identità la mette il **shipper**, mai il core → zero-core). Ricerca/drill-down
-  coprono tutto il cluster.
+- **Metrics**: the config lists **every node** — `[[controlplane.nodes]]` with its `metrics_url`;
+  the scraper cycles over them and stores rollups tagged with `node`. **Reset-aware totals**:
+  `waf_requests_total` and the latency buckets are **Prometheus counters** (cumulative since the
+  process started, **reset when the WAF restarts**). The scraper therefore keeps a persistent,
+  reset-aware total in `metric_totals`/`latency_totals` (the delta since the last value, or the raw
+  value when it detects a reset), so the Overview volumes **keep growing across restarts** instead
+  of dropping to the last snapshot. The state lives in Postgres → it survives both a WAF restart
+  (reset detection) and a control-plane restart (the state is re-read).
+  `GET /api/decisions/volume` **sums the cumulative totals across nodes** per decision;
+  `GET /api/cluster/status` lists them (last seen from `metric_totals`); `GET /api/latency` is per
+  node (**lifetime** percentiles). The raw `metric_rollups`/`latency_buckets` stay as raw history.
+- **Decision log**: every node has its own shipper doing `POST /ingest/events?node=<name>` →
+  `decision_events.node` tells the origin apart (the **shipper** sets the identity, never the core
+  → zero core changes). Search and drill-down cover the whole cluster.
 
 ```text
 edge-1 ─/metrics─┐        edge-1 ─shipper─┐
-edge-2 ─/metrics─┼─> [1 control plane] <─┼─ edge-2 ─shipper   →  1 Postgres (colonna `node` ovunque)
+edge-2 ─/metrics─┼─> [1 control plane] <─┼─ edge-2 ─shipper   →  1 Postgres (`node` column everywhere)
 edge-3 ─/metrics─┘        edge-3 ─shipper─┘
 ```
 
-**Nota deployment**: il listener `/metrics` del core è **loopback di default** (info-leak se pubblico). Perché
-un control plane su un altro host lo scrapi, il nodo deve esporlo su un'**interfaccia privata/di management**
-raggiungibile dal control plane (rete privata / tunnel), mai su Internet. È una scelta di rete, non un limite
-architetturale. Uno **shipper per nodo** (o uno centrale che legge i log di tutti) fornisce il flusso push.
+**Deployment note**: the core's `/metrics` listener is **loopback by default** (an information
+leak if public). For a control plane on another host to scrape it, the node must expose it on a
+**private/management interface** reachable by the control plane (private network / tunnel), never
+on the Internet. That is a network choice, not an architectural limit. **One shipper per node** (or
+a central one reading every node's logs) provides the push flow.
 
-- **Dashboard web**: stato cluster, volumi per decisione (`allowed|blocked|rate_limited|
-  bad_request|upstream_error|internal_error`), latenze (dagli histogram Prometheus del
-  core, quantili lato scrape).
-- **Drill-down richieste bloccate**: ricostruzione del verdetto dai
-  `score_contributions` (module/rule_id/severity/points) loggati dal core.
-- **Rule management**: editing/versioning regole + push validato ai nodi (riusa l'hot
-  reload SIGHUP; il control plane è "il bottone", la logica validate-then-swap resta OPEN).
-- **Alerting**: soglie su metriche/eventi.
-- **Retention a lungo termine** di metriche/telemetria (i contatori OPEN sono
-  exporter-neutral → il control plane è un secondo sink, non una riscrittura).
+- **Web dashboard**: cluster status, volume per decision (`allowed|blocked|rate_limited|
+  bad_request|upstream_error|internal_error`), latencies (from the core's Prometheus histograms,
+  quantiles computed at scrape time).
+- **Blocked-request drill-down**: the verdict rebuilt from the `score_contributions`
+  (module/rule_id/severity/points) logged by the core.
+- **Rule management**: rule editing/versioning + a validated push to the nodes (it reuses the
+  SIGHUP hot reload; the control plane is "the button", the validate-then-swap logic stays in the
+  core).
+- **Alerting**: thresholds on events.
+- **Long-term retention** of metrics/telemetry (the core counters are exporter-neutral → the
+  control plane is a second sink, not a rewrite).
 
-> **Vincolo cardinalità** ereditato dal core: MAI label da input utente su
-> `requests_total`. Breakdown per-regola/IP/path = metriche separate con cap, materializzate
-> nello store del control plane, non labels sul path caldo.
+> **Cardinality constraint** inherited from the core: NEVER labels from user input on
+> `requests_total`. Per-rule/IP/path breakdowns = separate, capped metrics materialized in the
+> control plane's store, not labels on the hot path.
 
-### 7.3 API attack-surface inventory (discovery §4-B pt3) — **IMPLEMENTATO (2026-07-15)**
+### 7.3 API attack-surface inventory (discovery §4-B pt3) — **IMPLEMENTED (2026-07-15)**
 
-Il control plane costruisce un **inventario della superficie d'attacco API** dagli enforcement decision
-già persistiti (`inventory.rs`, `GET /api/inventory` + `/api/inventory/drift`, vista UI "API Inventory").
-**Realtà dei dati (decisiva):** `decision_events` contiene **solo richieste denied** (blocked/rejected — il
-traffico benigno scade dal buffer di correlazione, mai memorizzato) → è la **superficie d'attacco vista**, NON
-un inventario all-traffic. Aggregazione **on-demand** su `decision_events` (niente tabella/aggregatore
-dedicati): `GROUP BY (method, path)` con hit/first/last, poi in Rust **templating** (segmenti numerici/UUID/
-hex-lunghi → `{}`, così `/users/5` e `/users/6` collassano) e **classificazione** vs la spec OpenAPI
-configurata (`[controlplane.api_inventory].spec_path`, opzionale, non-fatale):
+The control plane builds an **API attack-surface inventory** from the enforcement decisions it
+already persists (`inventory.rs`, `GET /api/inventory` + `/api/inventory/drift`, the "API Inventory"
+UI view). **The data reality (decisive):** `decision_events` holds **only denied requests**
+(blocked/rejected — benign traffic expires from the correlation buffer and is never stored) → this
+is the **observed attack surface**, NOT an all-traffic inventory. **On-demand** aggregation over
+`decision_events` (no dedicated table or aggregator): `GROUP BY (method, path)` with
+hits/first/last, then in Rust **templating** (numeric/UUID/long-hex segments → `{}`, so `/users/5`
+and `/users/6` collapse) and **classification** against the configured OpenAPI spec
+(`[controlplane.api_inventory].spec_path`, optional, non-fatal):
 
-- **`documented`** = path+metodo dichiarati (endpoint noto che ha comunque attirato blocchi — violazioni di
-  contratto o injection contro API note),
-- **`shadow`** = path/metodo NON dichiarati (endpoint non documentato colpito — il segnale forte di discovery),
-- **`unclassified`** = nessuna spec configurata.
+- **`documented`** = declared path + method (a known endpoint that still drew blocks — contract
+  violations or injection against known APIs),
+- **`shadow`** = path/method NOT declared (an undocumented endpoint being hit — the strong
+  discovery signal),
+- **`unclassified`** = no spec configured.
 
-**Confine (`BOUNDARY.md` §2.2)**: read-only, off-datapath, **core-free** — il control plane NON dipende da
-`waf-core` (consuma il contratto JSON OPEN), quindi il matcher path→route è una **reimplementazione standalone
-(solo `serde_json`)** del `Router` del datapath (§4-B A2), non un import di `waf-modules-premium`. **Zombie**
-(dichiarato-ma-inutilizzato) e discovery all-traffic = **follow-on** (servirebbe un ingest di tutto il traffico,
-non solo denied). Learning-mode "genera bozza OpenAPI dal traffico" = follow-on.
-
----
-
-## 8. Governance e compliance — `BOUNDARY.md` §2.3
-
-> **v1 IMPLEMENTATA (2026-07-06)** — crate `waf-governance`, **libreria** del control plane
-> (zero-core, zero-datapath; opera sullo stesso Postgres, `apply_schema` proprio). **RBAC** con 3 ruoli
-> fissi (`Viewer` read-only / `Operator` [tier write riservato] / `Admin`) + matrice `Permission` pura.
-> **Auth locale**: account con password **argon2id** + **sessioni server-side** (cookie **HttpOnly +
-> SameSite=Strict + Secure**). Con governance ON, `/api/*` accetta **una sessione (umano, RBAC per
-> ruolo) OPPURE il bearer statico** (principale macchina/admin, `actor="api-token"`); `/ingest` resta
-> col bearer; governance OFF (default) = comportamento attuale (solo bearer, backward-compat). **Audit
-> log firmato**: catena **SHA-256 + Ed25519** (via `ring`) tamper-evident — ogni azione (login/logout,
-> user create/disable/role-change, bootstrap) è un record che concatena l'hash del precedente + firma;
-> `GET /api/audit` + `GET /api/audit/verify` (ricontrolla continuità + hash + firme). Endpoint
-> `POST /api/login`·`/logout`·`GET /api/me`·`/api/users`(CRUD admin)·`/api/audit`(+verify). Bootstrap
-> admin da config + env; secret (audit key, bootstrap pw) da env. Migrazione via `apply_schema` (tabelle
-> `gov_users`/`gov_sessions`/`gov_audit_log`). e2e HTTP provato (login→RBAC 403/200→audit verify→tamper→
-> fail). **Follow-on**: SSO **OIDC** (SAML deferito), **UI governance** (la UI migra l'auth a cookie
-> HttpOnly), report di compliance automatici, e sblocca il **rule-management §7 (v3 write-path)**.
->
-> **v2 IMPLEMENTATA (2026-07-06)** — **SSO OIDC** + **hardening auth**. *OIDC* (crate `openidconnect`,
-> Authorization Code + **PKCE**): `[controlplane.governance.oidc]` (issuer/discovery + client + redirect +
-> `role_claim`/`role_map`/`default_role`; secret da env). `GET /api/auth/oidc/login`→302 IdP (flow-state PKCE/
-> nonce in `gov_oidc_flows`) → `/api/auth/oidc/callback` verifica l'id_token (firma **JWKS** + nonce + aud +
-> exp), mappa il claim ruoli → ruolo (highest-priv; unmapped→deny salvo `default_role`), **provisiona l'utente
-> federato** (`auth_source=oidc`, no password locale; NON dirotta un account local) e apre la sessione. Provato
-> **live end-to-end** (Keycloak reale + browser headless: group `waf-admins`→`admin`). *Hardening*: **service-token
-> nominali** revocabili role-bound (`gov_tokens`, solo hash memorizzato, plaintext una volta; bearer-resolution
-> token-nominale→static-admin) · **gestione sessioni** (list/revoke own + admin revoke-all + auto-revoca su
-> disable/cambio-pwd) · **password** self-change (revoca le altre sessioni) + admin reset · **throttle login**
-> brute-force (in-memory per-processo → 429). Audit esteso (login.sso, token.*, session.*, password.*). Migrazione
-> in-place backward-compat (ALTER + `gov_tokens`/`gov_oidc_flows`).
->
-> **UI GOVERNANCE IMPLEMENTATA (2026-07-06)** — la SPA del control plane (§7) copre ora la governance.
-> **Auto-detect** dell'auth via `GET /api/auth/config`: governance-ON → login user/password (+ bottone
-> **"Sign in with SSO"** se OIDC) su **cookie HttpOnly** (niente token in sessionStorage → **chiude il
-> trade-off XSS**); governance-OFF → il gate a token esistente (backward-compat). Viste role-gated:
-> **Users** (admin: CRUD+ruolo+disable+reset-pwd), **Tokens** (admin: crea[plaintext una volta]/revoca),
-> **Audit** (admin: tabella + Verify-chain), **Account** (tutti: cambio password + proprie sessioni).
-> Provata **live nei 3 modi** (session via single-binary embeddato, OIDC via Keycloak, token-mode). CSRF
-> = SameSite=Strict (token esplicito=follow-on). **Follow-on residui**: throttle cluster-wide, MFA,
-> CSRF-token esplicito.
->
-> **REPORT DI COMPLIANCE IMPLEMENTATI (2026-07-07)** — evidenza **SOC2/PCI** period-scoped **firmata**,
-> aggregata da ciò che il sistema già ha (accessi governance + audit-log firmato + telemetria WAF).
-> **Read-only, zero-core/zero-datapath**, **admin** (`ViewAudit`), montata **solo con governance ON**
-> (riusa il signer audit). `GET /api/compliance/report?from=&to=` (default 90g) → bundle con **4 sezioni**
-> ognuna annotata coi **controlli SOC2/PCI**: access-control (utenti/ruoli/token/sessioni · CC6/PCI 7-8) ·
-> audit-integrity (`verify_chain` sull'INTERA catena → `chain_ok`/`verified_through_seq` + timeline eventi
-> del periodo · CC7/PCI 10) · WAF-effectiveness (denied+top-rules+nodi · PCI 6.4.2/11) · alert (CC7.2/PCI
-> 10.6). Il **bundle è firmato**: `content_hash`=SHA256 del corpo canonico (via `serde_json::Value`→chiavi
-> ordinate = firma order-independent, sopravvive al round-trip JSON), `signature`=Ed25519 (chiave audit);
-> `POST /api/compliance/verify` ricontrolla. **CAVEAT**: denied period-accurate (righe per-evento),
-> allowed/totali cumulativi (counter Prometheus, non per-periodo). Vista UI **Compliance** (date-range →
-> Generate → banner integrità + sezioni + chip controlli + firma + **Print**/Verify). Provata e2e
-> (genera→verify ok→tamper→fail + RBAC viewer 403) + smoke browser. Runbook §K. **Follow-on**: PDF nativo,
-> archivio report immutabile, ruolo `auditor` dedicato, report per-framework separati, schedulati/emailati.
->
-> **SAML — DECISIONE CONGELATA (2026-07-07): nativo NON supportato, coperto via IdP broker.** L'SSO
-> moderno è **OIDC** (FATTO v2, live Keycloak). Il **SAML nativo è deliberatamente fuori scope**: la
-> verifica XML-DSig (canonicalizzazione **C14N** + **XML-Signature-Wrapping**) è la classe di bug che ha
-> bucato per anni le librerie SAML mature di *ogni* ecosistema; un validatore hand-rolled sarebbe **falsa
-> sicurezza** — stessa disciplina di §4-B (apollo-compiler), applicata al contrario: lì si scelse la
-> libreria matura perché il controllo era critico; qui la libreria matura **pure-Rust non esiste**, quindi
-> non si entra nel territorio. L'unica opzione matura (`samael` → `xmlsec`/`libxml2`, storico CVE)
-> tradirebbe la postura pure-Rust/no-C **proprio nel crate di trust**. Gli IdP enterprise rilevanti (Okta,
-> Entra ID, Ping, OneLogin, Keycloak, Google Workspace) parlano OIDC nativamente; il residuo "solo SAML"
-> si copre con un **IdP broker** (Keycloak/Dex): l'IdP SAML del cliente federato *dietro* il broker, il
-> control plane parla **solo OIDC** — il rischio XML-DSig lo gestisce chi lo fa di mestiere. Costo per
-> noi: una **pagina di runbook** (§J). **Nativo = follow-on demand-driven**: si rivaluta SOLO su domanda
-> concreta di utenti che il broker-path non riesce a servire, e SOLO verso `samael` (**MAI** un hand-roll pure-Rust).
-
-- **RBAC**: ruoli/permessi sul control plane (read-only / operatore / admin). **[FATTO v1]**
-- **SSO**: OIDC nativo · SAML via IdP broker. **[OIDC FATTO v2; SAML nativo fuori scope per scelta
-  (2026-07-07) → broker Keycloak/Dex, runbook §J; nativo = follow-on demand-driven]**
-- **Audit log firmati**: ogni azione operatore (edit regole, cambio soglie, reload,
-  override fail-mode) → record firmato (catena verificabile) per SOC2 / PCI-DSS. **[FATTO v1:
-  hash-chain + Ed25519; le azioni di rule-management si aggiungeranno quando arriva il write-path]**
-- **Report di compliance automatici** + retention a lungo termine. **[FATTO 2026-07-07: bundle SOC2/PCI
-  period-scoped FIRMATO (Ed25519) con integrità audit + accessi + efficacia WAF, `GET /api/compliance/report`
-  + vista UI; vedi callout sopra. Retention lunga già garantita da `retention_days`. Follow-on: PDF, archivio]**
-
-L'audit enterprise è **distinto** dal decision-log OPEN: il core logga i **verdetti** (per
-richiesta); l'enterprise logga le **azioni umane/amministrative** sul control plane.
+**Boundary (`BOUNDARY.md` §2.2)**: read-only, off datapath, **core-free** — the control plane does
+NOT depend on `waf-core` (it consumes the core's JSON contract), so the path→route matcher is a
+**standalone re-implementation (`serde_json` only)** of the datapath `Router` (§4-B A2), not an
+import of `waf-schema-enforcement`. **Zombie** (declared but unused) endpoints and all-traffic
+discovery = **follow-ons** (they would need an ingest of all traffic, not only denied requests).
+A learning mode that drafts an OpenAPI spec from traffic = follow-on.
 
 ---
 
-## 9. Integrazione e supporto — `BOUNDARY.md` §2.5
+## 8. Governance and compliance — `BOUNDARY.md` §2.3
 
-> **CONNETTORI SIEM IMPLEMENTATI (2026-07-07)** — un **forwarder** in background nel control plane
-> **PUSH**-a gli eventi memorizzati (verdetti WAF negati `decision_events` + **audit firmato** `gov_audit_log`
-> + alert) verso sink SIEM HTTP, normalizzati in un evento **versionato ECS-like NDJSON** (`"version":1`,
-> nomi ECS dove ovvio + namespace `waf.*`). **Read-only, zero-core/zero-datapath** (legge gli store; il WAF
-> ignora il SIEM). Il valore vs il log-shipper OPEN (§7) = **normalizzazione + correlazione + stream audit
-> firmato + affidabilità**. **At-least-once**: cursore per-`(destinazione,stream)` che avanza SOLO su ack
-> 2xx dell'intero batch (fail → non avanza, ritrasmette; il SIEM deduplica su `event.id` stabile
-> `waf-<stream>-<id>`). **Backpressure = Postgres** (bound = `retention_days`, niente code in-memory); il
-> **lag** (`head-cursore`) è il segnale operativo chiave, esposto da `GET /api/siem/status` + log.
-> **Formatter astratto dal giorno uno** (`SiemFormatter`; v1 = `EcsNdjsonFormatter`) → CEF/LEEF/syslog +
-> adapter vendor = varianti future SENZA toccare il forwarder. Config `[controlplane.siem]` (destinazioni
-> {endpoint, auth_header [env `WAF_CP_SIEM_AUTH_<NAME>`], format, streams} + batch + flush), default OFF.
-> Migr `0005_siem` (`siem_cursors`). Provato e2e (at-least-once: fail→cursore fermo→recover→ri-consegna;
-> 3 stream normalizzati + status API). Runbook §L. **Follow-on**: CEF/LEEF/syslog + vendor adapter,
-> `/metrics` CP-nativo (`siem_forwarder_lag`), TLS client-cert, DLQ, filtri, OTLP, UI SIEM.
+> **v1 IMPLEMENTED (2026-07-06)** — crate `waf-governance`, a **library** of the control plane
+> (zero core, zero datapath; it works on the same Postgres, with its own `apply_schema`). **RBAC**
+> with 3 fixed roles (`Viewer` read-only / `Operator` [reserved write tier] / `Admin`) + a pure
+> `Permission` matrix. **Local auth**: accounts with **argon2id** passwords + **server-side
+> sessions** (an **HttpOnly + SameSite=Strict + Secure** cookie). With governance ON, `/api/*`
+> accepts **a session (a human, RBAC by role) OR the static bearer** (a machine/admin principal,
+> `actor="api-token"`); `/ingest` stays bearer-only; governance OFF (the default) = the previous
+> behavior (bearer only, backward compatible). **Signed audit log**: a tamper-evident
+> **SHA-256 + Ed25519** chain (via `ring`) — every action (login/logout, user create/disable/role
+> change, bootstrap) is a record that chains the previous record's hash + a signature;
+> `GET /api/audit` + `GET /api/audit/verify` (re-checks continuity + hashes + signatures).
+> Endpoints `POST /api/login` · `/logout` · `GET /api/me` · `/api/users` (admin CRUD) ·
+> `/api/audit` (+ verify). Bootstrap admin from config + env; secrets (audit key, bootstrap
+> password) from env. Migration via `apply_schema` (tables `gov_users`/`gov_sessions`/
+> `gov_audit_log`). Proven end to end over HTTP (login → RBAC 403/200 → audit verify → tamper →
+> fail).
+>
+> **v2 IMPLEMENTED (2026-07-06)** — **OIDC SSO** + **auth hardening**. *OIDC* (crate
+> `openidconnect`, Authorization Code + **PKCE**): `[controlplane.governance.oidc]` (issuer/discovery
+> + client + redirect + `role_claim`/`role_map`/`default_role`; secret from env).
+> `GET /api/auth/oidc/login` → 302 to the IdP (PKCE/nonce flow state in `gov_oidc_flows`) →
+> `/api/auth/oidc/callback` verifies the id_token (**JWKS** signature + nonce + aud + exp), maps the
+> roles claim → a role (highest privilege; unmapped → deny unless `default_role`), **provisions the
+> federated user** (`auth_source=oidc`, no local password; it does NOT hijack a local account) and
+> opens the session. Proven **live end to end** (real Keycloak + a headless browser: group
+> `waf-admins` → `admin`). *Hardening*: **named, revocable, role-bound service tokens**
+> (`gov_tokens`, only the hash stored, plaintext shown once; bearer resolution: named token → static
+> admin) · **session management** (list/revoke own + admin revoke-all + auto-revocation on
+> disable/password change) · **password** self-change (revokes the other sessions) + admin reset ·
+> **login throttling** against brute force (in-memory per process → 429). Extended audit
+> (login.sso, token.*, session.*, password.*). In-place, backward-compatible migration (ALTER +
+> `gov_tokens`/`gov_oidc_flows`).
+>
+> **GOVERNANCE UI IMPLEMENTED (2026-07-06)** — the control-plane SPA (§7) now covers governance.
+> Auth **auto-detection** via `GET /api/auth/config`: governance ON → user/password login (+ a
+> **"Sign in with SSO"** button when OIDC is configured) on an **HttpOnly cookie** (no token in
+> sessionStorage → **closes the XSS trade-off**); governance OFF → the existing token gate (backward
+> compatible). Role-gated views: **Users** (admin: CRUD + role + disable + password reset),
+> **Tokens** (admin: create [plaintext shown once] / revoke), **Audit** (admin: table + chain
+> verify), **Account** (everyone: password change + own sessions). Proven **live in all 3 modes**
+> (session via the embedded single binary, OIDC via Keycloak, token mode). CSRF = SameSite=Strict
+> (an explicit token = follow-on). **Remaining follow-ons**: cluster-wide throttling, MFA, explicit
+> CSRF token.
+>
+> **COMPLIANCE REPORTS IMPLEMENTED (2026-07-07)** — period-scoped, **signed** **SOC 2 / PCI**
+> evidence, aggregated from what the system already holds (governance access + signed audit log +
+> WAF telemetry). **Read-only, zero core / zero datapath**, **admin** only (`ViewAudit`), mounted
+> **only with governance ON** (it reuses the audit signer). `GET /api/compliance/report?from=&to=`
+> (default 90 days) → a bundle with **4 sections**, each annotated with the **SOC 2 / PCI controls**
+> it supports: access control (users/roles/tokens/sessions · CC6 / PCI 7-8) · audit integrity
+> (`verify_chain` over the WHOLE chain → `chain_ok`/`verified_through_seq` + the period's event
+> timeline · CC7 / PCI 10) · WAF effectiveness (denied + top rules + nodes · PCI 6.4.2/11) · alerts
+> (CC7.2 / PCI 10.6). The **bundle is signed**: `content_hash` = SHA-256 of the canonical body (via
+> `serde_json::Value` → sorted keys = an order-independent signature that survives a JSON round
+> trip), `signature` = Ed25519 (the audit key); `POST /api/compliance/verify` re-checks it.
+> **CAVEAT**: denied counts are period-accurate (per-event rows), allowed/totals are cumulative
+> (Prometheus counters, not per period). A **Compliance** UI view (date range → Generate →
+> integrity banner + sections + control chips + signature + **Print**/Verify). Proven end to end
+> (generate → verify ok → tamper → fail + RBAC viewer 403) + a browser smoke test. Runbook §K.
+> **Follow-ons**: native PDF, an immutable report archive, a dedicated `auditor` role, separate
+> per-framework reports, scheduled/emailed reports.
+>
+> **SAML — FROZEN DECISION (2026-07-07): not natively supported, covered via an IdP broker.**
+> Modern SSO is **OIDC** (DONE in v2, live with Keycloak). **Native SAML is deliberately out of
+> scope**: XML-DSig verification (**C14N** canonicalization + **XML Signature Wrapping**) is the bug
+> class that has broken mature SAML libraries in *every* ecosystem for years; a hand-rolled
+> validator would be **false security** — the same discipline as §4 (apollo-compiler), applied in
+> reverse: there we picked the mature library because the control was critical; here a mature
+> **pure-Rust** library does not exist, so we stay out of that territory. The one mature option
+> (`samael` → `xmlsec`/`libxml2`, with a CVE history) would betray the pure-Rust/no-C posture
+> **precisely in the trust crate**. Every relevant IdP (Okta, Entra ID, Ping, OneLogin, Keycloak,
+> Google Workspace) speaks OIDC natively; the remaining "SAML only" case is covered by an **IdP
+> broker** (Keycloak/Dex): the organization's SAML IdP is federated *behind* the broker and the
+> control plane speaks **only OIDC** — the XML-DSig risk is handled by software whose job that is.
+> Our cost: one **runbook page** (§J). **Native = demand-driven follow-on**: reconsidered ONLY on
+> concrete demand that the broker path cannot serve, and ONLY via `samael` (**NEVER** a pure-Rust
+> hand-roll).
 
-- **Connettori SIEM**: export degli eventi (decision-log OPEN + audit enterprise) verso
-  Splunk/Elastic/QRadar/… Si appoggia al logging strutturato OPEN come sorgente. **[FATTO 2026-07-07:
-  forwarder PUSH → NDJSON ECS-like, at-least-once, 3 stream, `GET /api/siem/status`; vedi callout sopra]**
-- **SLA support** e **guided hardening** (servizio). **[non-software]**
+- **RBAC**: roles/permissions on the control plane (read-only / operator / admin). **[DONE v1]**
+- **SSO**: native OIDC · SAML via an IdP broker. **[OIDC DONE v2; native SAML out of scope by
+  choice (2026-07-07) → Keycloak/Dex broker, runbook §J; native = demand-driven follow-on]**
+- **Signed audit log**: every operator action (rule changes, user and token management, sessions,
+  report generation, capture views) → a signed record (verifiable chain) for SOC 2 / PCI DSS.
+  **[DONE v1: hash chain + Ed25519; rule publish/rollback are audited since the §7 write path]**
+- **Automated compliance reports** + long-term retention. **[DONE 2026-07-07: a period-scoped
+  SIGNED (Ed25519) SOC 2 / PCI bundle with audit integrity + access + WAF effectiveness,
+  `GET /api/compliance/report` + a UI view; see the callout above. Long retention via
+  `retention_days`. Follow-ons: PDF, archive]**
+
+The component audit log is **distinct** from the core decision log: the core logs **verdicts**
+(per request); the control plane logs **human/administrative actions**.
 
 ---
 
-## 10. Confine e stabilità (riassunto operativo)
+## 9. Integration — `BOUNDARY.md` §2.5
 
-| Capability | OPEN (core) | ENTERPRISE (questo doc) |
+> **SIEM CONNECTORS IMPLEMENTED (2026-07-07)** — a background **forwarder** in the control plane
+> **PUSHes** the stored events (denied WAF verdicts `decision_events` + the **signed audit log**
+> `gov_audit_log` + alerts) to HTTP SIEM sinks, normalized into a **versioned, ECS-like NDJSON**
+> event (`"version":1`, ECS names where obvious + a `waf.*` namespace). **Read-only, zero core /
+> zero datapath** (it reads the stores; the WAF does not know about the SIEM). The value over the
+> core's log shipping (§7) = **normalization + correlation + the signed audit stream +
+> reliability**. **At-least-once**: a per-`(destination, stream)` cursor advances ONLY on a 2xx ack
+> of the whole batch (failure → it does not advance and retransmits; the SIEM deduplicates on the
+> stable `event.id` `waf-<stream>-<id>`). **Backpressure = Postgres** (bounded by
+> `retention_days`, no in-memory queues); the **lag** (`head - cursor`) is the key operational
+> signal, exposed by `GET /api/siem/status` + logs. **Formatter abstracted from day one**
+> (`SiemFormatter`; v1 = `EcsNdjsonFormatter`) → CEF/LEEF/syslog + vendor adapters = future
+> variants WITHOUT touching the forwarder. Config `[controlplane.siem]` (destinations {endpoint,
+> auth_header [env `WAF_CP_SIEM_AUTH_<NAME>`], format, streams} + batch + flush), default OFF.
+> Migration `0005_siem` (`siem_cursors`). Proven end to end (at-least-once: failure → cursor held →
+> recovery → redelivery; 3 normalized streams + status API). Runbook §L. **Follow-ons**:
+> CEF/LEEF/syslog + vendor adapters, a native control-plane `/metrics` (`siem_forwarder_lag`), TLS
+> client certificates, a dead-letter queue, filters, OTLP, a SIEM UI.
+
+- **SIEM connectors**: export of events (the core decision log + the component audit log) to
+  Splunk/Elastic/QRadar/…, built on the core's structured logging as the source. **[DONE
+  2026-07-07: PUSH forwarder → ECS-like NDJSON, at-least-once, 3 streams, `GET /api/siem/status`;
+  see the callout above]**
+
+---
+
+## 10. Boundary and stability (operational summary)
+
+| Capability | Core | Components (this document) |
 |---|---|---|
-| Rate-limit / state | in-memory token bucket | `StateStore` Redis cluster-wide + IP-reputation |
-| TLS | termination base cert-da-file | ACME / rotation / multi-nodo / mTLS PKI |
-| WASM | runtime Proxy-Wasm | marketplace / signing |
-| CRS/ModSecurity | parser/engine `seclang` | regole curate premium |
-| Detection (SQLi…XXE, GraphQL/gRPC) | **tutta** | firme premium + schema-enforcement |
-| Telemetria | baseline Prom/OTLP | dashboard + retention + drill-down |
-| Governance | — | RBAC / SSO / audit firmato / report |
+| Rate limiting / state | in-memory token bucket | cluster-wide Redis `StateStore` + IP reputation |
+| TLS | basic termination, cert from file | ACME / rotation / multi-node / mTLS |
+| WASM | Proxy-Wasm runtime | signature verification |
+| CRS/ModSecurity | `seclang` parser/engine | curated rule content |
+| Detection (SQLi…XXE, GraphQL/gRPC) | **all of it** | schema / OpenAPI enforcement, bot detection |
+| Telemetry | Prometheus export, JSON decision log | dashboard + retention + drill-down + SIEM |
+| Governance | — | RBAC / SSO / signed audit / reports |
 
-### Regole di stabilità (normative, da `BOUNDARY.md` §5)
-1. Una feature `OPEN` **non** può diventare `ENTERPRISE` dopo un rilascio. Solo
-   `ENTERPRISE → OPEN` è permesso.
-2. I tre trait (`WafModule`, `StateStore`, `TlsCertSource`) sono **public ABI** congelata
-   (SemVer). Nuove capability cluster-wide = **nuovo metodo con default impl** (additivo).
-3. `Config` è `#[non_exhaustive]`: nuove sezioni enterprise (`[state.redis]`,
-   `[controlplane]`, `[governance]`, …) sono **additive non-breaking** lato core.
-4. I crate dei componenti dipendono dal core **solo** tramite la sua API pubblica e il core non
-   dipende mai da loro (`BOUNDARY.md`, regola delle dipendenze): il confine è nel grafo delle
-   dipendenze, non solo nella documentazione.
-5. Ogni nuova feature è etichettata in `BOUNDARY.md` **prima del merge**.
-
----
-
-## 11. Convenzioni di sviluppo (delta rispetto al core)
-
-- L'enterprise **dipende dalle versioni pubblicate** del core (no path-dep verso un fork).
-- I test enterprise NON ri-testano la detection baseline (è del core/`waf-corpus`); testano
-  **scala, atomicità, governance**: es. property-test sull'atomicità di `try_acquire` Redis
-  (no over-allow sotto concorrenza), bite-test sul fail-mode dello store, test di rotation
-  TLS senza downgrade.
-- **Aggiornare `BOUNDARY.md`** ad ogni nuova feature (label inequivocabile) e questo file
-  quando cambia un seam o un'implementazione a scala.
-- Disciplina **bite-test** ereditata (§13 core): una guardia mai vista fallire è speranza,
-  non garanzia — vale in primis per l'atomicità distribuita.
+### Stability rules (normative, from `BOUNDARY.md` §5)
+1. A core capability is **never** moved out to a component; moving a component capability into
+   the core is allowed.
+2. The three traits (`WafModule`, `StateStore`, `TlsCertSource`) are a frozen **public ABI**
+   (SemVer). New cluster-wide capabilities = a **new method with a default impl** (additive).
+3. `Config` is `#[non_exhaustive]`: new component sections (`[state.redis]`, `[controlplane]`,
+   `[governance]`, …) are **additive and non-breaking** for the core.
+4. Component crates depend on the core **only** through its public API and the core never depends
+   on them (`BOUNDARY.md`, dependency rule): the boundary lives in the dependency graph, not only in
+   the documentation.
+5. Every new feature is labeled in `BOUNDARY.md` **before merge**.
 
 ---
 
-## 12. Deployment Kubernetes-native — `BOUNDARY.md` §2.5
+## 11. Development conventions (delta from the core)
 
-Feature **interamente enterprise, zero-core datapath**: packaging dichiarativo + integrazione
-ecosistema, NON una riscrittura del datapath. L'unità è **WAF-per-workload** — un Deployment
-`waf-enterprise` davanti a **una** Service applicativa (`[proxy].backend` = quella Service),
-scalato/policy-ato per-app. NON è un ingress-controller cluster-wide: quello richiederebbe
-routing multi-backend nel core (follow-on strategico), e finché non c'è **non si promette**.
+- Components depend on the core through **workspace path dependencies** and its public API —
+  never on a fork or on its internals.
+- Component tests do NOT re-test baseline detection (that belongs to the core / `waf-corpus`);
+  they test **scale, atomicity, governance**: e.g. property tests on the atomicity of the Redis
+  `try_acquire` (no over-allow under concurrency), bite tests on the store's failure mode, TLS
+  rotation tests with no downgrade.
+- **Update `BOUNDARY.md`** for every new feature (unambiguous label) and this file whenever a
+  seam or an at-scale implementation changes.
+- The **bite-test** discipline is inherited (core §13): a guard never seen failing is hope, not a
+  guarantee — first and foremost for distributed atomicity.
 
-### Componenti (tutti in `enterprise/`)
-- **Immagini** (`Dockerfile.*` + `scripts/images/`): build multi-arch, SBOM + scan, OCI labels.
-  **Mai push su registry pubblici** — build/verify locali o registry privato; la pubblicazione
-  è azione manuale dell'operatore (come `cargo publish`).
-- **Chart data-plane** `charts/waf`: Deployment + agent sidecar opzionale (`shareProcessNamespace`,
-  reload `kill -HUP $(pidof waf-enterprise)` — sotto k8s il WAF NON è PID 1), ConfigMap che rende
-  `config.toml`, Service, PodMonitor/PrometheusRule/Grafana, NetworkPolicy, HPA/PDB, Certificate
-  (cert-manager), securityContext non-root 10001/readOnlyRootFS.
-- **Chart control-plane** `charts/waf-controlplane`: Deployment (auto-migrate, embed-ui) + Service
-  + Ingress + Secret + Postgres/Redis bundled opzionali.
-- **Operator** `crates/waf-operator` (kube-rs): CRD `WafProxy` (namespaced) → riconcilia
-  ConfigMap + Deployment + Service con ownerRefs. UX dichiarativa nativa senza routing nel core.
-- **Log shipping**: DaemonSet Vector (`deploy/log-shipper/`) legge lo stdout dei pod WAF e forwarda
-  il decision-log al control plane `/ingest/events` — off-process, zero datapath.
+---
 
-### Osservabilità
-Metriche ABI del core (`waf_up`, `waf_requests_total{decision}`, `waf_request_duration_seconds`)
-→ PodMonitor/PrometheusRule + dashboard Grafana. Nessuna label ad alta cardinalità (path/IP/rule).
+## 12. Kubernetes-native deployment — `BOUNDARY.md` §2.5
+
+A feature **entirely in the components, with zero datapath changes**: declarative packaging +
+ecosystem integration, NOT a datapath rewrite. The unit is **WAF-per-workload** — a
+`waf-enterprise` Deployment in front of **one** application Service (`[proxy].backend` = that
+Service), scaled and configured per app. It is NOT a cluster-wide ingress controller: that would
+require multi-backend routing in the core (a strategic follow-on), and until it exists **it is not
+promised**.
+
+### Components
+- **Images** (`Dockerfile.*` + `scripts/images/`): multi-arch builds, SBOM + scan, OCI labels. CI
+  only builds and verifies; it never pushes to a registry — publishing is a deliberate manual
+  step (like `cargo publish`).
+- **Data-plane chart** `charts/waf`: Deployment + optional agent sidecar
+  (`shareProcessNamespace`, reload via `kill -HUP $(pidof waf-enterprise)` — under Kubernetes the
+  WAF is NOT PID 1), a ConfigMap that renders `config.toml`, Service,
+  PodMonitor/PrometheusRule/Grafana, NetworkPolicy, HPA/PDB, Certificate (cert-manager),
+  securityContext non-root 10001 / read-only root filesystem.
+- **Control-plane chart** `charts/waf-controlplane`: Deployment (auto-migrate, embed-ui) + Service
+  + Ingress + Secret + optional bundled Postgres/Redis. Credentials left empty are generated on
+  first install and reused on upgrade (no well-known defaults).
+- **Operator** `crates/waf-operator` (kube-rs): a namespaced `WafProxy` CRD → reconciles ConfigMap
+  + Deployment + Service with ownerRefs. Native declarative UX without routing in the core.
+- **Log shipping**: a Vector DaemonSet (`deploy/log-shipper/`) reads the WAF pods' stdout and
+  forwards the decision log to the control plane's `/ingest/events` — off process, zero datapath.
+
+### Observability
+The core's metrics ABI (`waf_up`, `waf_requests_total{decision}`, `waf_request_duration_seconds`)
+→ PodMonitor/PrometheusRule + a Grafana dashboard. No high-cardinality labels (path/IP/rule).
 
 ### Graceful shutdown
-Interim: `preStop` sleep + `terminationGracePeriodSeconds` (il pod esce dagli endpoint prima del
-SIGTERM). Il drain in-process garantito arriva con la seam OPEN additiva `Proxy::run(shutdown)`.
+The core exposes `Proxy::run_with_shutdown(signal)` (core 0.5.4, additive): on the signal the
+listener stops accepting new connections and every in-flight connection finishes its current
+exchange and closes. `waf-enterprise` wires it to `SIGTERM`, so a rolling update loses no in-flight
+request; `terminationGracePeriodSeconds` bounds the total drain time, and a `preStop` sleep lets
+the pod leave the Service endpoints first.
 
-### Confine
-Il datapath resta il solo Deployment `waf-enterprise`. Control-plane, operator e log-shipper sono
-**off request-path**: osservano/generano manifest, non ispezionano traffico. Verifica end-to-end su
-kind: `scripts/k8s/e2e-kind.sh` (SQLi → 403 → evento nel control plane) e CI `e2e-kind.yml`.
+### Boundary
+The datapath is only the `waf-enterprise` Deployment. Control plane, operator and log shipper are
+**off the request path**: they observe or generate manifests, they do not inspect traffic.
+End-to-end check on kind: `scripts/k8s/e2e-kind.sh` (SQLi → 403 → event in the control plane) and
+CI `e2e-kind.yml`.
 
-## 13. Request Capture — `BOUNDARY.md` §2.2
+## 13. Request capture — `BOUNDARY.md` §2.5
 
-Feature **interamente enterprise, opzionale (default OFF), zero-core**: cattura la richiesta HTTP
-**completa** (method/path/query/**headers/cookies/body**) delle richieste **bloccate/rejected** e la
-mostra nel drill-down evento del control plane. Il decision-log ordinario porta solo metadati (per
-privacy + peso); il body **non** viaggia mai nei log/Vector, ma su un **canale laterale dedicato**.
+A feature **entirely in the components, optional (default OFF), zero core changes**: it captures
+the **complete** HTTP request (method/path/query/**headers/cookies/body**) of **blocked/rejected**
+requests and shows it in the control plane's event drill-down. The ordinary decision log carries
+only metadata (for privacy and weight); the body **never** travels in the logs/Vector, but on a
+**dedicated side channel**.
 
-### Seam ZERO-OPEN (nessuna modifica a `waf-core`/`waf-proxy`)
-Tre pezzi nel crate `crates/waf-capture`, gated `[enterprise.capture] enabled=false`:
-- **Capture module** (`WafModule` iniettato via `module_factory`, `Phase::RequestLine` + `structural`):
-  clona ogni richiesta in un **ring bounded** (count + byte + TTL); è un **osservatore puro** →
-  ritorna sempre `Allow`, non tocca lo score. Gli allowed sono evictati senza spedire.
-- **CaptureLayer** (`tracing::Layer` nel subscriber enterprise): intercetta le righe `request
-  blocked`/`rejected`, legge il `request_id`, estrae la cattura dal ring e la accoda. È **armato
-  deferred** (`OnceLock`): a capture OFF costa un solo load atomico per evento.
-- **Shipper**: coda bounded + retry best-effort → `POST /ingest/captures` (bearer). **Drop-on-overflow
-  con metrica/log, MAI backpressure sul datapath.**
+### Zero-core seam (no change to `waf-core`/`waf-proxy`)
+Three pieces in `crates/waf-capture`, gated by `[enterprise.capture] enabled=false`:
+- **Capture module** (a `WafModule` injected via `module_factory`, `Phase::RequestLine` +
+  `structural`): clones every request into a **bounded ring** (count + bytes + TTL); it is a **pure
+  observer** → it always returns `Allow` and never touches the score. Allowed requests are evicted
+  without being shipped.
+- **CaptureLayer** (a `tracing::Layer` in the component binary's subscriber): intercepts the
+  `request blocked`/`rejected` log lines, reads the `request_id`, takes the capture out of the ring
+  and queues it. It is **armed lazily** (`OnceLock`): with capture OFF it costs one atomic load per
+  event.
+- **Shipper**: a bounded queue + best-effort retry → `POST /ingest/captures` (bearer).
+  **Drop on overflow with a metric/log, NEVER backpressure on the datapath.**
 
-### Privacy (raw-default + tre difese obbligatorie in v1)
-La cattura è **raw di default**. Poiché segreti in chiaro possono atterrare nel DB del control plane,
-v1 richiede insieme:
-1. **Redazione node-side per-campo** (`[enterprise.capture.redaction]`): liste `headers` + `body_fields`
-   → `***REDACTED***` applicate **sul nodo** (il valore redatto non lascia mai il nodo; solo i **nomi**
-   redatti sono riportati, per il banner UI). Il body è redatto in modo **strutturale** (JSON ricorsivo
-   + form-urlencoded).
-2. **Retention corta e indipendente** nel control plane (`[controlplane.captures] retention_hours`,
-   default 168 = 7g): un reaper orario fa **hard-delete** delle catture, più aggressivo di
-   `retention_days` della telemetria.
-3. **RBAC `ViewCaptures` (operator+) + audit della visione**: il drill-down `GET /api/events/{id}/capture`
-   è gated e ogni visione scrive una riga di audit firmata (`capture.view`) — accesso attribuibile.
+### Privacy (raw by default + three mandatory defenses in v1)
+The capture is **raw by default**. Since plaintext secrets could land in the control plane's
+database, v1 requires all three of:
+1. **Node-side per-field redaction** (`[enterprise.capture.redaction]`): `headers` +
+   `body_fields` lists → `***REDACTED***`, applied **on the node** (the redacted value never leaves
+   the node; only the redacted **names** are reported, for the UI banner). The body is redacted
+   **structurally** (recursive JSON + form-urlencoded).
+2. **Short, independent retention** in the control plane (`[controlplane.captures]
+   retention_hours`, default 168 = 7 days): an hourly reaper **hard-deletes** captures, more
+   aggressively than the telemetry's `retention_days`.
+3. **RBAC `ViewCaptures` (operator+) + audited viewing**: the drill-down
+   `GET /api/events/{id}/capture` is gated and every view writes a signed audit row
+   (`capture.view`) — access is attributable.
 
-### Control plane (zero-core, estende il read-model)
-Migrazione `0007_captures` (`request_captures`: `request_id` PK, headers/cookies/redacted **JSONB**,
-body **BYTEA**, flag `body_truncated`); `POST /ingest/captures` (bearer, idempotente `ON CONFLICT`);
-`GET /api/events/{id}/capture` (RBAC + audit); reaper `run_retention`. UI: pannello **"Captured
-request"** nel dettaglio evento, **reveal-on-click** (l'accesso è deliberato + auditato), con banner
-redazione/troncamento, tabelle headers/cookies e body **Text/Hex** + copy/download.
+### Control plane (zero core, extends the read model)
+Migration `0007_captures` (`request_captures`: `request_id` PK, headers/cookies/redacted as
+**JSONB**, body as **BYTEA**, a `body_truncated` flag); `POST /ingest/captures` (bearer, idempotent
+`ON CONFLICT`); `GET /api/events/{id}/capture` (RBAC + audit); the `run_retention` reaper. UI: a
+**"Captured request"** panel in the event detail, **reveal on click** (access is deliberate and
+audited), with a redaction/truncation banner, headers/cookies tables and the body as
+**Text/Hex** + copy/download.
 
 ### Deploy
-Chart `charts/waf`: `capture.enabled` + `capture.redaction.{headers,bodyFields}` + `capture.tokenSecret`
-(→ env `WAF_CAPTURE_TOKEN`, mai nel ConfigMap). Chart `charts/waf-controlplane`:
-`config.captures.retentionHours`. E2e su kind: `scripts/k8s/e2e-kind.sh` estende SQLi → 403 → evento →
-**cattura completa** su `/api/events/{id}/capture`.
+Chart `charts/waf`: `capture.enabled` + `capture.redaction.{headers,bodyFields}` +
+`capture.tokenSecret` (→ env `WAF_CAPTURE_TOKEN`, never in the ConfigMap). Chart
+`charts/waf-controlplane`: `config.captures.retentionHours`. End to end on kind:
+`scripts/k8s/e2e-kind.sh` extends SQLi → 403 → event → **full capture** on
+`/api/events/{id}/capture`.
 
-### Confine onesto / scope v1
-Reject di **connection-phase** (rate-limit) e 400 da parser-limit avvengono **prima** dell'inspection →
-il capture module non li vede → restano **solo-metadati** (documentato). Costo datapath a ON = un clone
-`Bytes`+headers per richiesta nel ring bounded (trascurabile). Il `CaptureLayer` è accoppiato alle
-stringhe di log `request blocked/rejected` (già contratto del CP). Follow-on: cattura response-body,
-connection-phase, sampling/quota per-nodo, cifratura at-rest, export forense firmato.
+### Honest boundary / v1 scope
+**Connection-phase** rejects (rate limiting) and 400s from parser limits happen **before**
+inspection → the capture module never sees them → they stay **metadata only** (documented).
+Datapath cost when ON = one `Bytes` + headers clone per request into the bounded ring (negligible).
+The `CaptureLayer` is coupled to the `request blocked/rejected` log strings (already a contract of
+the control plane). Follow-ons: response-body capture, connection phase, per-node
+sampling/quotas, encryption at rest, signed forensic export.
