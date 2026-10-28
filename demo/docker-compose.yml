@@ -1,0 +1,135 @@
+# SPDX-License-Identifier: Apache-2.0
+# ─────────────────────────────────────────────────────────────────────────────
+# Light WAF — one-command demo.
+#
+#   cd demo && docker compose up
+#
+# Then open the dashboard at http://localhost:9600 (user `admin`, password `lightwaf-demo`)
+# and send your own requests through the WAF at http://localhost:8080.
+#
+# What runs: a demo app behind the WAF, the control plane with its dashboard on Postgres, the
+# node agent (governed rule management), Vector (ships the WAF decision log to the control
+# plane), and a traffic generator that mixes normal requests with attacks so the dashboard has
+# something to show straight away. Everything uses the release images from ghcr.io; nothing is
+# built locally.
+#
+# DEMO ONLY: fixed passwords and keys, ports bound to localhost, X-Forwarded-For trusted from
+# any private address. Do not expose this stack or reuse its settings in production.
+# ─────────────────────────────────────────────────────────────────────────────
+name: light-waf-demo
+
+services:
+  # The application the WAF protects: echoes back every request it receives.
+  app:
+    image: traefik/whoami:v1.10
+    restart: unless-stopped
+
+  # ── The WAF (data plane) ───────────────────────────────────────────────────
+  waf:
+    image: ghcr.io/0x00spor3/waf-enterprise:1.0.1
+    depends_on:
+      app:
+        condition: service_started
+      init-rules:
+        condition: service_completed_successfully
+    environment:
+      # Bearer for shipping captured requests to the control plane (= its API token).
+      WAF_CAPTURE_TOKEN: lightwaf-demo-token
+    volumes:
+      - ./waf.toml:/etc/waf/config.toml:ro
+      - managed-rules:/etc/waf/rules
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+  # Seeds the rules volume with an empty managed ruleset the WAF can load at boot, owned by the
+  # non-root user the images run as (10001) so the node agent can overwrite it.
+  init-rules:
+    image: busybox:1.37
+    command: ["sh", "-c", "touch /etc/waf/rules/managed.conf && chown -R 10001:10001 /etc/waf/rules"]
+    volumes:
+      - managed-rules:/etc/waf/rules
+    restart: "no"
+
+  # Pulls the ruleset published from the dashboard (Rules view), validates it, writes it to
+  # the shared volume and signals the WAF to reload (it shares the WAF's PID namespace).
+  agent:
+    image: ghcr.io/0x00spor3/waf-node-agent:1.0.1
+    depends_on:
+      - waf
+      - controlplane
+    pid: "service:waf"
+    environment:
+      WAF_AGENT_TOKEN: lightwaf-demo-token
+    volumes:
+      - ./node-agent.toml:/etc/waf/node-agent.toml:ro
+      - managed-rules:/etc/waf/rules
+    restart: unless-stopped
+
+  # ── The control plane (off the request path) ───────────────────────────────
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: waf
+      POSTGRES_PASSWORD: waf
+      POSTGRES_DB: waf_cp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U waf -d waf_cp"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  controlplane:
+    image: ghcr.io/0x00spor3/waf-controlplane:1.0.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      WAF_CP_DATABASE_URL: postgres://waf:waf@postgres:5432/waf_cp
+      WAF_CP_API_TOKEN: lightwaf-demo-token
+      WAF_CP_BOOTSTRAP_ADMIN_PASSWORD: lightwaf-demo
+      # Ed25519 seed that signs the audit log: 32 bytes as 64 hex chars ("lightwaf-demo-audit-key-public!!"). Demo only.
+      WAF_CP_AUDIT_KEY: 6c696768747761662d64656d6f2d61756469742d6b65792d7075626c69632121
+    volumes:
+      - ./controlplane.toml:/etc/waf/controlplane.toml:ro
+    ports:
+      - "127.0.0.1:9600:9600"
+    restart: unless-stopped
+
+  # Ships the WAF's JSON decision log (its stdout) to the control plane's /ingest/events.
+  vector:
+    image: timberio/vector:0.44.0-debian
+    depends_on:
+      - waf
+      - controlplane
+    command: ["--config", "/etc/vector/vector.toml"]
+    environment:
+      WAF_CP_URL: http://controlplane:9600
+      WAF_CP_INGEST_TOKEN: lightwaf-demo-token
+      NODE_NAME: edge-1
+    volumes:
+      - ./vector.toml:/etc/vector/vector.toml:ro
+      # Read-only Docker API access, to read the WAF container's logs.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  # ── Demo traffic ───────────────────────────────────────────────────────────
+  # Normal requests mixed with attacks, from a handful of made-up client addresses (sent as
+  # X-Forwarded-For). Stop it with `docker compose stop traffic` to drive the WAF yourself.
+  traffic:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      - waf
+    entrypoint: ["/bin/sh", "/traffic.sh"]
+    environment:
+      WAF_URL: http://waf:8080
+    volumes:
+      - ./traffic.sh:/traffic.sh:ro
+    restart: unless-stopped
+
+volumes:
+  managed-rules:
+  pgdata:

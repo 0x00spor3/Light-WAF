@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Node-agent config for the demo (docker-compose.yml). The token comes from WAF_AGENT_TOKEN.
+
+[agent]
+control_plane_url     = "http://controlplane:9600"
+node_name             = "edge-1"
+# Must equal the WAF's [modules.crs].files entry (a volume both containers mount).
+managed_file          = "/etc/waf/rules/managed.conf"
+# The agent shares the WAF's PID namespace, where the WAF is PID 1: SIGHUP = reload.
+reload_command        = "kill -HUP 1"
+poll_interval_seconds = 5

@@ -1,0 +1,7 @@
+# Files whose exact bytes matter: keep LF even on Windows checkouts (core.autocrlf=true would
+# otherwise turn them into CRLF).
+# - Shell scripts run inside Linux containers and CI; /bin/sh rejects CRLF.
+# - SQL migrations are embedded by sqlx with a checksum of their bytes: a CRLF build would refuse
+#   a database migrated by an LF build ("migration N was previously applied but has been modified").
+*.sh  text eol=lf
+*.sql text eol=lf

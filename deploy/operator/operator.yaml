@@ -28,7 +28,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: operator
-          image: ghcr.io/0x00spor3/waf-operator:1.0.0
+          image: ghcr.io/0x00spor3/waf-operator:1.0.1
           imagePullPolicy: IfNotPresent
           env:
             - name: RUST_LOG

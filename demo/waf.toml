@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+# WAF config for the demo (docker-compose.yml). The full reference is docs/03-waf-configuration.md.
+
+[proxy]
+listen  = "0.0.0.0:8080"
+backend = "http://app:80"
+
+[waf]
+mode            = "blocking"
+block_threshold = 5
+paranoia_level  = 2
+
+[waf.severity_scores]
+critical = 6
+error    = 4
+warning  = 3
+notice   = 2
+
+# DEMO ONLY: trusts X-Forwarded-For from any private address, so the traffic generator can play
+# several clients. In production list only YOUR proxies / load balancers here.
+[network]
+trusted_proxies  = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+client_ip_header = "X-Forwarded-For"
+trusted_hops     = 1
+
+[modules.sqli]
+enabled = true
+[modules.xss]
+enabled = true
+[modules.path_traversal]
+enabled = true
+[modules.rce]
+enabled = true
+[modules.lfi_rfi]
+enabled = true
+[modules.ssrf]
+enabled = true
+[modules.ldap]
+enabled = true
+[modules.nosql]
+enabled = true
+[modules.mail]
+enabled = true
+[modules.ssti]
+enabled = true
+[modules.scanner]
+enabled = true
+[modules.ssi]
+enabled = true
+[modules.xxe]
+enabled = true
+[modules.header_injection]
+enabled = true
+[modules.request_smuggling]
+enabled = true
+
+# The ruleset published from the dashboard; the node agent keeps this file up to date.
+[modules.crs]
+enabled = true
+files   = ["/etc/waf/rules/managed.conf"]
+
+# Curated CVE / application signatures (Log4Shell, Spring4Shell, cloud-metadata SSRF, …).
+[enterprise.crs_curated]
+enabled = true
+
+# Full capture of denied requests, shown in the dashboard's event drill-down.
+[enterprise.capture]
+enabled          = true
+controlplane_url = "http://controlplane:9600"
+token_env        = "WAF_CAPTURE_TOKEN"
+
+[enterprise.capture.redaction]
+headers     = ["cookie", "authorization"]
+body_fields = ["password", "token", "secret"]
+
+# Scraped by the control plane for request volumes and latency.
+[metrics]
+enabled = true
+listen  = "0.0.0.0:9090"

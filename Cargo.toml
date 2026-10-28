@@ -32,7 +32,7 @@ resolver = "2"
 # `description`, `keywords`, `categories` stay per-crate (they differ).
 # One version for every crate: the monorepo releases in lockstep.
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["0x00spor3"]
@@ -42,12 +42,12 @@ homepage = "https://github.com/0x00spor3/Light-WAF"
 [workspace.dependencies]
 # Internal crates declared once with their published version, so the `path` deps
 # carry a version requirement (mandatory for `cargo publish`).
-waf-core = { path = "crates/waf-core", version = "1.0.0" }
-waf-normalizer = { path = "crates/waf-normalizer", version = "1.0.0" }
-waf-pipeline = { path = "crates/waf-pipeline", version = "1.0.0" }
-waf-detection = { path = "crates/waf-detection", version = "1.0.0" }
-waf-proxy = { path = "crates/waf-proxy", version = "1.0.0" }
-waf-wasm = { path = "crates/waf-wasm", version = "1.0.0" }
+waf-core = { path = "crates/waf-core", version = "1.0.1" }
+waf-normalizer = { path = "crates/waf-normalizer", version = "1.0.1" }
+waf-pipeline = { path = "crates/waf-pipeline", version = "1.0.1" }
+waf-detection = { path = "crates/waf-detection", version = "1.0.1" }
+waf-proxy = { path = "crates/waf-proxy", version = "1.0.1" }
+waf-wasm = { path = "crates/waf-wasm", version = "1.0.1" }
 
 # Third-party deps shared by the enterprise crates.
 redis = { version = "0.27", features = ["r2d2"] }

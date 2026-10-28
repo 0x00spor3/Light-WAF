@@ -52,7 +52,7 @@ aws-sdk-route53 = { version = "1.115.0", features = ["behavior-version-latest"] 
 # Cluster-wide cert coordination (multi-node): the shared cert store + single-writer issuance
 # lock live on the SAME Redis pool as rate-limit/reputation. Optional at runtime (single-node
 # passes `None`); the dep is compile-time only for the `SharedCertStore` trait + `SharedCert`.
-waf-state-redis = { path = "../waf-state-redis", version = "1.0.0" }
+waf-state-redis = { path = "../waf-state-redis", version = "1.0.1" }
 # Parse the issued leaf's `notAfter` so renewal triggers on real expiry (not a fixed interval),
 # and so a restart with a still-valid cached cert does not needlessly re-issue.
 x509-parser = "0.16"

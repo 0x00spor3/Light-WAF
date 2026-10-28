@@ -14,7 +14,7 @@ categories = ["web-programming", "network-programming"]
 [dependencies]
 waf-core = { workspace = true }
 # The ReputationStore/ReputationWriter seams + Reputation live with the Redis impl; consumed here.
-waf-state-redis = { path = "../waf-state-redis", version = "1.0.0" }
+waf-state-redis = { path = "../waf-state-redis", version = "1.0.1" }
 tracing = { workspace = true }
 # Object-safe async trait for `dyn ReputationFeed` (feed sources).
 async-trait = "0.1"

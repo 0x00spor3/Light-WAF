@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+# Control-plane config for the demo (docker-compose.yml). Secrets come from the environment.
+# The full reference is docs/04-control-plane.md.
+
+[controlplane]
+listen                  = "0.0.0.0:9600"
+retention_days          = 7
+scrape_interval_seconds = 5
+
+[controlplane.captures]
+retention_hours = 24
+
+[[controlplane.nodes]]
+name        = "edge-1"
+metrics_url = "http://waf:9090/metrics"
+
+# Users, roles and the signed audit log. Log in as `admin` (password: WAF_CP_BOOTSTRAP_ADMIN_PASSWORD).
+[controlplane.governance]
+enabled         = true
+bootstrap_admin = "admin"
+cookie_secure   = false   # the demo is served over plain http://localhost
+
+[controlplane.alerting]
+enabled               = true
+eval_interval_seconds = 5
+
+[[controlplane.alerts]]
+name             = "block-burst-per-ip"
+decision         = "blocked"
+group_by         = "client_ip"
+window_seconds   = 60
+threshold        = 10
+severity         = "critical"
+cooldown_seconds = 120
+
+[[controlplane.alerts]]
+name             = "block-burst-per-rule"
+decision         = "blocked"
+group_by         = "rule_id"
+window_seconds   = 60
+threshold        = 10
+severity         = "warning"
+cooldown_seconds = 120
