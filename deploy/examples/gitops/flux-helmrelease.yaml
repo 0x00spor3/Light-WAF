@@ -10,7 +10,7 @@ spec:
   interval: 5m
   url: https://github.com/0x00spor3/Light-WAF.git
   ref:
-    tag: v1.0.0
+    tag: v1.0.1
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease

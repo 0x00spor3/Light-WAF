@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+# Vector for the demo: reads the WAF container's stdout (JSON decision log) through the Docker
+# API and posts the request/decision lines to the control plane's /ingest/events as NDJSON.
+# Env (set by docker-compose.yml): WAF_CP_URL, WAF_CP_INGEST_TOKEN, NODE_NAME.
+
+[sources.waf]
+type = "docker_logs"
+# Only this demo's WAF container (both labels must match).
+include_labels = [
+  "com.docker.compose.project=light-waf-demo",
+  "com.docker.compose.service=waf",
+]
+
+# Keep only the lines the control plane correlates: they carry `fields.request_id`.
+[transforms.decisions]
+type = "remap"
+inputs = ["waf"]
+drop_on_abort = true
+source = '''
+parsed, err = parse_json(.message)
+if err != null {
+    abort
+}
+. = object(parsed) ?? {}
+if !exists(.fields.request_id) {
+    abort
+}
+'''
+
+[sinks.control_plane]
+type = "http"
+inputs = ["decisions"]
+uri = "${WAF_CP_URL}/ingest/events?node=${NODE_NAME}"
+method = "post"
+
+[sinks.control_plane.encoding]
+codec = "json"
+
+[sinks.control_plane.framing]
+method = "newline_delimited"
+
+[sinks.control_plane.request.headers]
+Authorization = "Bearer ${WAF_CP_INGEST_TOKEN}"
+
+[sinks.control_plane.batch]
+max_events   = 50
+timeout_secs = 1

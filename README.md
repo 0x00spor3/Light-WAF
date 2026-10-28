@@ -21,6 +21,19 @@ per-scenario fail-open / fail-closed).
 
 Everything in this repository is open source under the **Apache-2.0** license.
 
+<p align="center">
+  <img src="docs/images/dashboard-demo.gif" alt="The Light WAF dashboard: traffic overview, the denied-events list, an XSS request blocked with a score of 12 built from three rules (6 + 3 + 3), the captured request, and the fired alerts" width="900">
+</p>
+
+**Try it in one command** — the WAF, the dashboard and a stream of demo attacks, from the
+release images (needs only Docker):
+
+```sh
+git clone https://github.com/0x00spor3/Light-WAF && cd Light-WAF/demo && docker compose up
+```
+
+Then open <http://localhost:9600> (`admin` / `lightwaf-demo`). See [`demo/`](demo/README.md).
+
 ---
 
 ## Contents
@@ -198,6 +211,10 @@ tables — see [`examples/enterprise.toml`](examples/enterprise.toml).
 
 ### 2. Full stack locally, with Docker Compose
 
+The quickest way is the [demo](demo/README.md): one `docker compose up`, release images, demo
+traffic included. To build the images from your checkout instead, with SSO through a bundled
+Keycloak:
+
 ```sh
 docker compose -f docker-compose.controlplane.yml up --build   # Postgres + Keycloak + control plane → http://localhost:9600
 docker compose -f docker-compose.node.yml up --build           # WAF + node agent + log shipper, in front of a demo upstream
@@ -210,9 +227,9 @@ Override them through a `.env` file before exposing anything.
 
 Helm charts for the data plane ([`charts/waf`](charts/waf/README.md)) and the control plane
 ([`charts/waf-controlplane`](charts/waf-controlplane/README.md)), plus the `WafProxy` operator
-([`deploy/operator`](deploy/operator/README.md)). Container images are built from the
-`Dockerfile.*` files (see [`scripts/images/RUNBOOK.md`](scripts/images/RUNBOOK.md)). Walkthrough:
-[`docs/09-kubernetes.md`](docs/09-kubernetes.md).
+([`deploy/operator`](deploy/operator/README.md)). They use the multi-arch release images on
+`ghcr.io/0x00spor3` by default (see [`scripts/images/RUNBOOK.md`](scripts/images/RUNBOOK.md) to
+build your own). Walkthrough: [`docs/09-kubernetes.md`](docs/09-kubernetes.md).
 
 ---
 

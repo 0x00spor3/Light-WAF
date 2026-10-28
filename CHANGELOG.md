@@ -7,8 +7,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-10-28
+
+A packaging and deployment release: official container images, a one-command demo, and fixes to
+the control-plane image and the Kubernetes deployment. The Rust crates on crates.io have no API
+or behavior changes; they are republished at 1.0.1 to keep one version across the project.
+
 ### Added
 
+- **One-command demo** (`demo/`): `docker compose up` runs the WAF, the control plane with its
+  dashboard, the node agent, a log shipper and a traffic generator that mixes normal requests with
+  attacks — all from the release images, nothing to build. The README opens with a short
+  recording of the dashboard.
 - **Container images on the GitHub Container Registry.** A release tag now publishes the four
   images — `ghcr.io/0x00spor3/waf-enterprise`, `waf-controlplane`, `waf-node-agent`,
   `waf-operator` — as multi-arch (amd64 + arm64) images tagged `<version>`, `<major>.<minor>`
@@ -30,6 +40,14 @@ All notable changes to this project are documented here. The format follows
   config. It now maps to `detection-only`; the documented values are `blocking` and
   `detection-only`.
 - Docs: the observe-only mode is `detection-only`, not `detection`.
+- `waf-controlplane` image: the dashboard reported version 0.1.0 and showed a "UI and API versions
+  differ" banner on every page. The image build now reads the workspace version, as a source
+  build does.
+- Building from a Windows checkout (`core.autocrlf=true`) produced SQL migrations with CRLF line
+  endings, whose sqlx checksums differ from the release builds: that control plane refused a
+  database created by the release image ("migration 1 was previously applied but has been
+  modified"), and the reverse. `.gitattributes` now keeps `*.sql` and `*.sh` files LF on every
+  checkout (shell scripts with CRLF also fail inside Linux containers).
 
 ## [1.0.0] — 2026-10-27
 
