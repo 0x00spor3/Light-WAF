@@ -85,6 +85,10 @@ legitimate requests that look suspicious. The report scores the share of attacks
   gotestwaf. That makes the detection comparison favourable to Light WAF by construction; treat the
   gotestwaf score as a regression measure for Light WAF more than as an independent ranking. An
   independent dataset is on the to-do list.
+- **One ModSecurity stack.** The numbers are those of ModSecurity v3 — libmodsecurity 3.0.17 with
+  the nginx connector 1.0.4 and CRS 4.30.0, from the official `owasp/modsecurity-crs` image — not of
+  ModSecurity in general. ModSecurity v2 on Apache, or the CRS on another engine, will perform
+  differently.
 - **The CRS and Light WAF use different paranoia scales.** PL2 in one is not PL2 in the other; several
   CRS levels are shown for that reason.
 - **The strict profiles trade false positives for coverage.** gotestwaf's legitimate-request set is
@@ -98,6 +102,11 @@ legitimate requests that look suspicious. The report scores the share of attacks
   image.
 - **One backend, one host.** This measures the WAF's own cost on a loopback network. It does not model
   a real application, TLS, or a network between client and WAF.
+
+## Corrections welcome
+
+Maintain one of the compared projects, or think the setup is unfair to it? Open an issue: we'll fix
+the setup, re-run, and say on the results page what changed.
 
 ## Tunables
 
