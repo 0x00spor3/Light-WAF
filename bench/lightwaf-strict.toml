@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+# Light WAF under benchmark, strict profile: lightwaf.toml at paranoia 4 (every shipped rule, the
+# noisy Notice tier included) with the block threshold lowered to 3 — the detection settings of
+# examples/strict.toml. Meant for high-value targets, after validating on real traffic in
+# detection-only mode.
+
+[proxy]
+listen  = "0.0.0.0:8080"
+backend = "http://backend:80"
+
+[waf]
+mode            = "blocking"
+block_threshold = 3
+paranoia_level  = 4
+
+[waf.severity_scores]
+critical = 6
+error    = 4
+warning  = 3
+notice   = 2
+
+[resilience]
+on_upstream_error   = "fail_closed"
+on_internal_error   = "fail_open"
+on_config_error     = "fail_open"
+on_parser_limit     = "fail_closed"
+upstream_timeout_ms = 30000
+
+[network]
+trusted_proxies  = []
+client_ip_header = "X-Forwarded-For"
+trusted_hops     = 1
+
+[limits]
+max_body_size   = 1048576
+max_header_size = 8192
+max_headers     = 100
+max_params      = 100
+max_cookies     = 50
+max_json_depth  = 20
+
+[modules]
+sqli              = { enabled = true }
+xss               = { enabled = true }
+path_traversal    = { enabled = true }
+rce               = { enabled = true }
+lfi_rfi           = { enabled = true }
+ssrf              = { enabled = true }
+ldap              = { enabled = true }
+nosql             = { enabled = true }
+mail              = { enabled = true }
+ssti              = { enabled = true }
+scanner           = { enabled = true }
+ssi               = { enabled = true }
+xxe               = { enabled = true }
+header_injection  = { enabled = true }
+request_smuggling = { enabled = true }

@@ -248,6 +248,11 @@ Details in `ARCHITECTURE.md` §11 (performance) and §13 (robustness).
 - the CI regression gate is **relative** on a pinned case, so it catches regressions without the
   noise of an absolute threshold on shared runners.
 
+**End-to-end benchmark.** [`bench/`](bench/) compares the whole proxy with no WAF and with
+ModSecurity + OWASP CRS, with one command: added latency, throughput and memory under load, and
+gotestwaf detection, with the method and its caveats. Latest results:
+[lightwaf.org/benchmarks](https://lightwaf.org/benchmarks).
+
 **Resilience** — what the WAF does when *it* is in trouble (per-scenario `[resilience]` policy):
 
 - **upstream down** → declared 502/503, and the WAF **still inspects**: an attack is blocked before

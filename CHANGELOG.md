@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/) — from 1.0.0 the public API (`WafModule`,
 `StateStore`, `TlsCertSource`, `ProxyBuilder`, the config schema) is covered by it.
 
+## [Unreleased]
+
+### Added
+
+- `bench/`: a reproducible end-to-end benchmark, run with one command, against no WAF and
+  ModSecurity + OWASP CRS. It measures added latency, throughput, memory and gotestwaf detection,
+  for the default and the strict profile.
+
 ## [1.0.1] — 2026-10-28
 
 A packaging and deployment release: official container images, a one-command demo, and fixes to
