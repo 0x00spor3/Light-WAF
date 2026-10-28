@@ -5,8 +5,6 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/) — from 1.0.0 the public API (`WafModule`,
 `StateStore`, `TlsCertSource`, `ProxyBuilder`, the config schema) is covered by it.
 
-## [Unreleased]
-
 ## [1.0.1] — 2026-10-28
 
 A packaging and deployment release: official container images, a one-command demo, and fixes to
