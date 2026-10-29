@@ -15,7 +15,7 @@ use waf_normalizer::url::normalize_path;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
-        let (out, _) = normalize_path(s);
+        let (out, _, _) = normalize_path(s);
         // Security invariant: no traversal residue may survive canonicalization.
         assert!(out.starts_with('/'));
         assert!(!out.split('/').any(|seg| seg == ".." || seg == "."));

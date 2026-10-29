@@ -1,4 +1,7 @@
-for t in percent_decode multipart normalize_path query flatten_json cookies form_body; do
+# Run every cargo-fuzz target for 20 s (Linux/macOS, nightly). CI does this with ClusterFuzzLite.
+for t in $(cargo fuzz list); do
   echo "== $t =="
-  cargo fuzz run $t fuzz/seeds/$t -- -max_total_time=20 -timeout=5 || break
+  seeds=""
+  [ -d "fuzz/seeds/$t" ] && seeds="fuzz/seeds/$t"
+  cargo fuzz run "$t" $seeds -- -max_total_time=20 -timeout=5 || break
 done

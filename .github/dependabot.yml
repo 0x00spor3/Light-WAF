@@ -46,3 +46,10 @@ updates:
     groups:
       docker-bases:
         patterns: ["*"]
+
+  # The OSS-Fuzz Rust builder ClusterFuzzLite compiles the fuzz targets with (its nightly toolchain).
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: weekly
+      day: monday

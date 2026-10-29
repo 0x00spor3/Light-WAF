@@ -16,8 +16,10 @@ use waf_normalizer::url::parse_query;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
-        let limits = LimitsConfig { max_params: 8, ..LimitsConfig::default() };
-        if let Ok((params, _)) = parse_query(s, &limits) {
+        // `LimitsConfig` is `#[non_exhaustive]`: build from the default, then tweak.
+        let mut limits = LimitsConfig::default();
+        limits.max_params = 8;
+        if let Ok((params, _, _)) = parse_query(s, &limits) {
             assert!(params.len() <= limits.max_params);
         }
     }

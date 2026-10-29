@@ -30,6 +30,17 @@ All notable changes to this project are documented here. The format follows
   without a checkout (`helm install … oci://ghcr.io/0x00spor3/charts/waf --version …`). The charts
   carry Artifact Hub metadata (license, links, images), and the workflow pushes the Artifact Hub
   repository metadata once the repository IDs are configured.
+- Continuous fuzzing with ClusterFuzzLite (`.clusterfuzzlite/`, `cflite-pr.yml`,
+  `cflite-batch.yml`): the nine cargo-fuzz targets run with AddressSanitizer on every pull request
+  (focused on the changed code) and for half an hour every night.
+
+### Fixed
+
+- The cargo-fuzz targets `query`, `form_body`, `flatten_json` and `normalize_path` no longer
+  compiled against the current `waf-normalizer`/`waf-core` API (`LimitsConfig` is
+  `#[non_exhaustive]`; `parse_query` and `normalize_path` return three values). `fuzz/` is not a
+  workspace member, so nothing caught it; the PR fuzzing workflow now builds it on every change.
+  `run_fuzz.sh` covers all nine targets.
 
 ### Changed
 
