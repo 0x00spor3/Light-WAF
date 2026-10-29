@@ -25,7 +25,7 @@ waf-normalizer = { workspace = true }
 apollo-compiler = "1"
 # §4-B pt2 (gRPC): a DescriptorPool from the app's compiled FileDescriptorSet (.bin) + DynamicMessage
 # decode of the protobuf request message against the RPC's input type.
-prost-reflect = "0.14"
+prost-reflect = "0.16"
 # §4-B pt3 (API Security): parse+structurally-validate the app's REAL OpenAPI spec. `oas3` covers 3.0
 # AND 3.1; its default features are JSON-only — the optional `yaml-spec` feature pulls a c2rust-
 # transpiled libyaml, deliberately NOT enabled (same no-C discipline as the SAML/xmlsec decision).
