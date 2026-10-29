@@ -337,7 +337,9 @@ Please report vulnerabilities — including detection bypasses — privately, as
 The supply chain is checked continuously: the GitHub Actions are pinned to commit SHAs and the
 image bases to digests (kept fresh by Dependabot), the code is analysed by CodeQL, every image is
 gated on a vulnerability scan, and the repository's practices are graded by
-[OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/0x00spor3/Light-WAF).
+[OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/0x00spor3/Light-WAF). The
+published images are signed with cosign (keyless) and carry a signed SBOM; see
+[Verifying the container images](SECURITY.md#verifying-the-container-images).
 
 ## Contributing
 

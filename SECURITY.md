@@ -64,3 +64,38 @@ Out of scope:
 | < 1.0 | ❌ — the 0.x core releases are superseded by 1.0 |
 
 Security fixes are released as patch versions of the latest minor line.
+
+## Verifying the container images
+
+From 1.0.2, every image on `ghcr.io/0x00spor3` (`waf-enterprise`, `waf-controlplane`,
+`waf-node-agent`, `waf-operator`) is signed with [cosign](https://github.com/sigstore/cosign) when
+the release workflow publishes it. The signing is keyless: there is no public key to distribute.
+The signature is bound to the identity of this repository's `images.yml` workflow and recorded in
+the public Sigstore transparency log. Each image also carries a signed SPDX SBOM.
+
+Check that an image was built and signed by this repository's release workflow (cosign 2.4 or
+later):
+
+```sh
+cosign verify ghcr.io/0x00spor3/waf-enterprise:1.0.2 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/0x00spor3/Light-WAF/\.github/workflows/images\.yml@refs/(tags/v.+|heads/main)$'
+```
+
+A release published by pushing its tag is signed from `refs/tags/v…`; a re-publish of an existing
+tag, run by hand from `main`, is signed from `refs/heads/main`. The expression accepts both and
+nothing else, so a fork or another workflow cannot produce a signature that passes.
+
+To check the SBOM attestation and read the SBOM:
+
+```sh
+cosign verify-attestation ghcr.io/0x00spor3/waf-enterprise:1.0.2 --type spdxjson \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/0x00spor3/Light-WAF/\.github/workflows/images\.yml@refs/(tags/v.+|heads/main)$' \
+  | jq -r '.payload' | base64 -d | jq '.predicate'
+```
+
+In Kubernetes, an admission policy can require the signature before a pod starts. Examples are
+the [Sigstore policy-controller](https://docs.sigstore.dev/policy-controller/overview/) and
+[Kyverno](https://kyverno.io/docs/writing-policies/verify-images/), configured with the same
+issuer and identity.

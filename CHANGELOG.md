@@ -18,6 +18,9 @@ All notable changes to this project are documented here. The format follows
   every push to `main`, published to the Scorecard API (README badge) and to code scanning.
 - CodeQL (`codeql.yml`): static analysis of the Rust workspace, the dashboard's TypeScript and the
   workflows, with the `security-extended` queries.
+- Signed container images: every published image is signed with cosign (keyless, bound to the
+  release workflow's identity, logged in the Sigstore transparency log) and carries its SPDX SBOM
+  as a signed attestation. `SECURITY.md` shows how to verify both.
 
 ### Changed
 
