@@ -7,11 +7,87 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-10-29
+
+A supply-chain and dependency release. Images, charts and release assets are now signed and come
+with complete SBOMs. The vulnerable and unmaintained dependencies found by an OSV scan are
+upgraded or replaced. The repository is graded by OpenSSF Scorecard, analysed by CodeQL and
+fuzzed continuously. Detection and the public API are unchanged.
+
 ### Added
 
 - `bench/`: a reproducible end-to-end benchmark, run with one command, against no WAF and
   ModSecurity + OWASP CRS. It measures added latency, throughput, memory and gotestwaf detection,
   for the default and the strict profile.
+- Dependabot: weekly updates for cargo, the dashboard's npm packages, GitHub Actions and the
+  Dockerfile base images.
+- OpenSSF Scorecard (`scorecard.yml`): the repository's supply-chain practices graded weekly and on
+  every push to `main`, published to the Scorecard API (README badge) and to code scanning.
+- CodeQL (`codeql.yml`): static analysis of the Rust workspace, the dashboard's TypeScript and the
+  workflows, with the `security-extended` queries.
+- Signed container images: every published image is signed with cosign (keyless, bound to the
+  release workflow's identity, logged in the Sigstore transparency log) and carries its SPDX SBOM
+  as a signed attestation. `SECURITY.md` shows how to verify both.
+- Signed release assets (`release-assets.yml`): each GitHub Release gets the source tarball, the
+  source SBOM (every crate and npm package), the image SBOMs and `SHA256SUMS`, each with a cosign
+  keyless signature bundle (`.sigstore.json`). The workflow first waits for the release's images and
+  checks their signatures.
+- Published Helm charts (`charts-release.yml`): on each release the `waf` and `waf-controlplane`
+  charts are pushed to `oci://ghcr.io/0x00spor3/charts` and signed with cosign, so they install
+  without a checkout (`helm install … oci://ghcr.io/0x00spor3/charts/waf --version …`). The charts
+  carry Artifact Hub metadata (license, links, images), and the workflow pushes the Artifact Hub
+  repository metadata once the repository IDs are configured.
+- Continuous fuzzing with ClusterFuzzLite (`.clusterfuzzlite/`, `cflite-pr.yml`,
+  `cflite-batch.yml`): the nine cargo-fuzz targets run with AddressSanitizer on every pull request
+  (focused on the changed code) and for half an hour every night.
+
+### Fixed
+
+- The cargo-fuzz targets `query`, `form_body`, `flatten_json` and `normalize_path` no longer
+  compiled against the current `waf-normalizer`/`waf-core` API (`LimitsConfig` is
+  `#[non_exhaustive]`; `parse_query` and `normalize_path` return three values). `fuzz/` is not a
+  workspace member, so nothing caught it; the PR fuzzing workflow now builds it on every change.
+  `run_fuzz.sh` covers all nine targets.
+
+### Changed
+
+- CI supply chain: every GitHub Action is pinned to a commit SHA, the Dockerfile build images
+  (`rust`, `node`) are pinned by digest, every workflow declares least-privilege token permissions,
+  no checkout keeps the token after it (`persist-credentials: false`), and the kubeconform and kind
+  downloads are checked against their published SHA-256.
+- Helm charts: real maintainer, `home` and `icon` pointing at lightwaf.org. The chart lint workflow
+  now fails a PR whose chart version, appVersion or listed image tags differ from the workspace
+  version.
+- Complete image SBOMs: the binaries are built with `cargo auditable`, which embeds their crate
+  list, so each image's signed SBOM and the image scan now cover every Rust crate (the data-plane
+  image: 356 crates), not just the OS packages.
+- One crypto provider: `ring` only. The workspace's `tokio-rustls` no longer enables its default
+  features, and the Route 53 client no longer uses the SDK's default HTTPS clients, so `aws-lc-rs`
+  (C, built with cmake) is gone from the build; the data-plane image no longer installs cmake.
+- Control-plane OIDC SSO: the identity-provider calls (discovery, token, JWKS) go through the
+  workspace's reqwest client, which never follows redirects.
+
+### Security
+
+- Dependencies updated within their semver ranges (`cargo update`), which pulls in the fixes for
+  hickory-resolver (GHSA-6w6g-hm98-mhgm, GHSA-5j98-2g5x-46v6, GHSA-6f2x-v7q7-m7m5), rustls 0.23
+  (RUSTSEC-2026-0285, -0346, -0348, -0349), rustls-webpki 0.103 (RUSTSEC-2026-0382), h2 0.4
+  (RUSTSEC-2026-0258), tokio (RUSTSEC-2026-0386), webpki-roots / webpki-root-certs
+  (RUSTSEC-2026-0381, -0383), event-listener (RUSTSEC-2026-0221) and ctutils (RUSTSEC-2026-0385).
+- `openidconnect` 3 → 4 in the control plane. This removes reqwest 0.11 and the old TLS stack it
+  pulled in: rustls 0.21 (RUSTSEC-2026-0346, -0349, GHSA-h2v8-394m-p7vv), rustls-webpki 0.101
+  (RUSTSEC-2026-0098, -0099, -0104, -0382), h2 0.3 (RUSTSEC-2026-0258), webpki-roots 0.25
+  (RUSTSEC-2026-0381) and the unmaintained rustls-pemfile 1 (RUSTSEC-2025-0134).
+- The Route 53 DNS-01 client uses the AWS SDK's hyper 1 client on rustls 0.23 and ring, dropping
+  the SDK's legacy hyper 0.14 + rustls 0.21 client.
+- `rustls-pemfile` 2 (unmaintained, RUSTSEC-2025-0134) replaced by the PEM parser of
+  `rustls-pki-types` in `waf-proxy` and `waf-tls-managed`.
+- Dashboard: `react-router` 6 → 7 (GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg).
+- Still reported, not exploitable here: `rsa` (RUSTSEC-2023-0071, Marvin attack, no fixed version)
+  is used by `openidconnect` only to verify RS256 signatures with public keys, while the attack
+  needs private-key operations. Also still reported: `crypto-bigint` 0.5 and `block-buffer` 0.10,
+  indirect dependencies of the signature crates with no fixed release in their lines, and
+  `serde_yaml` (unmaintained), which comes in through `kube` in the operator.
 
 ## [1.0.1] — 2026-10-28
 

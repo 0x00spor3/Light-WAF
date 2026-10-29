@@ -20,7 +20,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── UI stage: build the SPA bundle (ui/dist) ─────────────────────────────────
-FROM node:22-bookworm-slim AS ui
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS ui
 
 # Keep the repository layout: vite.config.ts reads the UI version from the workspace
 # Cargo.toml at ../../../Cargo.toml, so the UI reports the same version as the API.
@@ -34,13 +34,18 @@ COPY crates/waf-controlplane/ui/ ./
 RUN npm run build   # → /src/crates/waf-controlplane/ui/dist
 
 # ── Build stage: compile the control plane with the UI embedded ──────────────
-FROM rust:1-bookworm AS build
+FROM rust:1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS build
 
 # Control plane uses rustls+ring only (no aws-lc-rs / cmake): base toolchain +
 # ca-certificates for the crates.io fetch is enough.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# cargo-auditable embeds the crate list in the binary (a `.dep-v0` section), so the image SBOM —
+# what syft reads from the binary — names every Rust crate, not just the OS packages.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install cargo-auditable --version 0.7.7 --locked
 
 WORKDIR /build
 COPY . .
@@ -50,7 +55,7 @@ COPY --from=ui /src/crates/waf-controlplane/ui/dist crates/waf-controlplane/ui/d
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release --locked -p waf-controlplane --features embed-ui \
+    cargo auditable build --release --locked -p waf-controlplane --features embed-ui \
     && cp /build/target/release/waf-controlplane /usr/local/bin/waf-controlplane \
     && mkdir -p /skel/app
 

@@ -26,7 +26,7 @@ services:
 
   # ── The WAF (data plane) ───────────────────────────────────────────────────
   waf:
-    image: ghcr.io/0x00spor3/waf-enterprise:1.0.1
+    image: ghcr.io/0x00spor3/waf-enterprise:1.0.2
     depends_on:
       app:
         condition: service_started
@@ -54,7 +54,7 @@ services:
   # Pulls the ruleset published from the dashboard (Rules view), validates it, writes it to
   # the shared volume and signals the WAF to reload (it shares the WAF's PID namespace).
   agent:
-    image: ghcr.io/0x00spor3/waf-node-agent:1.0.1
+    image: ghcr.io/0x00spor3/waf-node-agent:1.0.2
     depends_on:
       - waf
       - controlplane
@@ -83,7 +83,7 @@ services:
     restart: unless-stopped
 
   controlplane:
-    image: ghcr.io/0x00spor3/waf-controlplane:1.0.1
+    image: ghcr.io/0x00spor3/waf-controlplane:1.0.2
     depends_on:
       postgres:
         condition: service_healthy

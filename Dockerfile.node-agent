@@ -20,7 +20,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM rust:1-bookworm AS build
+FROM rust:1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS build
 
 # The agent uses rustls+ring only (no aws-lc-rs), so the base toolchain
 # (build-essential/perl) plus ca-certificates for the crates.io fetch is enough.
@@ -28,12 +28,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# cargo-auditable embeds the crate list in the binary (a `.dep-v0` section), so the image SBOM —
+# what syft reads from the binary — names every Rust crate, not just the OS packages.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install cargo-auditable --version 0.7.7 --locked
+
 WORKDIR /build
 COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release --locked -p waf-node-agent \
+    cargo auditable build --release --locked -p waf-node-agent \
     && cp /build/target/release/waf-node-agent /usr/local/bin/waf-node-agent \
     && mkdir -p /skel/app
 

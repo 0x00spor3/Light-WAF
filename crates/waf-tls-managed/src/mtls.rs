@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio_rustls::rustls::crypto::ring;
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::server::danger::ClientCertVerifier;
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::RootCertStore;
@@ -46,11 +48,13 @@ impl std::error::Error for MtlsError {}
 pub fn verifier_from_ca_file(ca_path: &Path) -> Result<Arc<dyn ClientCertVerifier>, MtlsError> {
     let data = std::fs::read(ca_path)
         .map_err(|source| MtlsError::Io { path: ca_path.to_path_buf(), source })?;
-    let mut reader: &[u8] = &data;
 
     let mut roots = RootCertStore::empty();
-    for cert in rustls_pemfile::certs(&mut reader) {
-        let cert = cert.map_err(|source| MtlsError::Io { path: ca_path.to_path_buf(), source })?;
+    for cert in CertificateDer::pem_slice_iter(&data) {
+        let cert = cert.map_err(|e| MtlsError::Io {
+            path: ca_path.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
+        })?;
         // A malformed entry is skipped rather than fatal; "zero usable roots" below is the
         // real failure (an empty/garbage bundle must not silently accept every client).
         let _ = roots.add(cert);

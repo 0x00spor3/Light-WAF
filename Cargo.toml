@@ -32,7 +32,7 @@ resolver = "2"
 # `description`, `keywords`, `categories` stay per-crate (they differ).
 # One version for every crate: the monorepo releases in lockstep.
 [workspace.package]
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["0x00spor3"]
@@ -42,12 +42,12 @@ homepage = "https://github.com/0x00spor3/Light-WAF"
 [workspace.dependencies]
 # Internal crates declared once with their published version, so the `path` deps
 # carry a version requirement (mandatory for `cargo publish`).
-waf-core = { path = "crates/waf-core", version = "1.0.1" }
-waf-normalizer = { path = "crates/waf-normalizer", version = "1.0.1" }
-waf-pipeline = { path = "crates/waf-pipeline", version = "1.0.1" }
-waf-detection = { path = "crates/waf-detection", version = "1.0.1" }
-waf-proxy = { path = "crates/waf-proxy", version = "1.0.1" }
-waf-wasm = { path = "crates/waf-wasm", version = "1.0.1" }
+waf-core = { path = "crates/waf-core", version = "1.0.2" }
+waf-normalizer = { path = "crates/waf-normalizer", version = "1.0.2" }
+waf-pipeline = { path = "crates/waf-pipeline", version = "1.0.2" }
+waf-detection = { path = "crates/waf-detection", version = "1.0.2" }
+waf-proxy = { path = "crates/waf-proxy", version = "1.0.2" }
+waf-wasm = { path = "crates/waf-wasm", version = "1.0.2" }
 
 # Third-party deps shared by the enterprise crates.
 redis = { version = "0.27", features = ["r2d2"] }
@@ -58,5 +58,6 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 # Same rustls line as the core (rustls 0.23 / tokio-rustls 0.26) so trait objects
-# (`Arc<dyn ResolvesServerCert>` / `ClientCertVerifier`) unify across the seam.
-tokio-rustls = "0.26"
+# (`Arc<dyn ResolvesServerCert>` / `ClientCertVerifier`) unify across the seam. No default
+# features: those would add the aws-lc-rs provider (C, cmake); the members ask for `ring`.
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] }

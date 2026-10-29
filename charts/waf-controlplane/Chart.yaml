@@ -2,21 +2,37 @@
 apiVersion: v2
 name: waf-controlplane
 description: >-
-  WAF control plane — dashboard/API over the OPEN telemetry (read-only observability,
+  Light WAF control plane — dashboard/API over the WAF telemetry (observability,
   governance/RBAC, alerting, SIEM forwarding). Off the request path, backed by Postgres.
 type: application
-version: 1.0.1
-appVersion: "1.0.1"
+version: 1.0.2
+appVersion: "1.0.2"
 keywords:
   - waf
   - observability
   - control-plane
-home: https://github.com/0x00spor3/Light-WAF
+home: https://lightwaf.org
+icon: https://lightwaf.org/favicon.svg
 sources:
   - https://github.com/0x00spor3/Light-WAF
 maintainers:
-  - name: WAF
+  - name: 0x00spor3
+    url: https://github.com/0x00spor3
 annotations:
   category: Security
+  # Artifact Hub (https://artifacthub.io). The image tag must equal appVersion: charts-release.yml
+  # refuses to publish otherwise.
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/prerelease: "false"
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://lightwaf.org/docs/control-plane
+    - name: Source
+      url: https://github.com/0x00spor3/Light-WAF/tree/main/charts/waf-controlplane
+    - name: Security policy
+      url: https://github.com/0x00spor3/Light-WAF/blob/main/SECURITY.md
+  artifacthub.io/images: |
+    - name: waf-controlplane
+      image: ghcr.io/0x00spor3/waf-controlplane:1.0.2
 # Bundled Postgres/Redis are plain in-chart StatefulSets (off by default), NOT subcharts,
-# so the chart stays dependency-free and assumes no public Helm repo.
+# so the chart stays dependency-free.

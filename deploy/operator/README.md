@@ -32,7 +32,7 @@ Deleting the `WafProxy` cascades to its ConfigMap/Deployment/Service (owner refe
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `image` | — (required) | WAF data-plane image, e.g. `ghcr.io/0x00spor3/waf-enterprise:1.0.1` |
+| `image` | — (required) | WAF data-plane image, e.g. `ghcr.io/0x00spor3/waf-enterprise:1.0.2` |
 | `backend.service` / `backend.url` | — (required) | upstream: a Service ref (→ cluster-local URL) or a raw URL |
 | `mode` | `blocking` | `blocking` or `detection` (rendered as the WAF's `detection-only`: observe and log, never block) |
 | `paranoiaLevel` | `3` | 1–4 |

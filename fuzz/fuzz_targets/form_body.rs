@@ -16,7 +16,9 @@ use waf_core::{Bytes, LimitsConfig, ParsedBody};
 use waf_normalizer::body::parse_body;
 
 fuzz_target!(|data: &[u8]| {
-    let limits = LimitsConfig { max_params: 8, ..LimitsConfig::default() };
+    // `LimitsConfig` is `#[non_exhaustive]`: build from the default, then tweak.
+    let mut limits = LimitsConfig::default();
+    limits.max_params = 8;
     if let Ok(ParsedBody::FormUrlEncoded(params)) = parse_body(
         Some("application/x-www-form-urlencoded"),
         &Bytes::copy_from_slice(data),

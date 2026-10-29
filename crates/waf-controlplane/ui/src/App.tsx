@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Route, Routes } from "react-router";
 import { AuthGate } from "./auth";
 import { Layout } from "./components/Layout";
 import { Overview } from "./routes/Overview";

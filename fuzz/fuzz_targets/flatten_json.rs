@@ -17,6 +17,8 @@ use waf_core::{Bytes, LimitsConfig};
 use waf_normalizer::body::parse_body;
 
 fuzz_target!(|data: &[u8]| {
-    let limits = LimitsConfig { max_json_depth: 6, ..LimitsConfig::default() };
+    // `LimitsConfig` is `#[non_exhaustive]`: build from the default, then tweak.
+    let mut limits = LimitsConfig::default();
+    limits.max_json_depth = 6;
     let _ = parse_body(Some("application/json"), &Bytes::copy_from_slice(data), &limits);
 });

@@ -24,6 +24,8 @@ use aws_sdk_route53::types::{
     Change, ChangeAction, ChangeBatch, ResourceRecord, ResourceRecordSet, RrType,
 };
 use aws_sdk_route53::Client;
+use aws_smithy_http_client::tls::rustls_provider::CryptoMode;
+use aws_smithy_http_client::tls::Provider;
 
 use super::{DnsError, DnsProvider, TxtHandle};
 
@@ -54,10 +56,16 @@ impl Route53Dns {
             None,
             "waf-route53",
         );
+        // The SDK's default HTTPS clients are disabled (Cargo.toml): use its hyper 1 client on
+        // rustls with the ring provider.
+        let http = aws_smithy_http_client::Builder::new()
+            .tls_provider(Provider::Rustls(CryptoMode::Ring))
+            .build_https();
         let conf = aws_sdk_route53::Config::builder()
             .behavior_version(BehaviorVersion::latest())
             .region(Region::new(region.into()))
             .credentials_provider(creds)
+            .http_client(http)
             .build();
         Self {
             client: Client::from_conf(conf),

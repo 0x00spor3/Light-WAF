@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { api } from "../api";
 import { useApi } from "../hooks/useApi";
 import { useLiveStream } from "../hooks/useLiveStream";

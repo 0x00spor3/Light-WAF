@@ -57,10 +57,11 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # Governance (§8): RBAC + local auth + signed audit log. A sibling library; it owns its tables on the
 # same Postgres (applied via `apply_schema`) and never touches the datapath.
-waf-governance = { path = "../waf-governance", version = "1.0.1" }
-# OIDC SSO (§8 v2): Authorization Code + PKCE, discovery + JWKS id_token verification. Uses its own
-# reqwest for the IdP calls (discovery/token/JWKS); the ring provider installed in main covers TLS.
-openidconnect = { version = "3", features = ["reqwest"] }
+waf-governance = { path = "../waf-governance", version = "1.0.2" }
+# OIDC SSO (§8 v2): Authorization Code + PKCE, discovery + JWKS id_token verification.
+# No bundled HTTP client: the IdP calls (discovery/token/JWKS) go through the reqwest client above
+# (oidc.rs `send`), so TLS is the ring provider installed in main and there is one reqwest version.
+openidconnect = { version = "4", default-features = false }
 # Decode the (already-verified) id_token payload to read the configurable role claim.
 base64 = "0.22"
 

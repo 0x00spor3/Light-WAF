@@ -21,6 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tokio_rustls::rustls::pki_types::pem::{self, PemObject};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::server::danger::ClientCertVerifier;
 use tokio_rustls::rustls::server::ResolvesServerCert;
@@ -113,12 +114,16 @@ impl TlsCertSource for FileCertSource {
     }
 }
 
+/// A malformed PEM file reads as an I/O error on that file (invalid data).
+fn pem_io_error(e: pem::Error) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+}
+
 fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
     let data = std::fs::read(path).map_err(|source| TlsError::Io { path: path.to_path_buf(), source })?;
-    let mut reader: &[u8] = &data;
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&data)
         .collect::<Result<_, _>>()
-        .map_err(|source| TlsError::Io { path: path.to_path_buf(), source })?;
+        .map_err(|e| TlsError::Io { path: path.to_path_buf(), source: pem_io_error(e) })?;
     if certs.is_empty() {
         return Err(TlsError::NoCertificates(path.to_path_buf()));
     }
@@ -127,10 +132,11 @@ fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
 
 fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
     let data = std::fs::read(path).map_err(|source| TlsError::Io { path: path.to_path_buf(), source })?;
-    let mut reader: &[u8] = &data;
-    rustls_pemfile::private_key(&mut reader)
-        .map_err(|source| TlsError::Io { path: path.to_path_buf(), source })?
-        .ok_or_else(|| TlsError::NoPrivateKey(path.to_path_buf()))
+    match PrivateKeyDer::from_pem_slice(&data) {
+        Ok(key) => Ok(key),
+        Err(pem::Error::NoItemsFound) => Err(TlsError::NoPrivateKey(path.to_path_buf())),
+        Err(e) => Err(TlsError::Io { path: path.to_path_buf(), source: pem_io_error(e) }),
+    }
 }
 
 /// Build a rustls [`ServerConfig`] from a cert source + ALPN list. Uses the `ring` crypto

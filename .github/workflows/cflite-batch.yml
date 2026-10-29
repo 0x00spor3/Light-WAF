@@ -1,0 +1,40 @@
+name: Fuzzing (nightly)
+
+# ClusterFuzzLite batch fuzzing: every night, all the cargo-fuzz targets in fuzz/ for half an hour in
+# total, with AddressSanitizer. A crash fails the run and the reproducer is attached to it. Each run
+# starts from the targets' seed corpora (fuzz/seeds/); a corpus that grows across runs needs a
+# ClusterFuzzLite storage repository, not configured yet.
+
+on:
+  schedule:
+    - cron: "40 2 * * *"   # every night, 02:40 UTC
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.sanitizer }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - name: Build fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: ${{ matrix.sanitizer }}
+
+      - name: Run fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 1800
+          mode: batch
+          sanitizer: ${{ matrix.sanitizer }}

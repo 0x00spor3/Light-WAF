@@ -16,11 +16,15 @@ The chart pulls the release image from the GitHub Container Registry
 `scripts/images/RUNBOOK.md`). Provide a database one of three ways (precedence:
 `database.existingSecret` → `postgres.bundled` → `database.url`).
 
+The chart is published as an OCI artifact on GHCR (Helm 3.8 or later). From a checkout of the
+repository, use `./charts/waf-controlplane` instead of the `oci://` reference. The published chart
+is signed with cosign, like the images (see `SECURITY.md`).
+
 Turnkey (bundled Postgres — dev/demo). The API token, the bootstrap admin password and the
 Postgres password are **generated** on first install (the NOTES print how to read them back):
 
 ```sh
-helm install waf-cp ./charts/waf-controlplane \
+helm install waf-cp oci://ghcr.io/0x00spor3/charts/waf-controlplane --version 1.0.2 \
   --namespace waf --create-namespace \
   --set postgres.bundled.enabled=true \
   --set secrets.auditKey=$(openssl rand -hex 32)
@@ -29,7 +33,7 @@ helm install waf-cp ./charts/waf-controlplane \
 Production (managed Postgres via a Secret carrying `WAF_CP_DATABASE_URL`):
 
 ```sh
-helm install waf-cp ./charts/waf-controlplane -n waf \
+helm install waf-cp oci://ghcr.io/0x00spor3/charts/waf-controlplane --version 1.0.2 -n waf \
   --set database.existingSecret=waf-cp-db \
   --set secrets.existingSecret=waf-cp-env    # carries the WAF_CP_* env
 ```

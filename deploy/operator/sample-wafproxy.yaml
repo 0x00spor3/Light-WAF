@@ -9,7 +9,7 @@ metadata:
   namespace: prod
 spec:
   # The release image on GHCR; point it at your own build or a mirror if you use one.
-  image: ghcr.io/0x00spor3/waf-enterprise:1.0.1
+  image: ghcr.io/0x00spor3/waf-enterprise:1.0.2
   backend:
     service:
       name: myapp

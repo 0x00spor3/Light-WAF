@@ -4,6 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/waf-proxy.svg)](https://crates.io/crates/waf-proxy)
 [![docs.rs](https://img.shields.io/docsrs/waf-core)](https://docs.rs/waf-core)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/0x00spor3/Light-WAF/badge)](https://scorecard.dev/viewer/?uri=github.com/0x00spor3/Light-WAF)
 
 A Web Application Firewall in **Rust**, running as a **reverse proxy** at Layer 7. It inspects
 every HTTP request, applies detection rules, accumulates a CRS-style **anomaly score**, and
@@ -332,6 +333,13 @@ Where to start reading the code: `crates/waf-proxy/src/lib.rs` (`handle()`, the 
 
 Please report vulnerabilities — including detection bypasses — privately, as described in
 [`SECURITY.md`](SECURITY.md). Do not open public issues for them.
+
+The supply chain is checked continuously: the GitHub Actions are pinned to commit SHAs and the
+image bases to digests (kept fresh by Dependabot), the code is analysed by CodeQL, every image is
+gated on a vulnerability scan, and the repository's practices are graded by
+[OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/0x00spor3/Light-WAF). The
+published images are signed with cosign (keyless) and carry a signed SBOM; see
+[Verifying the container images](SECURITY.md#verifying-the-container-images).
 
 ## Contributing
 

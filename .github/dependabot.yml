@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Weekly dependency updates. Besides the usual version bumps, this is what keeps the pins fresh:
+# the GitHub Actions are pinned to commit SHAs and the Dockerfile bases to digests, and Dependabot
+# rewrites both (keeping the version comment / tag next to them). Minor and patch updates are grouped
+# into one PR per ecosystem; major updates come one PR each, to be reviewed on their own.
+
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /crates/waf-controlplane/ui
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      ui-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+
+  # Dockerfile.enterprise, .controlplane, .node-agent, .operator. Dependabot refreshes the digest of
+  # a `tag@digest` reference (rust, node, busybox); a digest with no tag (the distroless runtime) it
+  # cannot follow — that one is watched by the weekly Trivy re-scan in images.yml instead.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker-bases:
+        patterns: ["*"]
+
+  # The OSS-Fuzz Rust builder ClusterFuzzLite compiles the fuzz targets with (its nightly toolchain).
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: weekly
+      day: monday

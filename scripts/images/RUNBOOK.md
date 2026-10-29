@@ -53,6 +53,10 @@ Rules:
 - **Not from a workstation.** `build.sh` refuses a `REGISTRY` that resolves to a known public
   index (Docker Hub, GHCR, Quay, public ECR, GCR, GitLab registry) — no override flag exists. It
   pushes only to a **private** registry, for your own builds or a mirror.
+- **Signed on publish.** Right after the push, the publish job signs the image's digest with
+  cosign (keyless, bound to the `images.yml` workflow identity, logged in the public Sigstore
+  transparency log) and attaches its SPDX SBOM as a signed attestation. Images built by `build.sh`
+  are not signed. Verification: `SECURITY.md` → *Verifying the container images*.
 
 ### Tags
 
