@@ -10,6 +10,9 @@ name: Release assets
 # and, next to each file, `<file>.sigstore.json`: a cosign keyless signature bundle, bound to this
 # workflow's identity and logged in the Sigstore transparency log. Verification: SECURITY.md.
 #
+# Plus `light-waf-<version>.intoto.jsonl`: SLSA build provenance for all of the files above (which
+# workflow, commit and trigger produced them), made by the official SLSA generator.
+#
 # It runs when a release is published. The images are published by images.yml from the tag, which
 # can finish after the release is created: this workflow first waits for the four images of the
 # version, then checks their cosign signatures before attaching anything. A manual run attaches the
@@ -42,6 +45,10 @@ jobs:
     permissions:
       contents: write   # upload the assets to the release
       id-token: write   # keyless signing
+    outputs:
+      tag: ${{ inputs.tag || github.event.release.tag_name }}
+      version: ${{ steps.ver.outputs.version }}
+      hashes: ${{ steps.build.outputs.hashes }}
     env:
       TAG: ${{ inputs.tag || github.event.release.tag_name }}
       VERIFY_IMAGES: ${{ github.event_name == 'release' || inputs.verify_images }}
@@ -95,14 +102,14 @@ jobs:
           done
 
       - name: Build the assets
+        id: build
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           SYFT: ${{ steps.syft.outputs.cmd }}
         run: |
           # The source SBOM, from Cargo.lock and the dashboard's package-lock.json: every Rust crate
-          # and npm package that goes into the binaries. The image SBOMs below list what syft finds
-          # in each image (OS packages, CA bundle); they cannot see the crates compiled into a
-          # Rust binary, so this one is the dependency inventory.
+          # and npm package in the workspace. The image SBOMs below list what each image actually
+          # ships: OS packages, the CA bundle, and (cargo-auditable) the crates in its binaries.
           "$SYFT" dir:. --exclude './dist/**' -o "spdx-json=source.spdx.json"
           mkdir dist
           mv source.spdx.json "dist/light-waf-$VERSION-source.spdx.json"
@@ -113,6 +120,8 @@ jobs:
           done
           (cd dist && sha256sum -- * > SHA256SUMS)
           cat dist/SHA256SUMS
+          # The provenance subjects: every asset (SHA256SUMS itself is not in its own list).
+          echo "hashes=$(base64 -w0 dist/SHA256SUMS)" >> "$GITHUB_OUTPUT"
 
       - name: Sign the assets
         run: |
@@ -126,3 +135,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  # The SLSA generator is a reusable workflow that must be referenced by its release TAG, not a commit
+  # SHA: it verifies its own identity from that ref (Scorecard's pinning check knows this exception).
+  provenance:
+    name: SLSA provenance
+    needs: assets
+    permissions:
+      actions: read     # read the calling workflow's path
+      id-token: write   # sign the provenance
+      contents: write   # attach it to the release
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.assets.outputs.hashes }}
+      upload-assets: true
+      upload-tag-name: ${{ needs.assets.outputs.tag }}
+      provenance-name: light-waf-${{ needs.assets.outputs.version }}.intoto.jsonl

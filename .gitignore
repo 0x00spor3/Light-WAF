@@ -1,5 +1,5 @@
-# Cargo build output
-/target
+# Cargo build output — at every level: the WASM fixture and example crates build in place.
+target/
 debug
 
 # rustfmt backups

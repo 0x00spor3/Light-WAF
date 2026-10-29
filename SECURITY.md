@@ -130,6 +130,20 @@ cosign verify-blob light-waf-1.0.2-source.tar.gz \
 Or verify `SHA256SUMS` the same way, then check every other file against it with
 `sha256sum -c SHA256SUMS`.
 
+Releases also carry `light-waf-<version>.intoto.jsonl`, the [SLSA](https://slsa.dev) build
+provenance of all these files: which workflow, commit and trigger produced them. Check a file
+against it with [slsa-verifier](https://github.com/slsa-framework/slsa-verifier):
+
+```sh
+slsa-verifier verify-artifact light-waf-1.0.3-source.tar.gz \
+  --provenance-path light-waf-1.0.3.intoto.jsonl \
+  --source-uri github.com/0x00spor3/Light-WAF \
+  --source-tag v1.0.3
+```
+
+When the assets were attached by a manual run of the workflow (as for 1.0.2 and older releases),
+the provenance names `main` as its source: use `--source-branch main` instead of `--source-tag`.
+
 ## Enforcing signatures in Kubernetes
 
 An admission policy can require the image signature before a pod starts. Examples are

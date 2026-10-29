@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Advisories OSV-Scanner (and OpenSSF Scorecard, which runs it) should not report, each with the
+# reason it does not affect Light WAF. Every entry expires, so it gets looked at again: drop it as
+# soon as a dependency update removes the affected version. Also listed in CHANGELOG.md (1.0.2).
+
+# rsa 0.9 (via openidconnect, control plane only). The Marvin attack recovers a private key by timing
+# RSA decryption / signing; no fixed version exists. The control plane never holds an RSA private
+# key: it only VERIFIES the IdP's RS256 id_token signatures, with the IdP's public key.
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+ignoreUntil = 2027-04-30
+reason = "Marvin attack needs RSA private-key operations; openidconnect only verifies RS256 signatures with public keys"
+
+# crypto-bigint 0.5 (via p256/p384 in openidconnect, control plane only). Timing leaks on SECRET
+# integers; the control plane only verifies ES256/ES384 id_token signatures, where every input (token,
+# signature, IdP public key) is public. The fix is in 0.7, which the elliptic-curve 0.13 line cannot use.
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+ignoreUntil = 2027-04-30
+reason = "Only ECDSA signature verification over public inputs (OIDC id_tokens); no secret integers involved"
+
+# block-buffer 0.10 (via digest 0.10: sha2, blake2/argon2, ed25519). The buffer is corrupted only if
+# the compression callback panics, the panic is caught, and the same hasher is used again. The
+# callbacks here are the RustCrypto hash compressions, which do not panic, and no hasher is reused
+# across a caught panic. Fixed in 0.12, which the digest 0.10 line cannot use.
+[[IgnoredVulns]]
+id = "GHSA-qwgh-2vcv-g2f7"
+ignoreUntil = 2027-04-30
+reason = "Needs a panicking compress callback caught and the hasher reused; RustCrypto hash compressions do not panic"
