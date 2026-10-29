@@ -12,6 +12,22 @@ All notable changes to this project are documented here. The format follows
 - `bench/`: a reproducible end-to-end benchmark, run with one command, against no WAF and
   ModSecurity + OWASP CRS. It measures added latency, throughput, memory and gotestwaf detection,
   for the default and the strict profile.
+- Dependabot: weekly updates for cargo, the dashboard's npm packages, GitHub Actions and the
+  Dockerfile base images.
+
+### Changed
+
+- CI supply chain: every GitHub Action is pinned to a commit SHA, the Dockerfile build images
+  (`rust`, `node`) are pinned by digest, every workflow declares least-privilege token permissions,
+  and the kubeconform and kind downloads are checked against their published SHA-256.
+
+### Security
+
+- Dependencies updated within their semver ranges (`cargo update`), which pulls in the fixes for
+  hickory-resolver (GHSA-6w6g-hm98-mhgm, GHSA-5j98-2g5x-46v6, GHSA-6f2x-v7q7-m7m5), rustls 0.23
+  (RUSTSEC-2026-0285, -0346, -0348, -0349), rustls-webpki 0.103 (RUSTSEC-2026-0382), h2 0.4
+  (RUSTSEC-2026-0258), tokio (RUSTSEC-2026-0386), webpki-roots / webpki-root-certs
+  (RUSTSEC-2026-0381, -0383), event-listener (RUSTSEC-2026-0221) and ctutils (RUSTSEC-2026-0385).
 
 ## [1.0.1] — 2026-10-28
 

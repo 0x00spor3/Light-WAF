@@ -28,9 +28,9 @@ jobs:
       matrix:
         chart: [waf, waf-controlplane]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: v3.16.3
 
@@ -38,6 +38,8 @@ jobs:
         run: |
           curl -fsSL -o /tmp/kc.tgz \
             https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          # From the release's CHECKSUMS file; bump it together with the version.
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  /tmp/kc.tgz" | sha256sum -c -
           tar -xzf /tmp/kc.tgz -C /usr/local/bin kubeconform
 
       - name: helm lint (default)
@@ -57,14 +59,16 @@ jobs:
           CRD: "https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
         run: |
           set -euo pipefail
+          # validate <label> [helm template args…]
           validate() {
             echo "== kubeconform: $1 =="
-            helm template rel charts/${{ matrix.chart }} ${2:-} \
+            shift
+            helm template rel charts/${{ matrix.chart }} "$@" \
               | kubeconform -strict -summary \
                   -schema-location default -schema-location "$CRD"
           }
           validate default
           for f in charts/${{ matrix.chart }}/ci/*.yaml; do
             [ -e "$f" ] || continue
-            validate "$(basename "$f")" "-f $f"
+            validate "$(basename "$f")" -f "$f"
           done
