@@ -270,10 +270,3 @@ jobs:
         run: |
           cosign sign --yes "$REF"
           cosign attest --yes --type spdxjson --predicate "$SBOM" "$REF"
-
-      # Kept for the release assets (signed SBOMs attached to the GitHub Release).
-      - name: Keep the SBOM
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-sbom-${{ matrix.image }}
-          path: ${{ matrix.image }}-${{ steps.ver.outputs.version }}.spdx.json

@@ -1,0 +1,128 @@
+name: Release assets
+
+# Attaches signed artifacts to a GitHub Release, so every release can be checked offline:
+#
+#   light-waf-<version>-source.tar.gz   the source tree at the release tag
+#   light-waf-<version>-source.spdx.json  the SBOM of the source: every crate and npm package
+#   <image>-<version>.spdx.json         the SBOM of each published container image
+#   SHA256SUMS                          checksums of all of the above
+#
+# and, next to each file, `<file>.sigstore.json`: a cosign keyless signature bundle, bound to this
+# workflow's identity and logged in the Sigstore transparency log. Verification: SECURITY.md.
+#
+# It runs when a release is published. The images are published by images.yml from the tag, which
+# can finish after the release is created: this workflow first waits for the four images of the
+# version, then checks their cosign signatures before attaching anything. A manual run attaches the
+# assets to an existing release (`verify_images: false` for releases older than image signing).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach the assets to (e.g. v1.0.2)"
+        required: true
+      verify_images:
+        description: "Require the images' cosign signatures (off only for releases before 1.0.2)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-assets-${{ inputs.tag || github.event.release.tag_name }}
+
+jobs:
+  assets:
+    name: sign and attach
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write   # upload the assets to the release
+      id-token: write   # keyless signing
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      VERIFY_IMAGES: ${{ github.event_name == 'release' || inputs.verify_images }}
+      REGISTRY: ghcr.io/${{ github.repository_owner }}
+      IMAGES: waf-enterprise waf-controlplane waf-node-agent waf-operator
+      # The identity images.yml signs with: a tag push, or a manual re-publish from main.
+      IMAGE_IDENTITY: ^https://github\.com/${{ github.repository }}/\.github/workflows/images\.yml@refs/(tags/v.+|heads/main)$
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ env.TAG }}
+
+      - name: Version
+        id: ver
+        run: |
+          version=$(sed -n 's/^version = \"\(.*\)\"/\1/p' Cargo.toml | head -n1)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match the workspace version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      - name: Download syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      # images.yml publishes from the same tag and may still be building: wait for it (up to
+      # ~90 minutes), then insist on the signatures — no assets for unsigned images.
+      - name: Wait for the images, check their signatures
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          for image in $IMAGES; do
+            ref="$REGISTRY/$image:$VERSION"
+            for attempt in $(seq 1 90); do
+              if docker buildx imagetools inspect "$ref" > /dev/null 2>&1; then break; fi
+              if [ "$attempt" = 90 ]; then echo "::error::$ref was not published"; exit 1; fi
+              echo "waiting for $ref ($attempt/90)"; sleep 60
+            done
+            if [ "$VERIFY_IMAGES" = true ]; then
+              cosign verify "$ref" \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                --certificate-identity-regexp "$IMAGE_IDENTITY" > /dev/null
+              echo "$ref: signature verified"
+            fi
+          done
+
+      - name: Build the assets
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: |
+          # The source SBOM, from Cargo.lock and the dashboard's package-lock.json: every Rust crate
+          # and npm package that goes into the binaries. The image SBOMs below list what syft finds
+          # in each image (OS packages, CA bundle); they cannot see the crates compiled into a
+          # Rust binary, so this one is the dependency inventory.
+          "$SYFT" dir:. --exclude './dist/**' -o "spdx-json=source.spdx.json"
+          mkdir dist
+          mv source.spdx.json "dist/light-waf-$VERSION-source.spdx.json"
+          git archive --format=tar.gz --prefix="light-waf-$VERSION/" \
+            -o "dist/light-waf-$VERSION-source.tar.gz" HEAD
+          for image in $IMAGES; do
+            "$SYFT" "$REGISTRY/$image:$VERSION" -o "spdx-json=dist/$image-$VERSION.spdx.json"
+          done
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Sign the assets
+        run: |
+          cd dist
+          for f in *; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f" > /dev/null
+          done
+          ls -l
+
+      - name: Attach them to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"

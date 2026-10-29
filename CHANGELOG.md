@@ -21,6 +21,10 @@ All notable changes to this project are documented here. The format follows
 - Signed container images: every published image is signed with cosign (keyless, bound to the
   release workflow's identity, logged in the Sigstore transparency log) and carries its SPDX SBOM
   as a signed attestation. `SECURITY.md` shows how to verify both.
+- Signed release assets (`release-assets.yml`): each GitHub Release gets the source tarball, the
+  source SBOM (every crate and npm package), the image SBOMs and `SHA256SUMS`, each with a cosign
+  keyless signature bundle (`.sigstore.json`). The workflow first waits for the release's images and
+  checks their signatures.
 
 ### Changed
 

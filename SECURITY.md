@@ -95,7 +95,36 @@ cosign verify-attestation ghcr.io/0x00spor3/waf-enterprise:1.0.2 --type spdxjson
   | jq -r '.payload' | base64 -d | jq '.predicate'
 ```
 
-In Kubernetes, an admission policy can require the signature before a pod starts. Examples are
+The image SBOMs list what is visible inside each image (OS packages, the CA bundle). They cannot see
+the Rust crates compiled into the binaries. For the full dependency inventory, use the source SBOM
+attached to the release (next section).
+
+## Verifying the release assets
+
+From 1.0.2, each [GitHub Release](https://github.com/0x00spor3/Light-WAF/releases) carries:
+
+- the source tree, `light-waf-<version>-source.tar.gz`;
+- the source SBOM, `light-waf-<version>-source.spdx.json`, which lists every Rust crate and npm
+  package;
+- the SBOM of each image;
+- `SHA256SUMS`.
+
+Each of these files comes with a `<file>.sigstore.json` keyless signature bundle, made by the
+`release-assets.yml` workflow. To verify one:
+
+```sh
+cosign verify-blob light-waf-1.0.2-source.tar.gz \
+  --bundle light-waf-1.0.2-source.tar.gz.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/0x00spor3/Light-WAF/\.github/workflows/release-assets\.yml@refs/(tags/v.+|heads/main)$'
+```
+
+Or verify `SHA256SUMS` the same way, then check every other file against it with
+`sha256sum -c SHA256SUMS`.
+
+## Enforcing signatures in Kubernetes
+
+An admission policy can require the image signature before a pod starts. Examples are
 the [Sigstore policy-controller](https://docs.sigstore.dev/policy-controller/overview/) and
 [Kyverno](https://kyverno.io/docs/writing-policies/verify-images/), configured with the same
 issuer and identity.
