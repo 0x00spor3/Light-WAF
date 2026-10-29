@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- SLSA build provenance on GitHub Releases: `light-waf-<version>.intoto.jsonl` covers every release
+  asset, made by the official SLSA generator in the release-assets workflow.
+- `osv-scanner.toml`: the three advisories that do not affect Light WAF (`rsa`, `crypto-bigint`,
+  `block-buffer`, see 1.0.2) are ignored with their reasons, each until 2027-04-30.
+
+### Removed
+- Build output that had been committed by mistake: the `target/` folders of the WASM test fixture
+  and of the WASM plugin example. `.gitignore` now ignores `target/` at every level.
+
 ## [1.0.2] — 2026-10-29
 
 A supply-chain and dependency release. Images, charts and release assets are now signed and come
