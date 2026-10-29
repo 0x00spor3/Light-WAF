@@ -63,7 +63,7 @@ waf-governance = { path = "../waf-governance", version = "1.0.2" }
 # (oidc.rs `send`), so TLS is the ring provider installed in main and there is one reqwest version.
 openidconnect = { version = "4", default-features = false }
 # Decode the (already-verified) id_token payload to read the configurable role claim.
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
