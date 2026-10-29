@@ -20,8 +20,9 @@ tokio-rustls = { workspace = true, features = ["ring"] }
 tracing.workspace = true
 
 # ACME (TLS-ALPN-01, hitless). `ring` to match the core's provider; `tokio` for the
-# async driver + on-disk cache.
-rustls-acme = { version = "0.13", default-features = false, features = ["ring", "tokio"] }
+# async driver + on-disk cache; `webpki-roots` for `AcmeConfig::new` (trusts the CA's
+# directory via the bundled Mozilla roots — optional since 0.15, always on before).
+rustls-acme = { version = "0.15", default-features = false, features = ["ring", "tokio", "webpki-roots"] }
 futures = "0.3"
 # DNS-01 provider abstraction (object-safe async trait for `dyn DnsProvider`).
 async-trait = "0.1"
