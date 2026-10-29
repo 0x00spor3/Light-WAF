@@ -50,7 +50,7 @@ waf-proxy = { path = "crates/waf-proxy", version = "1.0.2" }
 waf-wasm = { path = "crates/waf-wasm", version = "1.0.2" }
 
 # Third-party deps shared by the enterprise crates.
-redis = { version = "0.27", features = ["r2d2"] }
+redis = { version = "1.7", features = ["r2d2"] }
 r2d2 = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 tracing = "0.1"
