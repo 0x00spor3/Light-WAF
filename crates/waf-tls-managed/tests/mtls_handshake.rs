@@ -115,7 +115,7 @@ async fn mtls_rejects_client_without_cert_but_control_accepts() {
     let cert_path = tmp("srv-cert.pem");
     let key_path = tmp("srv-key.pem");
     std::fs::write(&cert_path, server.cert.pem()).unwrap();
-    std::fs::write(&key_path, server.key_pair.serialize_pem()).unwrap();
+    std::fs::write(&key_path, server.signing_key.serialize_pem()).unwrap();
 
     // A CA used only as an mTLS trust root (never presented — the client sends no cert).
     let ca = rcgen::generate_simple_self_signed(vec!["client-ca".to_string()]).unwrap();
