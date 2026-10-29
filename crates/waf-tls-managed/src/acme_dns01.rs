@@ -732,7 +732,7 @@ mod tests {
     fn cert_cache_store_then_load_round_trips() {
         let issued = rcgen::generate_simple_self_signed(vec!["example.com".to_string()]).unwrap();
         let chain_pem = issued.cert.pem();
-        let key_pem = issued.key_pair.serialize_pem();
+        let key_pem = issued.signing_key.serialize_pem();
 
         let dir = tmp_dir("cache");
         assert!(load_cached_cert(&dir).is_none(), "empty cache yields nothing");

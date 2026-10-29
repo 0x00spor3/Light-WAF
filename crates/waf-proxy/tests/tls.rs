@@ -72,7 +72,7 @@ fn cert_fixture() -> (PathBuf, PathBuf, CertificateDer<'static>) {
     let cert_path = dir.join(format!("waf-tls-{pid}-{seq}-{nanos}-cert.pem"));
     let key_path = dir.join(format!("waf-tls-{pid}-{seq}-{nanos}-key.pem"));
     std::fs::write(&cert_path, ck.cert.pem()).unwrap();
-    std::fs::write(&key_path, ck.key_pair.serialize_pem()).unwrap();
+    std::fs::write(&key_path, ck.signing_key.serialize_pem()).unwrap();
     (cert_path, key_path, der)
 }
 
