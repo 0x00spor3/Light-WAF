@@ -14,12 +14,17 @@ All notable changes to this project are documented here. The format follows
   for the default and the strict profile.
 - Dependabot: weekly updates for cargo, the dashboard's npm packages, GitHub Actions and the
   Dockerfile base images.
+- OpenSSF Scorecard (`scorecard.yml`): the repository's supply-chain practices graded weekly and on
+  every push to `main`, published to the Scorecard API (README badge) and to code scanning.
+- CodeQL (`codeql.yml`): static analysis of the Rust workspace, the dashboard's TypeScript and the
+  workflows, with the `security-extended` queries.
 
 ### Changed
 
 - CI supply chain: every GitHub Action is pinned to a commit SHA, the Dockerfile build images
   (`rust`, `node`) are pinned by digest, every workflow declares least-privilege token permissions,
-  and the kubeconform and kind downloads are checked against their published SHA-256.
+  no checkout keeps the token after it (`persist-credentials: false`), and the kubeconform and kind
+  downloads are checked against their published SHA-256.
 
 ### Security
 
