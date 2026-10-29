@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router";
 import { api, UnauthorizedError, type CapturedRequest } from "../api";
 import { useAuth } from "../auth";
 import { useApi } from "../hooks/useApi";

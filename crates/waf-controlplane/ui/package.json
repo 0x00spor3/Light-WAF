@@ -1,7 +1,7 @@
 {
   "name": "waf-controlplane-ui",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "Web dashboard for the Light WAF control plane (§7). Consumes the read API.",
   "license": "Apache-2.0",
@@ -20,7 +20,7 @@
     "@fontsource/ibm-plex-sans": "^5.2.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0",
+    "react-router": "^7.18.4",
     "recharts": "^2.13.3"
   },
   "devDependencies": {

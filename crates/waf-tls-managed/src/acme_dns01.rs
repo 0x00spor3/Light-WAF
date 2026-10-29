@@ -39,6 +39,7 @@ use instant_acme::{
 };
 use tokio::time::{sleep, Instant};
 use tokio_rustls::rustls::crypto::ring;
+use tokio_rustls::rustls::pki_types::pem::{self, PemObject};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::server::{ClientHello, ResolvesServerCert};
 use tokio_rustls::rustls::sign::CertifiedKey;
@@ -131,13 +132,17 @@ impl ResolvesServerCert for Dns01Resolver {
 /// **core's** rustls + the `ring` provider — the exact same parsing path as the OPEN
 /// `FileCertSource::load`. This is the suture point between instant-acme and the core.
 pub fn certified_key_from_pem(chain_pem: &str, key_pem: &str) -> Result<CertifiedKey, Dns01Error> {
-    let certs: Vec<CertificateDer<'static>> =
-        rustls_pemfile::certs(&mut chain_pem.as_bytes()).collect::<Result<_, _>>()?;
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(chain_pem.as_bytes())
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("issued certificate chain: {e}"))?;
     if certs.is_empty() {
         return Err("issued certificate chain contained no certificates".into());
     }
-    let key: PrivateKeyDer<'static> =
-        rustls_pemfile::private_key(&mut key_pem.as_bytes())?.ok_or("no private key in PEM")?;
+    let key: PrivateKeyDer<'static> = match PrivateKeyDer::from_pem_slice(key_pem.as_bytes()) {
+        Ok(key) => key,
+        Err(pem::Error::NoItemsFound) => return Err("no private key in PEM".into()),
+        Err(e) => return Err(format!("private key PEM: {e}").into()),
+    };
     let signing_key = ring::default_provider().key_provider.load_private_key(key)?;
     Ok(CertifiedKey::new(certs, signing_key))
 }

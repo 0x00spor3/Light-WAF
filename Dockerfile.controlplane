@@ -42,6 +42,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# cargo-auditable embeds the crate list in the binary (a `.dep-v0` section), so the image SBOM —
+# what syft reads from the binary — names every Rust crate, not just the OS packages.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install cargo-auditable --version 0.7.7 --locked
+
 WORKDIR /build
 COPY . .
 # rust-embed reads `ui/dist` (relative to the crate) at compile time — drop the
@@ -50,7 +55,7 @@ COPY --from=ui /src/crates/waf-controlplane/ui/dist crates/waf-controlplane/ui/d
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release --locked -p waf-controlplane --features embed-ui \
+    cargo auditable build --release --locked -p waf-controlplane --features embed-ui \
     && cp /build/target/release/waf-controlplane /usr/local/bin/waf-controlplane \
     && mkdir -p /skel/app
 

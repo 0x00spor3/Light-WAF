@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-10-29
+
+A supply-chain and dependency release. Images, charts and release assets are now signed and come
+with complete SBOMs. The vulnerable and unmaintained dependencies found by an OSV scan are
+upgraded or replaced. The repository is graded by OpenSSF Scorecard, analysed by CodeQL and
+fuzzed continuously. Detection and the public API are unchanged.
+
 ### Added
 
 - `bench/`: a reproducible end-to-end benchmark, run with one command, against no WAF and
@@ -51,6 +58,14 @@ All notable changes to this project are documented here. The format follows
 - Helm charts: real maintainer, `home` and `icon` pointing at lightwaf.org. The chart lint workflow
   now fails a PR whose chart version, appVersion or listed image tags differ from the workspace
   version.
+- Complete image SBOMs: the binaries are built with `cargo auditable`, which embeds their crate
+  list, so each image's signed SBOM and the image scan now cover every Rust crate (the data-plane
+  image: 356 crates), not just the OS packages.
+- One crypto provider: `ring` only. The workspace's `tokio-rustls` no longer enables its default
+  features, and the Route 53 client no longer uses the SDK's default HTTPS clients, so `aws-lc-rs`
+  (C, built with cmake) is gone from the build; the data-plane image no longer installs cmake.
+- Control-plane OIDC SSO: the identity-provider calls (discovery, token, JWKS) go through the
+  workspace's reqwest client, which never follows redirects.
 
 ### Security
 
@@ -59,6 +74,20 @@ All notable changes to this project are documented here. The format follows
   (RUSTSEC-2026-0285, -0346, -0348, -0349), rustls-webpki 0.103 (RUSTSEC-2026-0382), h2 0.4
   (RUSTSEC-2026-0258), tokio (RUSTSEC-2026-0386), webpki-roots / webpki-root-certs
   (RUSTSEC-2026-0381, -0383), event-listener (RUSTSEC-2026-0221) and ctutils (RUSTSEC-2026-0385).
+- `openidconnect` 3 → 4 in the control plane. This removes reqwest 0.11 and the old TLS stack it
+  pulled in: rustls 0.21 (RUSTSEC-2026-0346, -0349, GHSA-h2v8-394m-p7vv), rustls-webpki 0.101
+  (RUSTSEC-2026-0098, -0099, -0104, -0382), h2 0.3 (RUSTSEC-2026-0258), webpki-roots 0.25
+  (RUSTSEC-2026-0381) and the unmaintained rustls-pemfile 1 (RUSTSEC-2025-0134).
+- The Route 53 DNS-01 client uses the AWS SDK's hyper 1 client on rustls 0.23 and ring, dropping
+  the SDK's legacy hyper 0.14 + rustls 0.21 client.
+- `rustls-pemfile` 2 (unmaintained, RUSTSEC-2025-0134) replaced by the PEM parser of
+  `rustls-pki-types` in `waf-proxy` and `waf-tls-managed`.
+- Dashboard: `react-router` 6 → 7 (GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg).
+- Still reported, not exploitable here: `rsa` (RUSTSEC-2023-0071, Marvin attack, no fixed version)
+  is used by `openidconnect` only to verify RS256 signatures with public keys, while the attack
+  needs private-key operations. Also still reported: `crypto-bigint` 0.5 and `block-buffer` 0.10,
+  indirect dependencies of the signature crates with no fixed release in their lines, and
+  `serde_yaml` (unmaintained), which comes in through `kube` in the operator.
 
 ## [1.0.1] — 2026-10-28
 

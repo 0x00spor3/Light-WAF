@@ -5,8 +5,8 @@ description: >-
   Light WAF control plane — dashboard/API over the WAF telemetry (observability,
   governance/RBAC, alerting, SIEM forwarding). Off the request path, backed by Postgres.
 type: application
-version: 1.0.1
-appVersion: "1.0.1"
+version: 1.0.2
+appVersion: "1.0.2"
 keywords:
   - waf
   - observability
@@ -33,6 +33,6 @@ annotations:
       url: https://github.com/0x00spor3/Light-WAF/blob/main/SECURITY.md
   artifacthub.io/images: |
     - name: waf-controlplane
-      image: ghcr.io/0x00spor3/waf-controlplane:1.0.1
+      image: ghcr.io/0x00spor3/waf-controlplane:1.0.2
 # Bundled Postgres/Redis are plain in-chart StatefulSets (off by default), NOT subcharts,
 # so the chart stays dependency-free.

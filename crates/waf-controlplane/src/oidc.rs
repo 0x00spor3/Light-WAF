@@ -5,11 +5,15 @@
 //! verified (JWKS signature + nonce + audience + expiry) by `openidconnect`, then the configured
 //! role claim is read from the verified token and mapped to a role.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
+
 use base64::Engine;
 use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType};
-use openidconnect::reqwest::async_http_client;
 use openidconnect::{
-    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
+    AsyncHttpClient, AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
+    EndpointMaybeSet, EndpointNotSet, EndpointSet, HttpRequest, HttpResponse, IssuerUrl, Nonce,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse,
 };
 use serde_json::Value;
@@ -19,9 +23,15 @@ use waf_governance::rbac::{map_claims_to_role, Role};
 use crate::config::OidcConfig;
 use crate::error::{Error, Result};
 
+/// The client `from_provider_metadata` builds: the authorization endpoint is set, the token and
+/// userinfo endpoints are whatever discovery returned (so `exchange_code` is fallible).
+type DiscoveredClient =
+    CoreClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointMaybeSet, EndpointMaybeSet>;
+
 /// A discovered OIDC provider + its config, ready to drive the login flow.
 pub struct OidcProvider {
-    client: CoreClient,
+    client: DiscoveredClient,
+    http: IdpHttp,
     scopes: Vec<String>,
     role_claim: String,
     role_map: Vec<(String, Role)>,
@@ -52,7 +62,8 @@ impl OidcProvider {
             .ok_or_else(|| Error::Config("oidc: client_secret (or WAF_CP_OIDC_CLIENT_SECRET) is required".into()))?;
         let issuer = IssuerUrl::new(cfg.issuer_url.clone())
             .map_err(|e| Error::Config(format!("oidc issuer_url: {e}")))?;
-        let metadata = CoreProviderMetadata::discover_async(issuer, async_http_client)
+        let http = IdpHttp::new().map_err(|e| Error::Config(format!("oidc http client: {e}")))?;
+        let metadata = CoreProviderMetadata::discover_async(issuer, &http)
             .await
             .map_err(|e| Error::Config(format!("oidc discovery failed: {e}")))?;
         let redirect = RedirectUrl::new(cfg.redirect_url.clone())
@@ -65,6 +76,7 @@ impl OidcProvider {
         .set_redirect_uri(redirect);
         Ok(Self {
             client,
+            http,
             scopes: cfg.scopes.clone(),
             role_claim: cfg.role_claim.clone(),
             role_map: cfg.role_map.iter().map(|e| (e.claim.clone(), e.role)).collect(),
@@ -104,8 +116,9 @@ impl OidcProvider {
         let token_response = self
             .client
             .exchange_code(AuthorizationCode::new(code))
+            .map_err(|e| format!("token exchange: {e}"))?
             .set_pkce_verifier(PkceCodeVerifier::new(pkce_verifier))
-            .request_async(async_http_client)
+            .request_async(&self.http)
             .await
             .map_err(|e| format!("token exchange failed: {e}"))?;
 
@@ -133,6 +146,39 @@ impl OidcProvider {
             .ok_or("no role: token matched no role_map entry and no default_role is set")?;
 
         Ok(VerifiedIdentity { username, role })
+    }
+}
+
+/// The HTTP transport for the IdP calls (discovery, token, JWKS), over the workspace's reqwest: TLS
+/// is the process-level ring provider installed in main. It never follows redirects — the
+/// `openidconnect` guidance against SSRF. A named type rather than a closure, so the returned future
+/// is `Send` for every lifetime (the callback runs inside an axum handler).
+struct IdpHttp(reqwest::Client);
+
+impl IdpHttp {
+    fn new() -> reqwest::Result<Self> {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map(Self)
+    }
+}
+
+impl<'c> AsyncHttpClient<'c> for IdpHttp {
+    type Error = reqwest::Error;
+    type Future = Pin<Box<dyn Future<Output = std::result::Result<HttpResponse, reqwest::Error>> + Send + 'c>>;
+
+    fn call(&'c self, request: HttpRequest) -> Self::Future {
+        Box::pin(async move {
+            let response = self.0.execute(reqwest::Request::try_from(request)?).await?;
+            let status = response.status();
+            let headers = response.headers().clone();
+            let mut out = HttpResponse::new(response.bytes().await?.to_vec());
+            *out.status_mut() = status;
+            *out.headers_mut() = headers;
+            Ok(out)
+        })
     }
 }
 

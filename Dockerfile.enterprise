@@ -18,12 +18,16 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
 FROM rust:1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS build
 
-# `waf-enterprise` links the AWS SDK (Route 53 DNS-01), which pulls `aws-lc-rs` —
-# that crate's build needs cmake + a C toolchain (build-essential/perl already ship
-# in the rust:bookworm base). ca-certificates lets cargo fetch from crates.io.
+# rustls+ring only (the Route 53 SDK client included — no aws-lc-rs, so no cmake): the base
+# toolchain plus ca-certificates for the crates.io fetch is enough.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# cargo-auditable embeds the crate list in the binary (a `.dep-v0` section), so the image SBOM —
+# what syft reads from the binary — names every Rust crate, not just the OS packages.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install cargo-auditable --version 0.7.7 --locked
 
 WORKDIR /build
 COPY . .
@@ -34,14 +38,14 @@ COPY . .
 # RUN to a plain path the runtime stage can pick up.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release --locked -p waf-enterprise \
+    cargo auditable build --release --locked -p waf-enterprise \
     && cp /build/target/release/waf-enterprise /usr/local/bin/waf-enterprise \
     && mkdir -p /skel/app
 
 # ── Runtime stage ────────────────────────────────────────────────────────────
 # Distroless (cc = glibc + libgcc + libstdc++ + libssl3 + the CA bundle) — NO apt,
 # shell, perl, util-linux, ncurses, gzip. The data-plane binary is dynamically
-# linked against glibc ONLY (rustls + ring/aws-lc-rs compile their C statically),
+# linked against glibc ONLY (rustls + ring compile their C statically),
 # so this base is sufficient AND drops the entire Debian base-OS CVE surface that
 # `debian:bookworm-slim` dragged in (none of which the binary used). Pinned by digest.
 FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime

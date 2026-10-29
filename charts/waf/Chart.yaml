@@ -6,8 +6,8 @@ description: >-
   upstream Service ("WAF-per-workload"), with an optional rule-management agent sidecar.
 type: application
 # Chart version — bump on chart changes. appVersion tracks the enterprise image version.
-version: 1.0.1
-appVersion: "1.0.1"
+version: 1.0.2
+appVersion: "1.0.2"
 keywords:
   - waf
   - security
@@ -34,6 +34,6 @@ annotations:
       url: https://github.com/0x00spor3/Light-WAF/blob/main/SECURITY.md
   artifacthub.io/images: |
     - name: waf-enterprise
-      image: ghcr.io/0x00spor3/waf-enterprise:1.0.1
+      image: ghcr.io/0x00spor3/waf-enterprise:1.0.2
     - name: waf-node-agent
-      image: ghcr.io/0x00spor3/waf-node-agent:1.0.1
+      image: ghcr.io/0x00spor3/waf-node-agent:1.0.2

@@ -15,12 +15,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# cargo-auditable embeds the crate list in the binary (a `.dep-v0` section), so the image SBOM —
+# what syft reads from the binary — names every Rust crate, not just the OS packages.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install cargo-auditable --version 0.7.7 --locked
+
 WORKDIR /build
 COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release --locked -p waf-operator \
+    cargo auditable build --release --locked -p waf-operator \
     && cp /build/target/release/waf-operator /usr/local/bin/waf-operator \
     && mkdir -p /skel/app
 
