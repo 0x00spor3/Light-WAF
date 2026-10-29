@@ -21,7 +21,7 @@ serde = { workspace = true }
 # node-side field redaction.
 serde_json = "1"
 # Body bytes → base64 string (JSON cannot carry raw bytes; the CP stores BYTEA).
-base64 = "0.22"
+base64 = "0.23"
 # The `WafModule` seam + `RequestContext`/`Decision`/`Phase` the capture module reads (zero core).
 waf-core = { workspace = true }
 # C2 — verdict-join layer + shipper.
