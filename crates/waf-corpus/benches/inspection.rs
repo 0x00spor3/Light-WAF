@@ -32,7 +32,9 @@
 //! assertion. **Headroom (DEC 1):** ~5.1 µs worst-case vs the p99 1 ms contract ≈ 195×
 //! margin; the number depends only on our code, isolated from upstream/network.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, Criterion};
 use waf_corpus::{cases, corpus_pipeline, prepared_ctx, RECOMMENDED_SEVERITY};
 use waf_core::RequestContext;
 use waf_detection::ContentPrefilter;
