@@ -35,6 +35,10 @@ Requires `docker`, `kind`, `kubectl`, `helm`. Also runs in CI (`.github/workflow
 #    build instead, push it to a private registry and add --set image.repository=… below:
 #    REGISTRY=registry.internal:5000 scripts/images/build.sh
 
+# Steps 2-3 install the charts from this checkout. Without one, use the published charts:
+#   oci://ghcr.io/0x00spor3/charts/waf-controlplane and oci://ghcr.io/0x00spor3/charts/waf,
+#   with --version <release>.
+
 # 2. Control plane (managed Postgres in prod; bundled shown here for brevity):
 helm install waf-cp charts/waf-controlplane -n waf --create-namespace \
   --set postgres.bundled.enabled=true \

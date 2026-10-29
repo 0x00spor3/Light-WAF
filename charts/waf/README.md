@@ -12,11 +12,16 @@ The chart pulls the release image from the GitHub Container Registry
 (`ghcr.io/0x00spor3/waf-enterprise`, multi-arch), tagged with the chart's `appVersion`. To run
 your own build or a mirror, set `image.repository` (see `scripts/images/RUNBOOK.md`).
 
+The chart is published as an OCI artifact on GHCR (Helm 3.8 or later):
+
 ```sh
-helm install myapp-waf ./charts/waf \
+helm install myapp-waf oci://ghcr.io/0x00spor3/charts/waf --version 1.0.2 \
   --namespace prod --create-namespace \
   --set waf.backend=http://myapp.prod.svc.cluster.local:8080
 ```
+
+From a checkout of the repository, use `./charts/waf` instead of the `oci://` reference. The
+published chart is signed with cosign, like the images (see `SECURITY.md`).
 
 In-cluster the WAF is then reachable at
 `http://myapp-waf.prod.svc.cluster.local:8080`, forwarding clean traffic to `waf.backend`.

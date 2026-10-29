@@ -9,10 +9,12 @@ on:
     branches: [main, master]
     paths:
       - "charts/**"
+      - "Cargo.toml"
       - ".github/workflows/charts.yml"
   pull_request:
     paths:
       - "charts/**"
+      - "Cargo.toml"
       - ".github/workflows/charts.yml"
   workflow_dispatch:
 
@@ -43,6 +45,25 @@ jobs:
           # From the release's CHECKSUMS file; bump it together with the version.
           echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  /tmp/kc.tgz" | sha256sum -c -
           tar -xzf /tmp/kc.tgz -C /usr/local/bin kubeconform
+
+      # The same check charts-release.yml makes before publishing — caught here, a forgotten bump
+      # fails the PR instead of the release.
+      - name: Versions match the workspace
+        env:
+          CHART: ${{ matrix.chart }}
+        run: |
+          version=$(sed -n 's/^version = \"\(.*\)\"/\1/p' Cargo.toml | head -n1)
+          chart_file="charts/$CHART/Chart.yaml"
+          chart_version=$(sed -n 's/^version: *//p' "$chart_file")
+          app_version=$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/p' "$chart_file")
+          if [ "$chart_version" != "$version" ] || [ "$app_version" != "$version" ]; then
+            echo "::error::$chart_file has version $chart_version / appVersion $app_version, the workspace $version"
+            exit 1
+          fi
+          if grep -E '^\s+image: ' "$chart_file" | grep -v ":$version\$"; then
+            echo "::error::$chart_file lists an artifacthub.io/images tag other than $version"
+            exit 1
+          fi
 
       - name: helm lint (default)
         run: helm lint charts/${{ matrix.chart }}

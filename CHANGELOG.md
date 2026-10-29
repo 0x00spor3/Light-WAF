@@ -25,6 +25,11 @@ All notable changes to this project are documented here. The format follows
   source SBOM (every crate and npm package), the image SBOMs and `SHA256SUMS`, each with a cosign
   keyless signature bundle (`.sigstore.json`). The workflow first waits for the release's images and
   checks their signatures.
+- Published Helm charts (`charts-release.yml`): on each release the `waf` and `waf-controlplane`
+  charts are pushed to `oci://ghcr.io/0x00spor3/charts` and signed with cosign, so they install
+  without a checkout (`helm install … oci://ghcr.io/0x00spor3/charts/waf --version …`). The charts
+  carry Artifact Hub metadata (license, links, images), and the workflow pushes the Artifact Hub
+  repository metadata once the repository IDs are configured.
 
 ### Changed
 
@@ -32,6 +37,9 @@ All notable changes to this project are documented here. The format follows
   (`rust`, `node`) are pinned by digest, every workflow declares least-privilege token permissions,
   no checkout keeps the token after it (`persist-credentials: false`), and the kubeconform and kind
   downloads are checked against their published SHA-256.
+- Helm charts: real maintainer, `home` and `icon` pointing at lightwaf.org. The chart lint workflow
+  now fails a PR whose chart version, appVersion or listed image tags differ from the workspace
+  version.
 
 ### Security
 

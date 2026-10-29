@@ -95,6 +95,14 @@ cosign verify-attestation ghcr.io/0x00spor3/waf-enterprise:1.0.2 --type spdxjson
   | jq -r '.payload' | base64 -d | jq '.predicate'
 ```
 
+The Helm charts on `ghcr.io/0x00spor3/charts` are signed the same way by `charts-release.yml`:
+
+```sh
+cosign verify ghcr.io/0x00spor3/charts/waf:1.0.2 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/0x00spor3/Light-WAF/\.github/workflows/charts-release\.yml@refs/(tags/v.+|heads/main)$'
+```
+
 The image SBOMs list what is visible inside each image (OS packages, the CA bundle). They cannot see
 the Rust crates compiled into the binaries. For the full dependency inventory, use the source SBOM
 attached to the release (next section).
