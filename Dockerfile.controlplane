@@ -20,7 +20,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── UI stage: build the SPA bundle (ui/dist) ─────────────────────────────────
-FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS ui
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS ui
 
 # Keep the repository layout: vite.config.ts reads the UI version from the workspace
 # Cargo.toml at ../../../Cargo.toml, so the UI reports the same version as the API.
@@ -65,7 +65,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # pure-Rust sqlx-postgres — no libpq/libssl). Dropping the debian base ALSO removes
 # curl (previously present only for the Docker HEALTHCHECK), and with it the whole
 # curl/libcurl4/libssh2/libldap CVE cluster. Pinned by digest.
-FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
+FROM gcr.io/distroless/cc-debian12@sha256:e5d81ddde149641e2a9ba55be4545bc125c67de07508b03ba4c22e6eb0ded5aa AS runtime
 
 ARG VERSION=0.0.0-dev
 ARG VCS_REF=unknown

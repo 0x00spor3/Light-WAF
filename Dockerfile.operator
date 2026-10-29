@@ -34,7 +34,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # controller/client dynamically linked against glibc only (kube-client uses
 # rustls+ring). No apt/shell needed; this drops the whole Debian base-OS CVE
 # surface `debian:bookworm-slim` carried. Pinned by digest.
-FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
+FROM gcr.io/distroless/cc-debian12@sha256:e5d81ddde149641e2a9ba55be4545bc125c67de07508b03ba4c22e6eb0ded5aa AS runtime
 
 ARG VERSION=0.0.0-dev
 ARG VCS_REF=unknown
