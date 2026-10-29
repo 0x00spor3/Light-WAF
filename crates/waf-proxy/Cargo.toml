@@ -42,4 +42,4 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "io-util"] }
 # Self-signed certs for the TLS test matrix (Fase 12, Step 5).
-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }

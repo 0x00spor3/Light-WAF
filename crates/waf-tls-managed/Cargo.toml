@@ -35,7 +35,7 @@ instant-acme = { version = "0.8", default-features = false, features = ["ring", 
 arc-swap = "1"
 # We own the cert private key: generate the keypair + CSR (DER) for ACME finalize_csr,
 # so the suture (issued chain + our key) is built into the core's rustls CertifiedKey.
-rcgen = "0.13"
+rcgen = "0.14"
 serde = { version = "1", features = ["derive"] }
 # Persist the ACME account credentials + issued cert/key under `cache_dir` (warm restarts).
 serde_json = "1"
