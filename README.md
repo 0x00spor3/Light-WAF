@@ -4,6 +4,8 @@
 [![crates.io](https://img.shields.io/crates/v/waf-proxy.svg)](https://crates.io/crates/waf-proxy)
 [![docs.rs](https://img.shields.io/docsrs/waf-core)](https://docs.rs/waf-core)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/light-waf)](https://artifacthub.io/packages/search?repo=light-waf)
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/light-waf-controlplane)](https://artifacthub.io/packages/search?repo=light-waf-controlplane)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/0x00spor3/Light-WAF/badge)](https://scorecard.dev/viewer/?uri=github.com/0x00spor3/Light-WAF)
 
 A Web Application Firewall in **Rust**, running as a **reverse proxy** at Layer 7. It inspects
