@@ -412,7 +412,7 @@ impl ReputationWriter for RedisStore {
 /// fail-open path in [`RedisStore::acquire`] handles it uniformly.
 fn pool_to_redis_err(e: r2d2::Error) -> redis::RedisError {
     redis::RedisError::from((
-        redis::ErrorKind::IoError,
+        redis::ErrorKind::Io,
         "redis pool unavailable",
         e.to_string(),
     ))
