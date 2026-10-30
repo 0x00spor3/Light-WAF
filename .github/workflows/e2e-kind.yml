@@ -48,9 +48,10 @@ jobs:
       - name: Install kind
         run: |
           curl -fsSLo ./kind \
-            https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
-          # From the release's kind-linux-amd64.sha256sum; bump it together with the version.
-          echo "b89aada5a39d620da3fcd16435b7f28d858927dd53f92cbac77686b0588b600d  ./kind" | sha256sum -c -
+            https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          # From the release's kind-linux-amd64.sha256sum; bump it together with the version. Its
+          # default node is Kubernetes 1.37 (the operator's k8s-openapi supports 1.32 onward).
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  ./kind" | sha256sum -c -
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 

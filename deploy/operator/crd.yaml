@@ -5,7 +5,6 @@ metadata:
 spec:
   group: waf.io
   names:
-    categories: []
     kind: WafProxy
     plural: wafproxies
     shortNames:
@@ -31,7 +30,9 @@ spec:
           spec:
             properties:
               apiSchemaSpecRef:
-                description: Name of a ConfigMap (same namespace) holding `openapi.json` for positive-security enforcement. When set, it is mounted and `[enterprise.api_schema]` is enabled.
+                description: |-
+                  Name of a ConfigMap (same namespace) holding `openapi.json` for positive-security
+                  enforcement. When set, it is mounted and `[enterprise.api_schema]` is enabled.
                 nullable: true
                 type: string
               backend:
@@ -49,6 +50,7 @@ spec:
                       port:
                         default: 80
                         format: uint16
+                        maximum: 65535.0
                         minimum: 0.0
                         type: integer
                     required:
@@ -69,7 +71,9 @@ spec:
                 description: Enable the premium curated-CRS module.
                 type: boolean
               image:
-                description: Container image for the WAF data-plane (e.g. ghcr.io/0x00spor3/waf-enterprise:1.0.2).
+                description: >-
+                  Container image for the WAF data-plane (e.g.
+                  ghcr.io/0x00spor3/waf-enterprise:1.0.2).
                 type: string
               mode:
                 default: blocking
@@ -82,12 +86,15 @@ spec:
                 additionalProperties:
                   type: boolean
                 default: {}
-                description: Detection modules to force on/off (name → enabled). Unlisted modules keep the image defaults.
+                description: |-
+                  Detection modules to force on/off (name → enabled). Unlisted modules keep the
+                  image defaults.
                 type: object
               paranoiaLevel:
                 default: 3
                 description: CRS paranoia level (1–4).
                 format: uint8
+                maximum: 255.0
                 minimum: 0.0
                 type: integer
               replicas:

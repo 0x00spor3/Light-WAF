@@ -13,7 +13,7 @@ fn committed_crd_matches_generated() {
     let committed = std::fs::read_to_string(path)
         .expect("read deploy/operator/crd.yaml")
         .replace("\r\n", "\n");
-    let generated = serde_yaml::to_string(&WafProxy::crd()).expect("serialize CRD");
+    let generated = serde_saphyr::to_string(&WafProxy::crd()).expect("serialize CRD");
     assert_eq!(
         committed.trim_end(),
         generated.trim_end(),

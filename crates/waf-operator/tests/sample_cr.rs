@@ -11,7 +11,7 @@ fn sample_wafproxy_manifest_deserializes() {
         "/../../deploy/operator/sample-wafproxy.yaml"
     );
     let yaml = std::fs::read_to_string(path).expect("read sample-wafproxy.yaml");
-    let wp: WafProxy = serde_yaml::from_str(&yaml).expect("sample CR must match the WafProxy type");
+    let wp: WafProxy = serde_saphyr::from_str(&yaml).expect("sample CR must match the WafProxy type");
 
     assert_eq!(wp.metadata.name.as_deref(), Some("myapp-waf"));
     assert_eq!(wp.spec.backend.service.as_ref().unwrap().name, "myapp");

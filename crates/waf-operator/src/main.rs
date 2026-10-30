@@ -12,7 +12,7 @@ use waf_operator::{controller, WafProxy};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(1).as_deref() == Some("crd") {
         // Emit the CRD manifest (no cluster needed).
-        print!("{}", serde_yaml::to_string(&WafProxy::crd())?);
+        print!("{}", serde_saphyr::to_string(&WafProxy::crd())?);
         return Ok(());
     }
 
