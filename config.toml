@@ -2,65 +2,63 @@
 listen = "0.0.0.0:8080"
 backend = "http://127.0.0.1:8000"
 
-# Terminazione TLS sul listener (Fase 12). DEFAULT OFF → il listener serve in chiaro
-# (h1 + h2c), esattamente come prima. Quando enabled=true il listener serve SOLO TLS
-# (h1/h2 negoziati via ALPN); NIENTE fallback a chiaro sulla stessa porta. Un cert
-# illeggibile con enabled=true = errore FATALE al boot (fail-closed, niente downgrade).
-# Termination base, cert-da-file = core/OPEN (BOUNDARY §3.2). ACME/rotation/mTLS-PKI =
-# enterprise (stesso seam TlsCertSource). Vedi ARCHITECTURE §9.
+# TLS termination on the listener. DEFAULT OFF → the listener serves plaintext (h1 + h2c).
+# With enabled = true the listener serves ONLY TLS (h1/h2 negotiated via ALPN); there is NO
+# plaintext fallback on the same port. An unreadable cert with enabled = true is a FATAL error at
+# boot (fail-closed, no downgrade). Certificates from files are part of the core; ACME, rotation
+# and mTLS PKI come from the waf-tls-managed component over the same TlsCertSource seam
+# (BOUNDARY §3.2, ARCHITECTURE §9).
 [tls]
 enabled   = false
-cert_path = "/etc/waf/tls/cert.pem"   # catena PEM (leaf per primo)
-key_path  = "/etc/waf/tls/key.pem"    # chiave PEM (PKCS#8 / PKCS#1 / SEC1)
-alpn      = ["h2", "http/1.1"]         # h2-ready (gRPC-over-TLS futuro); h1-only ripiega a http/1.1
+cert_path = "/etc/waf/tls/cert.pem"   # PEM chain (leaf first)
+key_path  = "/etc/waf/tls/key.pem"    # PEM key (PKCS#8 / PKCS#1 / SEC1)
+alpn      = ["h2", "http/1.1"]         # h2-ready (gRPC over TLS); h1-only clients fall back to http/1.1
 
 [waf]
 mode = "blocking"
 block_threshold = 5
 paranoia_level = 1          # 1..=4 — higher activates more (noisier) rules
 
-# Comportamento quando È IL WAF in difficoltà — policy ESPLICITA per-scenario.
-# (Il vecchio waf.fail_open è stato rimosso: usa questa sezione.)
+# What to do when the WAF ITSELF is in trouble — an EXPLICIT policy per scenario.
+# (The old waf.fail_open was removed: use this section.)
 [resilience]
-on_upstream_error   = "fail_closed"   # origin giù/timeout -> 502 (closed) | 503 (open, retryable)
-on_internal_error   = "fail_open"     # panic/bug di un modulo NON deve abbattere il sito
-on_config_error     = "fail_open"     # reload invalido (P3) -> tieni last-good config
-on_parser_limit     = "fail_closed"   # normalization fallita -> 400 (closed) | inoltra non-ispezionato (open)
-upstream_timeout_ms = 30000           # tetto round-trip upstream (no hang del worker)
+on_upstream_error   = "fail_closed"   # origin down/timeout -> 502 (closed) | 503 (open, retryable)
+on_internal_error   = "fail_open"     # a panic/bug in a module must NOT take the site down
+on_config_error     = "fail_open"     # invalid reload -> keep the last good config
+on_parser_limit     = "fail_closed"   # normalization failed -> 400 (closed) | forward uninspected (open)
+upstream_timeout_ms = 30000           # upstream round-trip cap (no hung workers)
 
 # Point weight per severity class. Each matched rule contributes its severity's
 # weight to the cumulative anomaly score; the request blocks at block_threshold.
-# Config C2 (Fase 7 / Pilastro 2): critical raised 5 -> 6 so a single high-confidence
-# rule blocks with own-merit margin >= 1, while weak signals stay sub-threshold
-# (accumulation-only). Matches the waf-core production default.
-# Source of truth / rationale: ARCHITECTURE §7.
+# critical = 6 so a single high-confidence rule blocks on its own with a margin >= 1,
+# while weak signals stay below the threshold (they only count when they accumulate).
+# Matches the waf-core production default. Rationale: ARCHITECTURE §7.
 [waf.severity_scores]
 critical = 6
 error    = 4
 warning  = 3
 notice   = 2
 
-# Rate limiting L7 (on_connection). Token bucket per key.
-# NB: key = "client_ip" è la PEER socket addr; dietro un LB/CDN coincide con
-# l'IP del proxy → throttle collettivo. XFF + trusted-proxy è estensione nota (§8).
+# L7 rate limiting (on_connection). Token bucket per key.
+# key = "client_ip" is the client IP resolved by [network] below: behind a LB/CDN, set
+# trusted_proxies, or every client shares the proxy's IP (one collective bucket).
 [rate_limit]
 enabled          = true
 key              = "client_ip"
-requests         = 100        # token per finestra
+requests         = 100        # tokens per window
 window_seconds   = 60
-burst            = 100        # capacità bucket (default = requests)
-action           = "block"    # "block" -> 429 | "score" -> contributo allo score
-score            = 5          # punti se action = "score"
-max_tracked_keys = 100000     # cap memoria; sweep evince i bucket idle
+burst            = 100        # bucket capacity (default = requests)
+action           = "block"    # "block" -> 429 | "score" -> adds to the anomaly score
+score            = 5          # points when action = "score"
+max_tracked_keys = 100000     # memory cap; a sweep evicts idle buckets
 
-# Risoluzione SICURA dell'IP client (condivisa da rate limit, logging e futura
-# Geo/IP-reputation). L'IP risolto è derivato UNA volta e finisce in
-# ctx.client_ip. Fail-safe: con trusted_proxies vuoto l'header XFF è SEMPRE
-# ignorato e si usa la peer addr (un deploy non configurato non è spoofabile).
+# SAFE client-IP resolution (shared by rate limiting, logging and IP reputation). The resolved
+# IP is derived ONCE and stored in ctx.client_ip. Fail-safe: with trusted_proxies empty the XFF
+# header is ALWAYS ignored and the peer address is used (an unconfigured deploy cannot be spoofed).
 [network]
-trusted_proxies  = []               # CIDR dei TUOI proxy/LB/CDN, es. ["10.0.0.0/8","::1"]
+trusted_proxies  = []               # CIDRs of YOUR proxies/LBs/CDNs, e.g. ["10.0.0.0/8","::1"]
 client_ip_header = "X-Forwarded-For"
-trusted_hops     = 1                 # quanti hop fidarsi contando da DESTRA (mai il primo IP)
+trusted_hops     = 1                 # how many hops to trust, counting from the RIGHT (never the first IP)
 
 [limits]
 max_body_size    = 1048576   # 1 MiB
@@ -88,7 +86,7 @@ enabled = true
 [modules.ssrf]
 enabled = true
 
-# ── moduli detection Fase 10a/10b (firme inequivocabili per categoria) ──────────
+# ── signature modules (unambiguous signatures per attack category) ───────────────
 [modules.ldap]
 enabled = true
 
@@ -101,7 +99,7 @@ enabled = true
 [modules.ssti]
 enabled = true
 
-# Fingerprint di scanner/tool sul solo User-Agent (sqlmap/nuclei/… + domini OOB).
+# Scanner/tool fingerprints on the User-Agent only (sqlmap/nuclei/… + OOB domains).
 [modules.scanner]
 enabled = true
 
@@ -116,38 +114,38 @@ enabled = true
 [modules.header_injection]
 enabled = true
 
-# Validazione del FRAMING HTTP (CL/TE) — controllo strutturale, NON content-inspection.
-# Default true: bassissimo falso-positivo (scatta solo su framing illegale/ambiguo).
+# HTTP FRAMING validation (CL/TE) — a structural check, NOT content inspection.
+# Default true: very low false-positive rate (fires only on illegal/ambiguous framing).
 [modules.request_smuggling]
 enabled = true
 
-# Protezioni STRUTTURALI GraphQL (Fase 11) — come request_smuggling, NON content-inspection:
-# cap DoS/abuse sulla FORMA dell'operazione GraphQL (depth/alias/field/directive/batch) +
-# policy introspection, via parse lessicale. DEFAULT OFF: endpoint-specifico, i cap vanno
-# tarati per app. Ispeziona JSON `query`/GET `?query=` solo sui `paths`, e ogni body
-# `application/graphql`.
+# STRUCTURAL GraphQL protections — like request_smuggling, NOT content inspection: DoS/abuse caps
+# on the SHAPE of the GraphQL operation (depth/aliases/fields/directives/batch) plus an
+# introspection policy, via a lexical parse. DEFAULT OFF: endpoint-specific, the caps must be
+# tuned per app. Inspects JSON `query` / GET `?query=` only on `paths`, and every
+# `application/graphql` body.
 [modules.graphql]
 enabled             = false
 paths               = ["/graphql"]
-max_depth           = 15            # max nesting del selection-set (paren-aware)
-max_aliases         = 30            # cap alias-bomb
-max_fields          = 1000          # proxy di complessità (conteggio selezioni)
+max_depth           = 15            # max selection-set nesting (paren-aware)
+max_aliases         = 30            # alias-bomb cap
+max_fields          = 1000          # complexity proxy (number of selections)
 max_directives      = 50
-max_batch           = 10            # max operazioni in una richiesta batch
-block_introspection = false         # blocca __schema/__type → 403
+max_batch           = 10            # max operations in one batched request
+block_introspection = false         # block __schema/__type → 403
 
-# Protezioni STRUTTURALI gRPC — come graphql, NON content-inspection: il CONTENUTO dei campi
-# protobuf è ispezionato dai moduli normali via §6 (de-framing + estrazione leaf), questo modulo
-# applica cap DoS sulla FORMA del messaggio + policy compressi. DEFAULT OFF: endpoint-specifico,
-# cap da tarare. Identifica application/grpc*.
-# NB: gRPC gira su HTTP/2, che è SEMPRE servito (h2c in chiaro via auto::Builder, oppure h2 su TLS
-# se [tls] è attivo). TLS NON è richiesto dal modulo gRPC: i due flag sono indipendenti.
+# STRUCTURAL gRPC protections — like graphql, NOT content inspection: the CONTENT of protobuf
+# fields is inspected by the regular modules (de-framing + leaf extraction); this module applies
+# DoS caps on the SHAPE of the message plus a policy for compressed payloads. DEFAULT OFF:
+# endpoint-specific, caps to be tuned. Matches application/grpc*.
+# Note: gRPC runs over HTTP/2, which is ALWAYS served (h2c in plaintext, or h2 over TLS when
+# [tls] is on). The gRPC module does NOT require TLS: the two settings are independent.
 [modules.grpc]
 enabled           = false
-max_message_bytes = 4194304          # 4 MiB — cap dimensione totale payload ispezionabile
-max_fields        = 4096             # cap field-bomb
-max_depth         = 16               # cap depth-bomb (nesting sub-message)
-on_compressed     = "reject"         # payload compresso = opaco: "reject" (fail-closed) | "passthrough"
+max_message_bytes = 4194304          # 4 MiB — cap on the total inspectable payload size
+max_fields        = 4096             # field-bomb cap
+max_depth         = 16               # depth-bomb cap (sub-message nesting)
+on_compressed     = "reject"         # a compressed payload is opaque: "reject" (fail-closed) | "passthrough"
 
 [modules.crs]
 enabled = true
