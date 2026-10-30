@@ -1,0 +1,26 @@
+name: Feature request
+description: A concrete capability you need. For open-ended ideas, start in Discussions → Ideas.
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do and why the current behavior is not enough.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How it could work — config shape, API, UI. Rough is fine.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to implement this myself (see CONTRIBUTING.md; larger changes start with agreeing on the approach here).

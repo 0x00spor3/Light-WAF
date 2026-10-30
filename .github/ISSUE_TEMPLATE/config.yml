@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability or detection bypass
+    url: https://github.com/0x00spor3/Light-WAF/security/advisories/new
+    about: Report it privately (see SECURITY.md), never in a public issue.
+  - name: Question or help with a deployment
+    url: https://github.com/0x00spor3/Light-WAF/discussions/categories/q-a
+    about: Ask in Discussions → Q&A.
+  - name: Idea or design discussion
+    url: https://github.com/0x00spor3/Light-WAF/discussions/categories/ideas
+    about: Not sure it is a concrete feature yet? Start in Discussions → Ideas.

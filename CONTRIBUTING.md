@@ -10,6 +10,16 @@ are all welcome. Everyone taking part is expected to follow the
   level and mode, and the rule ids from the decision log.
 - **Larger changes**: open an issue first so we can agree on the approach — especially anything
   that touches a public trait, the config schema or the core/component boundary.
+- **Questions and ideas** go to [Discussions](https://github.com/0x00spor3/Light-WAF/discussions).
+
+## Where to start
+
+Issues labelled
+[`good first issue`](https://github.com/0x00spor3/Light-WAF/labels/good%20first%20issue) are
+small, self-contained and say which files to touch and how to test the change;
+[`help wanted`](https://github.com/0x00spor3/Light-WAF/labels/help%20wanted) are larger but
+scoped. Comment on the issue before you start so two people do not work on the same one, and ask
+there if anything is unclear.
 
 ## Repository layout
 
