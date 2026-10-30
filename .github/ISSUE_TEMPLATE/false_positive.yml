@@ -1,0 +1,44 @@
+name: False positive
+description: A legitimate request is blocked (or scored) by a detection rule.
+labels: ["false-positive", "detection", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks — false-positive reports are how the rules get better. Please **redact** anything
+        sensitive (tokens, cookies, personal data) but keep the shape of the part that triggers the rule.
+  - type: textarea
+    id: request
+    attributes:
+      label: The request
+      description: Method, path, the relevant headers and the body (or a minimal version that still triggers it).
+      render: http
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision log
+      description: The decision log line for this request — it lists the matched rule ids and the score.
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: paranoia
+    attributes:
+      label: Paranoia level and mode
+      description: e.g. "PL3, blocking" — from `[waf]` in your config.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Crate version or image tag (e.g. 1.0.2).
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What the application does with this input, if it helps judge the rule (e.g. "a code-snippet field").
