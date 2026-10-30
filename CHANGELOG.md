@@ -17,6 +17,11 @@ All notable changes to this project are documented here. The format follows
 - Operator: kube 0.99 → 4.2, k8s-openapi 0.24 → 0.28 (Kubernetes API 1.32 onward), schemars 1.
   The generated CRD now also bounds `paranoiaLevel` (≤ 255) and `backend.service.port` (≤ 65535),
   so the API server rejects out-of-range values. The kind E2E runs on kind 0.33 (Kubernetes 1.37).
+- The sample configs (`config.toml`, `config.compose.toml`, `examples/enterprise.toml`) are now
+  commented in English; keys and values are unchanged. Stale notes are corrected: rate limiting
+  uses the client IP resolved by `[network]`, and the optional modules survive a reload.
+- GitHub issue templates (bug, false positive, feature request), a pull-request template, and a
+  "Where to start" section in `CONTRIBUTING.md`.
 
 ### Security
 - `serde_yaml` and `unsafe-libyaml` (unmaintained, RUSTSEC-2024-0449) are gone: the operator and

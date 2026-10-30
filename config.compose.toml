@@ -7,11 +7,11 @@ listen = "0.0.0.0:8080"
 backend = "http://echo:80"
 
 [resilience]
-on_upstream_error   = "fail_closed"   # origin giù/timeout -> 502 (closed) | 503 (open, retryable)
-on_internal_error   = "fail_open"     # panic/bug di un modulo NON deve abbattere il sito
-on_config_error     = "fail_open"     # reload invalido (P3) -> tieni last-good config
-on_parser_limit     = "fail_closed"   # normalization fallita -> 400 (closed) | inoltra non-ispezionato (open)
-upstream_timeout_ms = 30000           # tetto round-trip upstream (no hang del worker)
+on_upstream_error   = "fail_closed"   # origin down/timeout -> 502 (closed) | 503 (open, retryable)
+on_internal_error   = "fail_open"     # a panic/bug in a module must NOT take the site down
+on_config_error     = "fail_open"     # invalid reload -> keep the last good config
+on_parser_limit     = "fail_closed"   # normalization failed -> 400 (closed) | forward uninspected (open)
+upstream_timeout_ms = 30000           # upstream round-trip cap (no hung workers)
 
 [waf]
 mode = "blocking"
@@ -51,7 +51,7 @@ enabled = true
 [modules.ssrf]
 enabled = true
 
-# ── moduli detection Fase 10a/10b (firme inequivocabili per categoria) ──────────
+# ── signature modules (unambiguous signatures per attack category) ───────────────
 [modules.ldap]
 enabled = true
 
@@ -64,7 +64,7 @@ enabled = true
 [modules.ssti]
 enabled = true
 
-# Fingerprint di scanner/tool sul solo User-Agent (sqlmap/nuclei/… + domini OOB).
+# Scanner/tool fingerprints on the User-Agent only (sqlmap/nuclei/… + OOB domains).
 [modules.scanner]
 enabled = true
 
@@ -79,8 +79,8 @@ enabled = true
 [modules.header_injection]
 enabled = true
 
-# Validazione del FRAMING HTTP (CL/TE) — controllo strutturale, NON content-inspection.
-# Default true: bassissimo falso-positivo (scatta solo su framing illegale/ambiguo).
+# HTTP FRAMING validation (CL/TE) — a structural check, NOT content inspection.
+# Default true: very low false-positive rate (fires only on illegal/ambiguous framing).
 [modules.request_smuggling]
 enabled = true
 
@@ -93,23 +93,23 @@ files = ["/etc/waf/rules/managed.conf"]
 [enterprise.crs_curated]
 enabled = true
 
-# ── Request Capture (enterprise) — cattura la richiesta COMPLETA dei denied ──────
-# Bufferizza method/path/headers/cookies/body delle richieste bloccate in un ring
-# bounded FUORI dal datapath e le spedisce sul canale laterale POST /ingest/captures
-# del control plane (host.docker.internal:9600), per il drill-down evento in dashboard.
-# Raw di default -> redigi i nomi sensibili qui sotto (il valore redatto NON lascia il
-# nodo; solo i NOMI sono riportati, per il banner UI). Il token bearer arriva da
-# WAF_CAPTURE_TOKEN (vedi docker-compose.node.yml), mai da questo file. La retention
-# (hard-delete) e' un concern del control plane ([controlplane.captures]).
+# ── Request Capture — captures the FULL request of denied requests ───────────────
+# Buffers method/path/headers/cookies/body of blocked requests in a bounded ring OUTSIDE the
+# datapath and ships them on the control plane's side channel POST /ingest/captures
+# (host.docker.internal:9600), for the event drill-down in the dashboard.
+# Raw by default -> redact sensitive names below (a redacted value never leaves the node; only
+# the NAMES are reported, for the UI banner). The bearer token comes from WAF_CAPTURE_TOKEN (see
+# docker-compose.node.yml), never from this file. Retention (hard delete) is the control plane's
+# concern ([controlplane.captures]).
 [enterprise.capture]
 enabled          = true
 controlplane_url = "http://host.docker.internal:9600"
 token_env        = "WAF_CAPTURE_TOKEN"
-max_body_bytes   = 65536      # body oltre soglia -> troncato + flaggato
+max_body_bytes   = 65536      # larger bodies -> truncated + flagged
 ring_capacity    = 1024
 ring_bytes       = 33554432   # 32 MiB
-ring_ttl_ms      = 5000       # TTL di una cattura non spedita prima dell'evict
-queue_capacity   = 256        # coda shipper: piena -> drop (mai backpressure sul datapath)
+ring_ttl_ms      = 5000       # TTL of an unshipped capture before eviction
+queue_capacity   = 256        # shipper queue: full -> drop (never backpressure on the datapath)
 
 [enterprise.capture.redaction]
 headers     = ["cookie", "authorization", "set-cookie"]
@@ -122,12 +122,12 @@ listen  = "0.0.0.0:9090"   # scrape GET http://127.0.0.1:9090/metrics
 #[rate_limit]
 #enabled          = true
 #key              = "client_ip"
-#requests         = 100        # token per finestra
+#requests         = 100        # tokens per window
 #window_seconds   = 60
-#burst            = 100        # capacità bucket (default = requests)
-#action           = "block"    # "block" -> 429 | "score" -> contributo allo score
-#score            = 5          # punti se action = "score"
-#max_tracked_keys = 100000     # cap memoria; sweep evince i bucket idle
+#burst            = 100        # bucket capacity (default = requests)
+#action           = "block"    # "block" -> 429 | "score" -> adds to the anomaly score
+#score            = 5          # points when action = "score"
+#max_tracked_keys = 100000     # memory cap; a sweep evicts idle buckets
 
 #[enterprise.api_schema]
 #enabled   = true
