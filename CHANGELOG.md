@@ -13,6 +13,15 @@ All notable changes to this project are documented here. The format follows
 - `osv-scanner.toml`: the three advisories that do not affect Light WAF (`rsa`, `crypto-bigint`,
   `block-buffer`, see 1.0.2) are ignored with their reasons, each until 2027-04-30.
 
+### Changed
+- Operator: kube 0.99 → 4.2, k8s-openapi 0.24 → 0.28 (Kubernetes API 1.32 onward), schemars 1.
+  The generated CRD now also bounds `paranoiaLevel` (≤ 255) and `backend.service.port` (≤ 65535),
+  so the API server rejects out-of-range values. The kind E2E runs on kind 0.33 (Kubernetes 1.37).
+
+### Security
+- `serde_yaml` and `unsafe-libyaml` (unmaintained, RUSTSEC-2024-0449) are gone: the operator and
+  kube now use the pure-Rust `serde-saphyr`. OSV-Scanner reports no advisories left.
+
 ### Removed
 - Build output that had been committed by mistake: the `target/` folders of the WASM test fixture
   and of the WASM plugin example. `.gitignore` now ignores `target/` at every level.

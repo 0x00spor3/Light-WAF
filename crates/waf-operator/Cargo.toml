@@ -15,19 +15,24 @@ publish = false
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
 serde = { workspace = true }
 serde_json = "1"
-serde_yaml = "0.9"
+# YAML for the CRD dump (`waf-operator crd`). The same pure-Rust serde-saphyr kube itself uses (it
+# replaced the unmaintained serde_yaml / unsafe-libyaml), so there is one YAML crate in the tree.
+serde-saphyr = "0.0.29"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = "2"
 futures = "0.3"
-schemars = "0.8"
-kube = { version = "0.99", default-features = false, features = [
+schemars = "1"
+# `ring`: the rustls crypto provider, like the rest of the workspace (no aws-lc-rs).
+kube = { version = "4.2", default-features = false, features = [
     "client",
     "runtime",
     "derive",
     "rustls-tls",
+    "ring",
 ] }
-k8s-openapi = { version = "0.24", features = ["v1_31"] }
+# The oldest Kubernetes API k8s-openapi 0.28 supports; newer clusters serve it too.
+k8s-openapi = { version = "0.28", features = ["v1_32"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
