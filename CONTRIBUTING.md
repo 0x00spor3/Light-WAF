@@ -81,6 +81,9 @@ npm run e2e        # builds the UI + a release control plane, then runs Playwrig
   request) to the `waf-corpus` cases and keep `cargo test -p waf-corpus --test validation` green:
   the corpus is what proves recall and the false-positive rate. Explain the paranoia level and
   severity you chose.
+- **New functionality comes with tests.** A pull request that adds a feature or fixes a bug also
+  adds tests for it to the automated suite (`cargo test`, or the Playwright E2E for the dashboard),
+  which CI runs on every pull request.
 - **Tests must bite.** A test should fail when the code path it protects is broken. Use traffic
   that actually reaches the path (the fast-path skips benign requests) and assertions that differ
   between the working and the broken behavior.

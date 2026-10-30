@@ -3,10 +3,11 @@
 #
 # ClusterFuzzLite / OSS-Fuzz build: compile every cargo-fuzz target in fuzz/ with the sanitizer
 # flags the builder sets, copy the binaries to $OUT, and ship each target's hand-picked seeds
-# (fuzz/seeds/<target>) as its seed corpus.
+# (fuzz/seeds/<target>) as its seed corpus. Optimized, but with debug assertions (`-a`): integer
+# overflow checks and `debug_assert!` invariants turn into findings instead of passing silently.
 
 cd "$SRC/light-waf/fuzz"
-cargo fuzz build -O
+cargo fuzz build -O -a
 
 release="target/x86_64-unknown-linux-gnu/release"
 for target in $(cargo fuzz list); do
