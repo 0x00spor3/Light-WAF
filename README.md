@@ -7,6 +7,7 @@
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/light-waf)](https://artifacthub.io/packages/search?repo=light-waf)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/light-waf-controlplane)](https://artifacthub.io/packages/search?repo=light-waf-controlplane)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/0x00spor3/Light-WAF/badge)](https://scorecard.dev/viewer/?uri=github.com/0x00spor3/Light-WAF)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16074/badge)](https://www.bestpractices.dev/projects/16074)
 
 A Web Application Firewall in **Rust**, running as a **reverse proxy** at Layer 7. It inspects
 every HTTP request, applies detection rules, accumulates a CRS-style **anomaly score**, and
