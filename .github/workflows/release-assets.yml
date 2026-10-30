@@ -137,7 +137,8 @@ jobs:
         run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
 
   # The SLSA generator is a reusable workflow that must be referenced by its release TAG, not a commit
-  # SHA: it verifies its own identity from that ref (Scorecard's pinning check knows this exception).
+  # SHA: it verifies its own identity from that ref. Scorecard's Pinned-Dependencies still counts it
+  # as unpinned (score 9); accepted, since the provenance is what takes Signed-Releases to 10.
   provenance:
     name: SLSA provenance
     needs: assets

@@ -71,7 +71,9 @@ LABEL org.opencontainers.image.title="waf-node-agent" \
 # symlinks (via the busybox multiplexer, which dispatches on argv[0]) give
 # /bin/sh, /bin/pidof, /bin/cat, /bin/kill without needing a package manager.
 COPY --from=busybox /bin/busybox /bin/busybox
-RUN ["/bin/busybox", "sh", "-c", "for a in sh pidof cat kill ln; do /bin/busybox ln -s /bin/busybox /bin/$a; done"]
+# One explicit `ln` per applet, not a `for` loop: Scorecard's shell parser misreads a loop inside
+# an exec-form RUN and reports the file's pinning results as incomplete.
+RUN ["/bin/busybox", "sh", "-c", "/bin/busybox ln -s /bin/busybox /bin/sh && /bin/busybox ln -s /bin/busybox /bin/pidof && /bin/busybox ln -s /bin/busybox /bin/cat && /bin/busybox ln -s /bin/busybox /bin/kill && /bin/busybox ln -s /bin/busybox /bin/ln"]
 
 # CA bundle (for an https control-plane URL) ships with distroless at
 # /etc/ssl/certs/ca-certificates.crt — no install needed.
