@@ -17,7 +17,7 @@ serde = { workspace = true }
 serde_json = "1"
 # YAML for the CRD dump (`waf-operator crd`). The same pure-Rust serde-saphyr kube itself uses (it
 # replaced the unmaintained serde_yaml / unsafe-libyaml), so there is one YAML crate in the tree.
-serde-saphyr = "0.0.29"
+serde-saphyr = "2.0.0"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = "2"
