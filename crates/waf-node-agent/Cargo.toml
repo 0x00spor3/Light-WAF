@@ -37,5 +37,5 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 waf-proxy = { workspace = true }
 waf-core = { workspace = true }
 waf-controlplane = { path = "../waf-controlplane" }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
 axum = "0.8"
