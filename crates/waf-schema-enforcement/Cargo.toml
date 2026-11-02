@@ -33,7 +33,7 @@ oas3 = "0.22"
 # The spec is navigated + normalized as raw JSON so JSON-Schema fragments go straight to `jsonschema`
 # (A3); serde_json is also the request-body parser for validation.
 serde_json = "1"
-jsonschema = { version = "0.47.0", default-features = false }
+jsonschema = { version = "0.60.1", default-features = false }
 
 [dev-dependencies]
 # The datapath bite-test runs the module through the REAL pipeline (blocks vs control).
