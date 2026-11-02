@@ -14,7 +14,7 @@ homepage.workspace = true
 [dependencies]
 # Pinned exactly to the version validated by the B3-0 probe (reentrant malloc + fuel +
 # StoreLimits memory cap). Bumping wasmi must re-run those load-bearing cases.
-wasmi = "=1.1.0"
+wasmi = "=2.0.0"
 waf-core = { workspace = true }
 tracing = "0.1"
 bytes = "1"
