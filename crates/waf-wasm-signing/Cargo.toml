@@ -18,7 +18,7 @@ categories = ["wasm", "cryptography"]
 waf-wasm = { workspace = true }
 waf-core = { workspace = true }
 # minisign / ed25519 detached-signature verification (§4-C, K2). Real, standard format.
-minisign = "0.7"
+minisign = "0.10"
 
 [dev-dependencies]
 # The datapath bite-test runs a verified plugin through the REAL pipeline.
