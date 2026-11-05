@@ -9,7 +9,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::types::Json;
 use time::OffsetDateTime;
 
-use crate::config::AlertRule;
+use crate::config::{AlertRule, GroupBy};
 use crate::error::{Error, Result};
 use crate::model::{
     Alert, CapturedRequest, Contribution, DecisionEvent, MetricRollup, NodeRuleStatus, RuleVersion,
@@ -426,25 +426,33 @@ impl Store {
     }
 
     /// Count denied events matching a rule's filters since `since`, grouped per the rule's
-    /// `group_by` (one `("", n)` row when ungrouped). The grouped column is a fixed literal from
-    /// the `GroupBy` enum — never user input — so inlining it in the SQL is injection-safe.
+    /// `group_by` (one `("", n)` row when ungrouped). One static query per `GroupBy` variant:
+    /// sqlx rejects runtime-built SQL, and the grouped column is never user input.
     pub async fn count_events_grouped(
         &self,
         rule: &AlertRule,
         since: OffsetDateTime,
     ) -> Result<Vec<(String, i64)>> {
-        let (select_gk, group_clause) = match rule.group_by.column() {
-            None => ("''::text".to_string(), String::new()),
-            Some(c) => (format!("COALESCE({c}, '')"), format!(" GROUP BY {c}")),
+        macro_rules! count_sql {
+            ($select_gk:literal, $group_clause:literal) => {
+                concat!(
+                    "SELECT ",
+                    $select_gk,
+                    " AS gk, COUNT(*)::bigint AS n FROM decision_events \
+                     WHERE ts >= $1 \
+                       AND ($2::text IS NULL OR decision = $2) \
+                       AND ($3::text IS NULL OR rule_id = $3) \
+                       AND ($4::text IS NULL OR client_ip = $4)",
+                    $group_clause
+                )
+            };
+        }
+        let sql = match rule.group_by {
+            GroupBy::None => count_sql!("''::text", ""),
+            GroupBy::ClientIp => count_sql!("COALESCE(client_ip, '')", " GROUP BY client_ip"),
+            GroupBy::RuleId => count_sql!("COALESCE(rule_id, '')", " GROUP BY rule_id"),
         };
-        let sql = format!(
-            "SELECT {select_gk} AS gk, COUNT(*)::bigint AS n FROM decision_events \
-             WHERE ts >= $1 \
-               AND ($2::text IS NULL OR decision = $2) \
-               AND ($3::text IS NULL OR rule_id = $3) \
-               AND ($4::text IS NULL OR client_ip = $4){group_clause}"
-        );
-        let rows = sqlx::query_as::<_, (String, i64)>(&sql)
+        let rows = sqlx::query_as::<_, (String, i64)>(sql)
             .bind(since)
             .bind(&rule.decision)
             .bind(&rule.rule_id)
