@@ -75,6 +75,7 @@ async fn run() -> waf_controlplane::Result<()> {
             store.clone(),
             config.alerts.clone(),
             config.alerting.webhook_url.clone(),
+            config.alerting.webhook_format,
             config.alerting.eval_interval_seconds,
             bus.clone(),
         ));

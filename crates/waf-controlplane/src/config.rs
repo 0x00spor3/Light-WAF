@@ -111,6 +111,17 @@ pub struct AlertRule {
     pub cooldown_seconds: u64,
 }
 
+/// The JSON body POSTed to the alert webhook. An unknown value fails config parsing at load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebhookFormat {
+    /// The [`Alert`](crate::model::Alert) as JSON.
+    #[default]
+    Generic,
+    /// `{"text": …}`, for Slack and Mattermost incoming webhooks.
+    Slack,
+}
+
 /// `[controlplane.alerting]` — the evaluator + delivery settings. Default OFF.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -118,13 +129,21 @@ pub struct AlertingConfig {
     pub enabled: bool,
     /// Seconds between evaluation cycles.
     pub eval_interval_seconds: u64,
-    /// Generic webhook to POST fired alerts to (JSON). Prefer the `WAF_CP_ALERT_WEBHOOK` env var.
+    /// Webhook to POST fired alerts to. Prefer the `WAF_CP_ALERT_WEBHOOK` env var: a Slack URL is
+    /// itself a credential.
     pub webhook_url: Option<String>,
+    /// The body format `webhook_url` expects.
+    pub webhook_format: WebhookFormat,
 }
 
 impl Default for AlertingConfig {
     fn default() -> Self {
-        Self { enabled: false, eval_interval_seconds: default_eval_interval(), webhook_url: None }
+        Self {
+            enabled: false,
+            eval_interval_seconds: default_eval_interval(),
+            webhook_url: None,
+            webhook_format: WebhookFormat::default(),
+        }
     }
 }
 
@@ -648,7 +667,20 @@ bootstrap_admin = "root"
         let cfg = ControlPlaneConfig::from_toml_str("[controlplane]\n").unwrap();
         assert!(!cfg.alerting.enabled);
         assert_eq!(cfg.alerting.eval_interval_seconds, 30);
+        assert_eq!(cfg.alerting.webhook_format, WebhookFormat::Generic);
         assert!(cfg.alerts.is_empty());
+    }
+
+    #[test]
+    fn webhook_format_parses_and_rejects_unknown_values() {
+        let parse = |format: &str| {
+            ControlPlaneConfig::from_toml_str(&format!(
+                "[controlplane]\n[controlplane.alerting]\nwebhook_format = \"{format}\"\n"
+            ))
+        };
+        assert_eq!(parse("generic").unwrap().alerting.webhook_format, WebhookFormat::Generic);
+        assert_eq!(parse("slack").unwrap().alerting.webhook_format, WebhookFormat::Slack);
+        assert!(parse("teams").is_err(), "an unknown format fails at load");
     }
 
     #[test]

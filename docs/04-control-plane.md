@@ -103,14 +103,19 @@ Manage views behind the bearer token.
 ## Alerting
 
 The alerting evaluator queries stored decision events on an interval and fires when a rule's
-per-group count crosses a threshold within a window. Fired alerts are recorded, delivered to a generic
+per-group count crosses a threshold within a window. Fired alerts are recorded, delivered to a
 webhook, and shown in the Alerts view. A cooldown prevents the same `(rule, group)` re-firing too soon.
+
+`webhook_format` picks the body: `generic` (the default) posts the alert as JSON, `slack` posts the
+`{"text": …}` that Slack and Mattermost incoming webhooks expect. A Slack webhook URL is a credential,
+so prefer the `WAF_CP_ALERT_WEBHOOK` env var to the file.
 
 ```toml
 [controlplane.alerting]
 enabled               = true
 eval_interval_seconds = 30
 webhook_url           = "https://hooks.slack.com/services/…"   # or env WAF_CP_ALERT_WEBHOOK
+webhook_format        = "slack"                                # generic | slack
 
 # >= 20 blocks from one client IP within 60s = a per-IP burst = attack signature
 [[controlplane.alerts]]

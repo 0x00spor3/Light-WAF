@@ -14,20 +14,21 @@ use std::time::Duration;
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
+use serde_json::Value;
 use time::OffsetDateTime;
-use waf_controlplane::config::{AlertRule, GroupBy};
+use waf_controlplane::config::{AlertRule, GroupBy, WebhookFormat};
 use waf_controlplane::model::{Alert, DecisionEvent};
 use waf_controlplane::{evaluate_once, Store};
 
-/// Start an axum receiver that captures every POSTed `Alert` into a shared vec. Returns its addr.
-async fn start_webhook_receiver() -> (SocketAddr, Arc<Mutex<Vec<Alert>>>) {
-    let received: Arc<Mutex<Vec<Alert>>> = Arc::new(Mutex::new(Vec::new()));
+/// Start an axum receiver that captures every POSTed JSON body into a shared vec. Returns its addr.
+async fn start_webhook_receiver() -> (SocketAddr, Arc<Mutex<Vec<Value>>>) {
+    let received: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let state = Arc::clone(&received);
     let app = Router::new()
         .route(
             "/hook",
-            post(|State(rx): State<Arc<Mutex<Vec<Alert>>>>, Json(a): Json<Alert>| async move {
-                rx.lock().unwrap().push(a);
+            post(|State(rx): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+                rx.lock().unwrap().push(body);
                 "ok"
             }),
         )
@@ -56,11 +57,12 @@ fn blocked_event(request_id: &str, rule_id: &str, client_ip: &str) -> DecisionEv
     }
 }
 
-#[tokio::test]
-async fn alert_fires_and_delivers_webhook_env_gated() {
+/// 3 blocks from one IP against a threshold-3 rule, one evaluation pass with the webhook in
+/// `format`. Returns the store, the rule's unique name and the captured webhook bodies.
+async fn fire_one_alert(format: WebhookFormat, tag: &str) -> Option<(Store, String, Vec<Value>)> {
     let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
         eprintln!("skipping: WAF_CP_DATABASE_URL not set");
-        return;
+        return None;
     };
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -69,11 +71,11 @@ async fn alert_fires_and_delivers_webhook_env_gated() {
 
     // Unique rule_id + name isolate this run in a shared DB. 3 blocks from one IP → threshold 3.
     let nanos = OffsetDateTime::now_utc().unix_timestamp_nanos();
-    let uniq_rule_id = format!("whrule-{nanos}");
-    let uniq_name = format!("whtest-{nanos}");
+    let uniq_rule_id = format!("{tag}rule-{nanos}");
+    let uniq_name = format!("{tag}test-{nanos}");
     for i in 0..3 {
         store
-            .insert_decision_event(&blocked_event(&format!("wh-{nanos}-{i}"), &uniq_rule_id, "6.6.6.6"))
+            .insert_decision_event(&blocked_event(&format!("{tag}-{nanos}-{i}"), &uniq_rule_id, "6.6.6.6"))
             .await
             .expect("insert");
     }
@@ -96,7 +98,7 @@ async fn alert_fires_and_delivers_webhook_env_gated() {
 
     // One evaluation pass with the webhook configured.
     let bus = waf_controlplane::EventBus::new();
-    evaluate_once(&store, std::slice::from_ref(&rule), Some(&webhook), Some(&client), &bus).await;
+    evaluate_once(&store, std::slice::from_ref(&rule), Some(&webhook), format, Some(&client), &bus).await;
 
     // Give the async POST a moment to reach the receiver.
     for _ in 0..50 {
@@ -105,6 +107,15 @@ async fn alert_fires_and_delivers_webhook_env_gated() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    let bodies = received.lock().unwrap().clone();
+    Some((store, uniq_name, bodies))
+}
+
+#[tokio::test]
+async fn alert_fires_and_delivers_webhook_env_gated() {
+    let Some((store, uniq_name, bodies)) = fire_one_alert(WebhookFormat::Generic, "wh").await else {
+        return;
+    };
 
     // Stored AND delivered, with the right group + value.
     let stored = store.recent_alerts(500).await.unwrap();
@@ -112,9 +123,21 @@ async fn alert_fires_and_delivers_webhook_env_gated() {
     assert_eq!(sa.group_key, "6.6.6.6");
     assert_eq!(sa.value, 3);
 
-    let got = received.lock().unwrap();
+    let got: Vec<Alert> =
+        bodies.into_iter().map(|b| serde_json::from_value(b).expect("generic body is an Alert")).collect();
     let wa = got.iter().find(|a| a.rule_name == uniq_name).expect("alert delivered to webhook");
     assert_eq!(wa.group_key, "6.6.6.6");
     assert_eq!(wa.value, 3);
     assert_eq!(wa.severity, "critical");
+}
+
+#[tokio::test]
+async fn alert_delivers_slack_text_env_gated() {
+    let Some((_store, uniq_name, bodies)) = fire_one_alert(WebhookFormat::Slack, "sl").await else {
+        return;
+    };
+
+    assert_eq!(bodies.len(), 1, "one alert, one POST: {bodies:?}");
+    let want = format!("[critical] {uniq_name}: 3 events in 3600s (threshold 3), client_ip=6.6.6.6");
+    assert_eq!(bodies[0], serde_json::json!({ "text": want }));
 }

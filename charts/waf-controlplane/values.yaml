@@ -33,6 +33,8 @@ config:
   alerting:
     enabled: true
     evalIntervalSeconds: 5
+    # The body POSTed to alertWebhook: generic (JSON alert) or slack (also Mattermost).
+    webhookFormat: generic
   alerts:
     - name: block-burst-per-ip
       decision: blocked
@@ -92,7 +94,7 @@ secrets:
   bootstrapAdminPassword: ""
   # oidcClientSecret: only if config.governance.oidc.enabled.
   oidcClientSecret: ""
-  # alertWebhook: optional generic webhook URL for fired alerts.
+  # alertWebhook: optional webhook URL for fired alerts (see config.alerting.webhookFormat).
   alertWebhook: ""
 
 # ── Database ──────────────────────────────────────────────────────────────────
