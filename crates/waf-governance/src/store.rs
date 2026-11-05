@@ -403,24 +403,30 @@ fn row_to_audit(r: AuditRow) -> AuditRecord {
     AuditRecord { seq, ts, actor, action, target, details, prev_hash, hash, signature }
 }
 
-const AUDIT_COLS: &str = "seq, ts, actor, action, target, details, prev_hash, hash, signature";
+/// A `SELECT` of every audit column, followed by `$tail`. A macro rather than a `format!`, so the
+/// query stays a `&'static str`: sqlx rejects runtime-built SQL.
+macro_rules! audit_select {
+    ($tail:literal) => {
+        concat!(
+            "SELECT seq, ts, actor, action, target, details, prev_hash, hash, signature FROM gov_audit_log ",
+            $tail
+        )
+    };
+}
 
 /// The `limit` most recent audit records, newest first (for display).
 pub async fn recent_audit(pool: &PgPool, limit: i64) -> Result<Vec<AuditRecord>> {
-    let rows: Vec<AuditRow> =
-        sqlx::query_as(&format!("SELECT {AUDIT_COLS} FROM gov_audit_log ORDER BY seq DESC LIMIT $1"))
-            .bind(limit)
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<AuditRow> = sqlx::query_as(audit_select!("ORDER BY seq DESC LIMIT $1"))
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
     Ok(rows.into_iter().map(row_to_audit).collect())
 }
 
 /// The full audit log ordered by ascending `seq` (for chain verification).
 pub async fn all_audit_ordered(pool: &PgPool) -> Result<Vec<AuditRecord>> {
     let rows: Vec<AuditRow> =
-        sqlx::query_as(&format!("SELECT {AUDIT_COLS} FROM gov_audit_log ORDER BY seq ASC"))
-            .fetch_all(pool)
-            .await?;
+        sqlx::query_as(audit_select!("ORDER BY seq ASC")).fetch_all(pool).await?;
     Ok(rows.into_iter().map(row_to_audit).collect())
 }
 
@@ -431,26 +437,24 @@ pub async fn audit_between(
     from: OffsetDateTime,
     to: OffsetDateTime,
 ) -> Result<Vec<AuditRecord>> {
-    let rows: Vec<AuditRow> = sqlx::query_as(&format!(
-        "SELECT {AUDIT_COLS} FROM gov_audit_log WHERE ts >= $1 AND ts <= $2 ORDER BY seq ASC"
-    ))
-    .bind(from)
-    .bind(to)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<AuditRow> =
+        sqlx::query_as(audit_select!("WHERE ts >= $1 AND ts <= $2 ORDER BY seq ASC"))
+            .bind(from)
+            .bind(to)
+            .fetch_all(pool)
+            .await?;
     Ok(rows.into_iter().map(row_to_audit).collect())
 }
 
 /// Audit records with `seq > after`, ascending, capped at `limit` — one SIEM export batch (§9). The
 /// cursor is the `seq`.
 pub async fn audit_since(pool: &PgPool, after: i64, limit: i64) -> Result<Vec<AuditRecord>> {
-    let rows: Vec<AuditRow> = sqlx::query_as(&format!(
-        "SELECT {AUDIT_COLS} FROM gov_audit_log WHERE seq > $1 ORDER BY seq LIMIT $2"
-    ))
-    .bind(after)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<AuditRow> =
+        sqlx::query_as(audit_select!("WHERE seq > $1 ORDER BY seq LIMIT $2"))
+            .bind(after)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
     Ok(rows.into_iter().map(row_to_audit).collect())
 }
 

@@ -18,7 +18,7 @@ serde_json = "1"
 time = { version = "0.3", features = ["serde-well-known"] }
 thiserror = "2"
 # Same async Postgres line as the control plane (pure-Rust, runtime queries → builds with no DB).
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "postgres",
     "time",

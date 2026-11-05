@@ -30,7 +30,7 @@ thiserror = "2"
 # so `cargo build` needs NO database; only the env-gated integration tests need a live Postgres.
 # `migrate` runs the embedded `migrations/` at startup; `json` maps the JSONB contributions column;
 # `time` maps TIMESTAMPTZ. No TLS backend in v1 (local/loopback Postgres); production TLS = follow-on.
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "postgres",
     "migrate",
