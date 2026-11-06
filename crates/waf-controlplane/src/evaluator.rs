@@ -248,7 +248,7 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::new();
         let request =
-            webhook_request(&client, "http://hook.test/", format, alert, rule).build().unwrap();
+            webhook_request(&client, "https://hook.test/", format, alert, rule).build().unwrap();
         serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap()
     }
 
