@@ -192,14 +192,16 @@ impl SiemStream {
     }
 }
 
-/// The wire format a destination expects (§9). v1 ships only ECS-like NDJSON; CEF/LEEF/syslog and
-/// vendor adapters are follow-on variants over the SAME normalized event (they never touch the forwarder).
+/// The wire format a destination expects (§9). LEEF and vendor adapters are follow-on variants over
+/// the SAME normalized event (they never touch the forwarder).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SiemFormat {
     /// Versioned, ECS-like JSON, one event per line (`application/x-ndjson`).
     #[default]
     Ecs,
+    /// Common Event Format, one event per line (`text/plain`), with no syslog prefix.
+    Cef,
 }
 
 fn default_siem_streams() -> Vec<SiemStream> {
@@ -693,6 +695,7 @@ streams = ["decisions", "audit"]
 [[controlplane.siem.destinations]]
 name = "elastic"
 endpoint = "http://elastic:9200/waf/_doc"
+format = "cef"
 "#;
         let cfg = ControlPlaneConfig::from_toml_str(toml).unwrap();
         assert!(cfg.siem.enabled);
@@ -701,6 +704,7 @@ endpoint = "http://elastic:9200/waf/_doc"
         assert_eq!(cfg.siem.destinations[0].name, "splunk");
         assert_eq!(cfg.siem.destinations[0].format, SiemFormat::Ecs);
         assert_eq!(cfg.siem.destinations[0].streams, vec![SiemStream::Decisions, SiemStream::Audit]);
+        assert_eq!(cfg.siem.destinations[1].format, SiemFormat::Cef);
         // Second destination defaults to all three streams.
         assert_eq!(cfg.siem.destinations[1].streams, default_siem_streams());
         cfg.validate().unwrap();
@@ -720,6 +724,9 @@ endpoint = "http://elastic:9200/waf/_doc"
         // Unknown stream → deserialize error.
         let bad_stream = "[controlplane]\n[[controlplane.siem.destinations]]\nname=\"s\"\nendpoint=\"http://a\"\nstreams=[\"bogus\"]\n";
         assert!(ControlPlaneConfig::from_toml_str(bad_stream).is_err());
+        // Unknown format → deserialize error.
+        let bad_format = "[controlplane]\n[[controlplane.siem.destinations]]\nname=\"s\"\nendpoint=\"http://a\"\nformat=\"leef\"\n";
+        assert!(ControlPlaneConfig::from_toml_str(bad_format).is_err());
     }
 
     #[test]

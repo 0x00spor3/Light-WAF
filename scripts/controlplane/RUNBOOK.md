@@ -572,8 +572,8 @@ dedicated `auditor` role, separate per-framework reports, scheduled/emailed repo
 ## L. SIEM export (§9)
 
 A background **forwarder** PUSHes the stored events (denied WAF verdicts + the signed audit log + fired
-alerts) to configured SIEM sinks, normalized into a **versioned, ECS-like** event (NDJSON over HTTP).
-**Read-only, zero-datapath** (it reads the control-plane stores; the WAF is unaware). The raw OPEN logs
+alerts) to configured SIEM sinks, normalized into a **versioned, ECS-like** event and sent over HTTP as
+NDJSON or CEF. **Read-only, zero-datapath** (it reads the control-plane stores; the WAF is unaware). The raw OPEN logs
 are already shippable via a log shipper (§C) — the SIEM connector adds *normalization + correlation + the
 signed audit stream + delivery reliability*.
 
@@ -596,7 +596,7 @@ name = "splunk"
 endpoint = "https://splunk:8088/services/collector/event"
 # The Authorization header VALUE. Prefer the env var WAF_CP_SIEM_AUTH_SPLUNK over the file.
 # auth_header = "Splunk <hec-token>"     # Elastic: "ApiKey <key>"
-format = "ecs"                      # v1: ecs (NDJSON). cef/leef/syslog = follow-on
+format = "ecs"                      # ecs (NDJSON, the default) | cef (see "CEF output" below)
 streams = ["decisions", "audit", "alerts"]
 
 [[controlplane.siem.destinations]]
@@ -626,6 +626,77 @@ cargo run -p waf-controlplane -- controlplane.toml       # boot logs "siem expor
 ECS field names where the mapping is obvious; the WAF domain lives under `waf.*`. The schema carries its
 own `version` — we promise OUR schema, not conformance to an external one. Audit events add
 `waf.audit.{seq,hash,signature}`; alert events add `waf.alert.{rule,group,value,threshold,severity}`.
+`source.ip` is present only when the value is an IP address, so an alert grouped by `rule_id` or by
+nothing has no `source`; its group stays in `waf.alert.group`.
+
+### CEF output
+
+`format = "cef"` sends the same events as Common Event Format, one per line, as `text/plain`:
+
+```text
+CEF:0|Light WAF|waf|1.0.2|sqli-union|Request blocked|9|externalId=waf-decision-42 rt=1700000000000 act=blocked cat=network,intrusion_detection outcome=failure src=203.0.113.7 requestMethod=GET request=/x msg=anomaly score exceeded dvchost=edge-1 cn1=6 cn1Label=score cs1=sqli:sqli-union:6 cs1Label=contributions
+```
+
+**The output is HTTP, and SIEMs take CEF over syslog**, so a collector goes in between. ArcSight, QRadar
+and Sentinel (a Linux forwarder with the Azure Monitor Agent) all read it from a syslog listener. A
+[Vector](https://vector.dev) pipeline that takes the POST, adds the syslog prefix and forwards it:
+
+```yaml
+sources:
+  waf_cef:
+    type: http_server
+    address: 0.0.0.0:8686
+    framing: { method: newline_delimited }
+    decoding: { codec: bytes }
+
+transforms:
+  waf_syslog:
+    type: remap
+    inputs: [waf_cef]
+    source: |
+      .message = "<134>" + format_timestamp!(now(), "%b %e %H:%M:%S") + " lightwaf " + string!(.message)
+
+sinks:
+  siem_syslog:
+    type: socket
+    inputs: [waf_syslog]
+    address: siem-forwarder.internal:514
+    mode: tcp
+    encoding: { codec: text }
+    framing: { method: newline_delimited }
+```
+
+```toml
+[[controlplane.siem.destinations]]
+name = "arcsight"
+endpoint = "http://vector.internal:8686/"
+format = "cef"
+```
+
+This pipeline was tested end to end with Vector 0.46 and its `parse_cef`, for all three streams, but not
+against the SIEM products themselves. Two things to keep in mind:
+
+- The `2xx` that advances the cursor now comes from the collector. Delivery past it depends on the
+  collector's own buffering, so configure that to match what you need.
+- The listener above has no authentication: keep it on a private network, or enable its `auth` option.
+
+| Field | Decisions | Alerts | Audit |
+|---|---|---|---|
+| Signature ID | rule id, else `decision-<action>` | `alert-<rule>` | `audit-<action>` |
+| Name | `Request blocked` / `Request rejected` | `Alert fired` | `Audit event` |
+| Severity | highest contribution | the rule's `severity` | `3` |
+| `cn1` | score | value | audit sequence |
+| `cn2` | | threshold | |
+| `cs1` | contributions (`module:rule:points`) | group | audit hash |
+| `cs2` / `cs3` | | | signature / previous hash |
+
+Each custom field names itself in its `cnNLabel` / `csNLabel` pair. Severity maps `critical`=9, `error`=7,
+`warning`=5, `notice`=3; anything else, or no severity at all, is `0` (Unknown). `externalId` is the stable
+`event.id` to dedup on. `src` is present only when the value is an IP address. `rt` is epoch milliseconds.
+
+Values are escaped per the CEF standard and clipped to its limits (`msg` and `request` to 1023 characters,
+`act` to 63, `dvchost` to 100). Newlines in a value are encoded as `\n` / `\r`, so a client-supplied path
+cannot start a new event.
 
 ### Test against a mock sink + read the status
 
@@ -642,11 +713,11 @@ retrying from the cursor, so nothing is lost until it exceeds retention.
 
 ```sh
 export WAF_CP_DATABASE_URL=postgres://postgres:pw@localhost:5433/postgres
-cargo test -p waf-controlplane --lib siem            # pure: event mapping + NDJSON framing
-cargo test -p waf-controlplane --test siem           # e2e: at-least-once (fail → cursor held) + 3 streams + status API
+cargo test -p waf-controlplane --lib siem            # pure: event mapping + NDJSON and CEF framing + CEF escaping
+cargo test -p waf-controlplane --test siem           # e2e: at-least-once (fail → cursor held) + CEF + 3 streams + status API
 ```
 
-Follow-on: CEF/LEEF/syslog formatters (+ syslog transport) and vendor adapters (Splunk HEC envelope,
+Follow-on: a LEEF formatter, a native syslog transport and vendor adapters (Splunk HEC envelope,
 Elastic `_bulk`) as variants over the SAME event; a control-plane-native Prometheus `/metrics`
 (`siem_forwarder_lag`); TLS client certs to the sink; a per-event dead-letter queue; export filters;
 OTLP; a SIEM status UI.

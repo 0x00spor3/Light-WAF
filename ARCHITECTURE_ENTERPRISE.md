@@ -661,12 +661,12 @@ The component audit log is **distinct** from the core decision log: the core log
 > stable `event.id` `waf-<stream>-<id>`). **Backpressure = Postgres** (bounded by
 > `retention_days`, no in-memory queues); the **lag** (`head - cursor`) is the key operational
 > signal, exposed by `GET /api/siem/status` + logs. **Formatter abstracted from day one**
-> (`SiemFormatter`; v1 = `EcsNdjsonFormatter`) → CEF/LEEF/syslog + vendor adapters = future
+> (`SiemFormatter`: `EcsNdjsonFormatter`, `CefFormatter`) → LEEF + vendor adapters = future
 > variants WITHOUT touching the forwarder. Config `[controlplane.siem]` (destinations {endpoint,
 > auth_header [env `WAF_CP_SIEM_AUTH_<NAME>`], format, streams} + batch + flush), default OFF.
 > Migration `0005_siem` (`siem_cursors`). Proven end to end (at-least-once: failure → cursor held →
 > recovery → redelivery; 3 normalized streams + status API). Runbook §L. **Follow-ons**:
-> CEF/LEEF/syslog + vendor adapters, a native control-plane `/metrics` (`siem_forwarder_lag`), TLS
+> LEEF, a native syslog transport + vendor adapters, a native control-plane `/metrics` (`siem_forwarder_lag`), TLS
 > client certificates, a dead-letter queue, filters, OTLP, a SIEM UI.
 
 - **SIEM connectors**: export of events (the core decision log + the component audit log) to

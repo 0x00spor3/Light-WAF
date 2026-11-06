@@ -185,8 +185,8 @@ broker path cannot serve, and only via `samael` — never a hand-rolled implemen
   NDJSON event (ECS field names where obvious + a `waf.*` namespace). Delivery is at-least-once:
   a `(destination, stream)` cursor advances only on a whole-batch 2xx, so a sink being down loses
   nothing (the SIEM dedups on the stable `event.id`); the lag is exposed by
-  `GET /api/siem/status`. The formatter is an abstraction (`SiemFormatter`) so CEF/LEEF/syslog
-  are future variants. Config `[controlplane.siem]`, default off.
+  `GET /api/siem/status`. The formatter is an abstraction (`SiemFormatter`) with ECS-like NDJSON
+  and CEF variants. Config `[controlplane.siem]`, default off.
 - **Request capture** (`waf-capture`): buffers full denied requests off-datapath and ships them
   to the control plane for the event drill-down; opt-in, with redaction, retention and RBAC.
 - **Kubernetes**: Helm charts for the data plane and the control plane, and an operator
