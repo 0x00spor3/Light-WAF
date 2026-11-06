@@ -36,6 +36,7 @@ scrape_interval_seconds = 15
 # enabled = true
 # eval_interval_seconds = 30
 # webhook_url = "https://hooks.slack.com/services/..."   # or env WAF_CP_ALERT_WEBHOOK
+# webhook_format = "slack"                               # generic (default) | slack (also Mattermost)
 
 # One alert rule: >= 20 blocks from a single client IP within 60s (per-IP burst = attack signature).
 # [[controlplane.alerts]]

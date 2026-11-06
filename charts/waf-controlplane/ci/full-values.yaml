@@ -17,6 +17,7 @@ config:
   alerting:
     enabled: true
     evalIntervalSeconds: 10
+    webhookFormat: slack
   governance:
     enabled: true
     bootstrapAdmin: admin

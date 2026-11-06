@@ -24,6 +24,7 @@ data:
     [controlplane.alerting]
     enabled = {{ .Values.config.alerting.enabled }}
     eval_interval_seconds = {{ .Values.config.alerting.evalIntervalSeconds | int64 }}
+    webhook_format = {{ .Values.config.alerting.webhookFormat | quote }}
 
     {{- range .Values.config.alerts }}
 

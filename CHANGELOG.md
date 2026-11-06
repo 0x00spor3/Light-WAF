@@ -37,6 +37,9 @@ All notable changes to this project are documented here. The format follows
 ### Security
 - `serde_yaml` and `unsafe-libyaml` (unmaintained, RUSTSEC-2024-0449) are gone: the operator and
   kube now use the pure-Rust `serde-saphyr`. OSV-Scanner reports no advisories left.
+- A failed alert webhook delivery no longer writes the webhook URL to the control-plane log. A Slack
+  URL is a credential: if you run a webhook with a secret in its URL, check your logs and rotate it
+  if it appears there.
 
 ### Removed
 - Build output that had been committed by mistake: the `target/` folders of the WASM test fixture

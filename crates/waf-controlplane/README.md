@@ -18,7 +18,7 @@ dashboards and **blocked-request drill-down**.
 Implemented: config, data model + Postgres store (Phase 1); ingestion — a `/metrics` scraper and a
 decision-log ingest endpoint with request/decision correlation (Phase 2); the read API (Phase 3);
 end-to-end bite-test against a real WAF node (Phase 4); alerting — config rules → background evaluator
-→ fired-record + cooldown → generic webhook (v2); and the **web dashboard** (§7) — a React + Vite +
+→ fired-record + cooldown → webhook, generic or Slack-compatible (v2); and the **web dashboard** (§7) — a React + Vite +
 Recharts SPA under `ui/`, with an `GET /api/decisions/series` time-series endpoint and a `GET
 /api/version` drift check.
 
