@@ -12,6 +12,9 @@ All notable changes to this project are documented here. The format follows
   asset, made by the official SLSA generator in the release-assets workflow.
 - `osv-scanner.toml`: the three advisories that do not affect Light WAF (`rsa`, `crypto-bigint`,
   `block-buffer`, see 1.0.2) are ignored with their reasons, each until 2027-04-30.
+- `[controlplane.alerting].webhook_format = "slack"`: fired alerts are POSTed as the `{"text": …}`
+  that Slack and Mattermost incoming webhooks expect. The default, `generic`, is unchanged. The Helm
+  chart exposes it as `config.alerting.webhookFormat`.
 
 ### Changed
 - Operator: kube 0.99 → 4.2, k8s-openapi 0.24 → 0.28 (Kubernetes API 1.32 onward), schemars 1.
@@ -26,6 +29,9 @@ All notable changes to this project are documented here. The format follows
 ### Security
 - `serde_yaml` and `unsafe-libyaml` (unmaintained, RUSTSEC-2024-0449) are gone: the operator and
   kube now use the pure-Rust `serde-saphyr`. OSV-Scanner reports no advisories left.
+- A failed alert webhook delivery no longer writes the webhook URL to the control-plane log. A Slack
+  URL is a credential: if you run a webhook with a secret in its URL, check your logs and rotate it
+  if it appears there.
 
 ### Removed
 - Build output that had been committed by mistake: the `target/` folders of the WASM test fixture
