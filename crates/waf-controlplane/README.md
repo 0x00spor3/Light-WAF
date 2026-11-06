@@ -123,7 +123,7 @@ Run with `npm run e2e` (needs `WAF_CP_DATABASE_URL` + a fresh Postgres). See RUN
 ## SIEM export (§9)
 
 A background forwarder PUSHes the stored events (denied verdicts + the signed audit log + alerts) to
-configured SIEM sinks, normalized into a versioned, ECS-like NDJSON event. Delivery is **at-least-once**
+configured SIEM sinks, normalized into a versioned, ECS-like event and sent as NDJSON or CEF. Delivery is **at-least-once**
 (a `(destination, stream)` cursor advances only on a whole-batch 2xx ack; the SIEM dedups on the stable
 `event.id`); backpressure is bounded by Postgres retention, and the lag is exposed by `GET /api/siem/status`.
 Configure under `[controlplane.siem]` (default off), secrets via `WAF_CP_SIEM_AUTH_<NAME>`. See RUNBOOK §L.

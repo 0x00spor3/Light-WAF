@@ -91,7 +91,7 @@ scrape_interval_seconds = 15
 # name = "splunk"
 # endpoint = "https://splunk:8088/services/collector/event"
 # auth_header = "Splunk <hec-token>"      # or env WAF_CP_SIEM_AUTH_SPLUNK; Elastic: "ApiKey <key>"
-# format = "ecs"                          # v1: ecs (NDJSON). cef/leef/syslog = follow-on
+# format = "ecs"                          # ecs (NDJSON, default) | cef (needs a syslog collector, RUNBOOK §L)
 # streams = ["decisions", "audit", "alerts"]
 
 

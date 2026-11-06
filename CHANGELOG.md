@@ -15,6 +15,9 @@ All notable changes to this project are documented here. The format follows
 - `[controlplane.alerting].webhook_format = "slack"`: fired alerts are POSTed as the `{"text": …}`
   that Slack and Mattermost incoming webhooks expect. The default, `generic`, is unchanged. The Helm
   chart exposes it as `config.alerting.webhookFormat`.
+- SIEM export: `format = "cef"` sends decisions, audit records and alerts as Common Event Format over
+  HTTP. SIEMs take CEF over syslog, so it needs a collector in between; the runbook (§L) has a tested
+  Vector pipeline and the field mapping.
 
 ### Changed
 - Operator: kube 0.99 → 4.2, k8s-openapi 0.24 → 0.28 (Kubernetes API 1.32 onward), schemars 1.
@@ -25,6 +28,11 @@ All notable changes to this project are documented here. The format follows
   uses the client IP resolved by `[network]`, and the optional modules survive a reload.
 - GitHub issue templates (bug, false positive, feature request), a pull-request template, and a
   "Where to start" section in `CONTRIBUTING.md`.
+
+### Fixed
+- SIEM export: `source.ip` now holds only IP addresses. An alert with `group_by = "rule_id"` used to
+  export the rule id there; the group stays in `waf.alert.group`. Check any SIEM rule that read
+  `source.ip` on those alerts.
 
 ### Security
 - `serde_yaml` and `unsafe-libyaml` (unmaintained, RUSTSEC-2024-0449) are gone: the operator and

@@ -142,6 +142,55 @@ async fn siem_forward_at_least_once_env_gated() {
     // The Authorization header path was exercised (the receiver 200'd the authenticated POSTs).
 }
 
+/// The forwarder ships CEF unchanged: the same cursor, one line per event, a hostile path contained.
+#[tokio::test]
+async fn siem_forward_cef_env_gated() {
+    let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+        eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+        return;
+    };
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let store = Store::connect(&url).await.expect("connect");
+    store.migrate().await.expect("migrate");
+
+    let dest = format!("cef-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+    let start = store.decisions_max_id().await.expect("max");
+    store.siem_set_cursor(&dest, "decisions", start).await.expect("seed cursor");
+
+    // A unique rule id: the sibling tests write decisions to the same DB concurrently.
+    let mut hostile = sample(&format!("{dest}-0"), &dest);
+    hostile.path = Some("/a\nCEF:0|forged|waf|1|x|y|10|src=6.6.6.6".into());
+    store.insert_decision_event(&hostile).await.expect("insert");
+    store.insert_decision_event(&sample(&format!("{dest}-1"), &dest)).await.expect("insert");
+
+    let recv = Receiver { bodies: Arc::new(Mutex::new(Vec::new())), fail: Arc::new(AtomicBool::new(false)) };
+    let addr = start_receiver(recv.clone()).await;
+    let config = SiemConfig {
+        enabled: true,
+        flush_interval_seconds: 1,
+        batch_size: 1000,
+        destinations: vec![SiemDestination {
+            name: dest.clone(),
+            endpoint: format!("http://{addr}/"),
+            auth_header: None,
+            format: SiemFormat::Cef,
+            streams: vec![SiemStream::Decisions],
+        }],
+    };
+    SiemForwarder::new(store.clone(), config).forward_once().await;
+
+    assert!(store.siem_get_cursor(&dest, "decisions").await.expect("cursor") > start);
+    let text = recv.bodies.lock().unwrap().concat();
+    // Every line, ours or a sibling's, is a whole event: a split one would fail here.
+    assert!(
+        text.lines().all(|l| l.starts_with("CEF:0|Light WAF|waf|") && l.contains("externalId=waf-decision-")),
+        "one event per line:\n{text}"
+    );
+    let ours: Vec<&str> = text.lines().filter(|l| l.contains(&format!("|{dest}|"))).collect();
+    assert_eq!(ours.len(), 2, "two events, two lines:\n{text}");
+    assert!(ours[0].contains(r"request=/a\nCEF:0|forged"), "newline encoded:\n{text}");
+}
+
 #[tokio::test]
 async fn siem_all_streams_and_status_env_gated() {
     let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
