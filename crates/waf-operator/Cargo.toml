@@ -24,7 +24,7 @@ thiserror = "2"
 futures = "0.3"
 schemars = "1"
 # `ring`: the rustls crypto provider, like the rest of the workspace (no aws-lc-rs).
-kube = { version = "4.2", default-features = false, features = [
+kube = { version = "5.0", default-features = false, features = [
     "client",
     "runtime",
     "derive",
