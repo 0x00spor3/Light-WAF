@@ -40,5 +40,5 @@ jsonschema = { version = "0.60.1", default-features = false }
 waf-pipeline = { workspace = true }
 # Test-only: compile an inline `.proto` to a FileDescriptorSet (no `protoc` binary needed), so the
 # gRPC fixtures mirror the real flow (operator ships a `.bin` from protoc/buf).
-protox = "0.7"
+protox = "0.10"
 prost = "0.13"
