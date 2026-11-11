@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-11-11
+
+A security release. Request bodies that departed from strict multipart framing, or held one
+invalid UTF-8 byte or NUL, were not inspected at all, so an attack in them reached the application.
+Every deployment that relies on body inspection should upgrade (see Security). It also adds Slack
+webhooks and CEF export to the control plane, and moves the operator to kube 4.2.
+
 ### Added
 - SLSA build provenance on GitHub Releases: `light-waf-<version>.intoto.jsonl` covers every release
   asset, made by the official SLSA generator in the release-assets workflow.

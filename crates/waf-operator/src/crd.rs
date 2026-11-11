@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct WafProxySpec {
-    /// Container image for the WAF data-plane (e.g. ghcr.io/0x00spor3/waf-enterprise:1.0.2).
+    /// Container image for the WAF data-plane (e.g. ghcr.io/0x00spor3/waf-enterprise:1.0.3).
     pub image: String,
 
     /// The upstream this WAF protects — a Service reference or a raw URL.

@@ -5840,7 +5840,7 @@ checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
 name = "waf-capture"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "base64 0.23.1",
  "reqwest",
@@ -5856,7 +5856,7 @@ dependencies = [
 
 [[package]]
 name = "waf-controlplane"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -5883,7 +5883,7 @@ dependencies = [
 
 [[package]]
 name = "waf-core"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "bytes",
  "serde",
@@ -5892,7 +5892,7 @@ dependencies = [
 
 [[package]]
 name = "waf-corpus"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "criterion",
  "serde_json",
@@ -5904,7 +5904,7 @@ dependencies = [
 
 [[package]]
 name = "waf-crs-curated"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "waf-core",
  "waf-detection",
@@ -5913,7 +5913,7 @@ dependencies = [
 
 [[package]]
 name = "waf-detection"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "bytes",
  "regex",
@@ -5925,7 +5925,7 @@ dependencies = [
 
 [[package]]
 name = "waf-enterprise"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "rustls",
  "serde",
@@ -5947,7 +5947,7 @@ dependencies = [
 
 [[package]]
 name = "waf-governance"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "argon2",
  "hex",
@@ -5963,7 +5963,7 @@ dependencies = [
 
 [[package]]
 name = "waf-node-agent"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "axum",
  "reqwest",
@@ -5983,7 +5983,7 @@ dependencies = [
 
 [[package]]
 name = "waf-normalizer"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "bytes",
  "proptest",
@@ -5995,7 +5995,7 @@ dependencies = [
 
 [[package]]
 name = "waf-operator"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "futures",
  "k8s-openapi",
@@ -6014,7 +6014,7 @@ dependencies = [
 
 [[package]]
 name = "waf-pipeline"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "bytes",
  "tracing",
@@ -6023,7 +6023,7 @@ dependencies = [
 
 [[package]]
 name = "waf-proxy"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "http-body-util",
  "hyper",
@@ -6044,7 +6044,7 @@ dependencies = [
 
 [[package]]
 name = "waf-schema-enforcement"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "apollo-compiler",
  "jsonschema",
@@ -6060,7 +6060,7 @@ dependencies = [
 
 [[package]]
 name = "waf-state-redis"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "base64 0.23.1",
  "r2d2",
@@ -6075,7 +6075,7 @@ dependencies = [
 
 [[package]]
 name = "waf-threatintel"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -6090,7 +6090,7 @@ dependencies = [
 
 [[package]]
 name = "waf-tls-managed"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -6116,7 +6116,7 @@ dependencies = [
 
 [[package]]
 name = "waf-wasm"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "bytes",
  "tracing",
@@ -6127,7 +6127,7 @@ dependencies = [
 
 [[package]]
 name = "waf-wasm-signing"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "minisign",
  "waf-core",

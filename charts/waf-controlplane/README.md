@@ -24,7 +24,7 @@ Turnkey (bundled Postgres — dev/demo). The API token, the bootstrap admin pass
 Postgres password are **generated** on first install (the NOTES print how to read them back):
 
 ```sh
-helm install waf-cp oci://ghcr.io/0x00spor3/charts/waf-controlplane --version 1.0.2 \
+helm install waf-cp oci://ghcr.io/0x00spor3/charts/waf-controlplane --version 1.0.3 \
   --namespace waf --create-namespace \
   --set postgres.bundled.enabled=true \
   --set secrets.auditKey=$(openssl rand -hex 32)
@@ -33,7 +33,7 @@ helm install waf-cp oci://ghcr.io/0x00spor3/charts/waf-controlplane --version 1.
 Production (managed Postgres via a Secret carrying `WAF_CP_DATABASE_URL`):
 
 ```sh
-helm install waf-cp oci://ghcr.io/0x00spor3/charts/waf-controlplane --version 1.0.2 -n waf \
+helm install waf-cp oci://ghcr.io/0x00spor3/charts/waf-controlplane --version 1.0.3 -n waf \
   --set database.existingSecret=waf-cp-db \
   --set secrets.existingSecret=waf-cp-env    # carries the WAF_CP_* env
 ```

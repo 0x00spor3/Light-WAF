@@ -73,7 +73,7 @@ spec:
               image:
                 description: >-
                   Container image for the WAF data-plane (e.g.
-                  ghcr.io/0x00spor3/waf-enterprise:1.0.2).
+                  ghcr.io/0x00spor3/waf-enterprise:1.0.3).
                 type: string
               mode:
                 default: blocking
