@@ -77,7 +77,7 @@ Check that an image was built and signed by this repository's release workflow (
 later):
 
 ```sh
-cosign verify ghcr.io/0x00spor3/waf-enterprise:1.0.2 \
+cosign verify ghcr.io/0x00spor3/waf-enterprise:1.0.3 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github\.com/0x00spor3/Light-WAF/\.github/workflows/images\.yml@refs/(tags/v.+|heads/main)$'
 ```
@@ -89,7 +89,7 @@ nothing else, so a fork or another workflow cannot produce a signature that pass
 To check the SBOM attestation and read the SBOM:
 
 ```sh
-cosign verify-attestation ghcr.io/0x00spor3/waf-enterprise:1.0.2 --type spdxjson \
+cosign verify-attestation ghcr.io/0x00spor3/waf-enterprise:1.0.3 --type spdxjson \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github\.com/0x00spor3/Light-WAF/\.github/workflows/images\.yml@refs/(tags/v.+|heads/main)$' \
   | jq -r '.payload' | base64 -d | jq '.predicate'
@@ -98,7 +98,7 @@ cosign verify-attestation ghcr.io/0x00spor3/waf-enterprise:1.0.2 --type spdxjson
 The Helm charts on `ghcr.io/0x00spor3/charts` are signed the same way by `charts-release.yml`:
 
 ```sh
-cosign verify ghcr.io/0x00spor3/charts/waf:1.0.2 \
+cosign verify ghcr.io/0x00spor3/charts/waf:1.0.3 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github\.com/0x00spor3/Light-WAF/\.github/workflows/charts-release\.yml@refs/(tags/v.+|heads/main)$'
 ```
@@ -121,8 +121,8 @@ Each of these files comes with a `<file>.sigstore.json` keyless signature bundle
 `release-assets.yml` workflow. To verify one:
 
 ```sh
-cosign verify-blob light-waf-1.0.2-source.tar.gz \
-  --bundle light-waf-1.0.2-source.tar.gz.sigstore.json \
+cosign verify-blob light-waf-1.0.3-source.tar.gz \
+  --bundle light-waf-1.0.3-source.tar.gz.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github\.com/0x00spor3/Light-WAF/\.github/workflows/release-assets\.yml@refs/(tags/v.+|heads/main)$'
 ```

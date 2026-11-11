@@ -34,13 +34,13 @@ later):
 
 ```sh
 # 1. Control plane (managed Postgres in prod; bundled shown for a quick start):
-helm install waf-cp oci://ghcr.io/0x00spor3/charts/waf-controlplane --version 1.0.2 \
+helm install waf-cp oci://ghcr.io/0x00spor3/charts/waf-controlplane --version 1.0.3 \
   -n waf --create-namespace \
   --set postgres.bundled.enabled=true \
   --set secrets.apiToken=<ingest-token>
 
 # 2. The WAF in front of your app:
-helm install myapp-waf oci://ghcr.io/0x00spor3/charts/waf --version 1.0.2 \
+helm install myapp-waf oci://ghcr.io/0x00spor3/charts/waf --version 1.0.3 \
   -n prod --create-namespace \
   --set waf.backend=http://myapp.prod.svc.cluster.local:8080
 ```

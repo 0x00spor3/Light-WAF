@@ -15,7 +15,7 @@ your own build or a mirror, set `image.repository` (see `scripts/images/RUNBOOK.
 The chart is published as an OCI artifact on GHCR (Helm 3.8 or later):
 
 ```sh
-helm install myapp-waf oci://ghcr.io/0x00spor3/charts/waf --version 1.0.2 \
+helm install myapp-waf oci://ghcr.io/0x00spor3/charts/waf --version 1.0.3 \
   --namespace prod --create-namespace \
   --set waf.backend=http://myapp.prod.svc.cluster.local:8080
 ```
