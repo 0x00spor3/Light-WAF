@@ -205,8 +205,9 @@ pub static CASES: &[Case] = &[
         rules: &["pt-unc-admin-share"],
         desc: "WIRE: UNC admin-share `\\\\::1\\c$\\…ntuser.dat` in URL path — 10b-bis `$`-share anchor",
     },
-    // Lock (probe-confirmed already CAUGHT, score 12 — the wire 200 was a stale binary):
-    // multipart field-NAME carrying `../../etc/passwd` stays blocked.
+    // Lock: multipart field-NAME carrying `../../etc/passwd` stays blocked in well-formed
+    // framing. The 200 seen on the wire was not this: gotestwaf sends bare LF, which the
+    // parser used to drop. That shape lives in `multipart_framing`, on exact bytes.
     Case {
         id: "pt-lfi-multipart-name-wire",
         module: Module::PathTraversal,

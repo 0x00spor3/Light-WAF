@@ -290,6 +290,96 @@ fn json_depth_at_limit_is_accepted() {
         .unwrap();
 }
 
+#[test]
+fn form_with_invalid_byte_keeps_every_param() {
+    let mut c = ctx_body("application/x-www-form-urlencoded", b"a=1&b=\xff&c=3");
+    norm().normalize(&mut c).unwrap();
+    let ParsedBody::FormUrlEncoded(params) = &c.normalized.body else {
+        panic!("expected FormUrlEncoded, got {:?}", c.normalized.body);
+    };
+    assert_eq!(params.len(), 3);
+    assert_eq!(params[0], ("a".to_string(), "1".to_string()));
+    assert_eq!(params[2], ("c".to_string(), "3".to_string()));
+}
+
+#[test]
+fn form_with_invalid_byte_still_enforces_max_params() {
+    let body: Vec<u8> = b"\xff=1&".repeat(5);
+    let mut c = ctx_body("application/x-www-form-urlencoded", &body);
+    let err = norm_with(limits_with(|l| l.max_params = 3)).normalize(&mut c).unwrap_err();
+    assert!(matches!(err, NormalizationError::TooManyParams { limit: 3 }), "got: {err:?}");
+}
+
+// ── body: raw text that is not clean UTF-8 ────────────────────────────────────
+
+fn derived_of(content_type: &str, body: &[u8]) -> Vec<String> {
+    let mut c = ctx_body(content_type, body);
+    norm().normalize(&mut c).unwrap();
+    c.normalized.derived_decoded.clone()
+}
+
+fn pseudo_random(len: usize) -> Vec<u8> {
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect()
+}
+
+#[test]
+fn raw_text_with_invalid_byte_reaches_the_derived_channel() {
+    let derived = derived_of("text/plain", b"\xffhello world");
+    assert!(derived.iter().any(|d| d == "\u{FFFD}hello world"), "{derived:?}");
+}
+
+#[test]
+fn raw_text_loses_its_nul_so_utf16_reads_as_text() {
+    let body: Vec<u8> = "hello world".bytes().flat_map(|b| [b, 0]).collect();
+    let derived = derived_of("application/xml", &[b"\xff\xfe".as_slice(), &body].concat());
+    assert!(derived.iter().any(|d| d.contains("hello world")), "{derived:?}");
+}
+
+#[test]
+fn declared_text_is_read_however_much_it_is_padded() {
+    let body = [vec![0xff; 500], b"hello world".to_vec()].concat();
+    let derived = derived_of("text/plain; charset=latin1", &body);
+    assert!(derived.iter().any(|d| d.contains("hello world")), "{derived:?}");
+}
+
+#[test]
+fn undeclared_binary_stays_out() {
+    for ct in ["application/octet-stream", "image/png", "application/x-custom"] {
+        let derived = derived_of(ct, &pseudo_random(4096));
+        assert!(!derived.iter().any(|d| d.len() > 1024), "{ct}");
+    }
+}
+
+#[test]
+fn compressed_body_stays_out_even_declared_as_text() {
+    let mut c = ctx_body("application/json", &pseudo_random(4096));
+    c.headers[0].1 = "text/plain".to_string();
+    c.headers.push(("content-encoding".to_string(), "gzip".to_string()));
+    norm().normalize(&mut c).unwrap();
+    assert!(!c.normalized.derived_decoded.iter().any(|d| d.len() > 1024));
+}
+
+#[test]
+fn identity_encoding_does_not_exempt_a_body() {
+    let mut c = ctx_body("text/plain", b"\xffhello world");
+    c.headers.push(("content-encoding".to_string(), "identity".to_string()));
+    norm().normalize(&mut c).unwrap();
+    assert!(c.normalized.derived_decoded.iter().any(|d| d.contains("hello world")));
+}
+
+#[test]
+fn clean_utf8_raw_body_takes_the_old_path() {
+    assert!(waf_normalizer::body::raw_body_text(Some("text/plain"), b"hello").is_none());
+}
+
 // ── body: multipart ───────────────────────────────────────────────────────────
 
 #[test]

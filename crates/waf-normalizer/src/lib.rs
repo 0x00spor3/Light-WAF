@@ -186,6 +186,15 @@ impl Normalizer {
                 let is_grpc = content_type
                     .map(|ct| ct.trim_start().starts_with("application/grpc"))
                     .unwrap_or(false);
+                // A body under a `Content-Encoding` is compressed bytes here, not text.
+                let encoded = norm_headers
+                    .iter()
+                    .any(|(k, v)| k == "content-encoding" && !v.eq_ignore_ascii_case("identity"));
+                let raw_text = if is_grpc || encoded {
+                    None
+                } else {
+                    body::raw_body_text(content_type, b)
+                };
                 if is_grpc {
                     let ex = crate::grpc::grpc_extract(b, crate::grpc::GrpcLimits::default());
                     for leaf in ex.leaves {
@@ -197,6 +206,12 @@ impl Normalizer {
                         // modules through this derived channel.
                         derived.push(canonical);
                     }
+                } else if let Some(text) = raw_text {
+                    // Text that is not clean UTF-8 is invisible to `body_str_values`, like
+                    // the gRPC leaf above, so the canonical form always goes in.
+                    let canonical = url::canonicalize_value(&text, false).0;
+                    derived.extend(url::derive_variants(&canonical));
+                    derived.push(canonical);
                 } else if let Ok(raw) = std::str::from_utf8(b) {
                     let canonical = url::canonicalize_value(raw, false).0;
                     derived.extend(url::derive_variants(&canonical));
@@ -288,7 +303,7 @@ pub fn header_content_inspectable(name: &str) -> bool {
 }
 
 /// Canonical inspectable strings of a parsed body (form values, JSON leaf values,
-/// multipart name/filename/UTF-8 value) — the surface the base64-derive channel scans.
+/// multipart name/filename/text value) — the surface the base64-derive channel scans.
 /// Mirrors detection's `body_str_values` but lives here so the normalizer can build
 /// `derived_decoded` once (the prefilter + every module then read it).
 fn body_canonical_strings(body: &waf_core::ParsedBody) -> Vec<String> {
@@ -305,8 +320,8 @@ fn body_canonical_strings(body: &waf_core::ParsedBody) -> Vec<String> {
                 if let Some(fname) = &f.filename {
                     out.push(url::canonicalize_multipart_field(fname));
                 }
-                if let Ok(s) = std::str::from_utf8(&f.data) {
-                    out.push(url::canonicalize_multipart_field(s));
+                if let Some(s) = body::multipart_field_text(f) {
+                    out.push(url::canonicalize_multipart_field(&s));
                 }
             }
             out

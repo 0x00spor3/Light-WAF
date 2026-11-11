@@ -423,8 +423,18 @@ pub fn strip_vbscript_concat(s: &str) -> Option<String> {
 /// transforms would no-op on it. Apply them over each base64-DECODED variant too, not
 /// just the raw input — otherwise `<<scr\0ipt>` / `o<x>nfocus` / `confirm&lpar;` survive
 /// the base64 unwrap un-reconstructed (pcap bypass-new.txt: D2a/D2b Base64Flat).
+///
+/// Base64 candidacy is decided on the whole string, and lenient decoders (Python, PHP) skip
+/// what is not in the alphabet, so one invalid byte next to a blob would hide it. Hence the
+/// pieces between invalid bytes are tried on their own. This is also what splits the multipart
+/// fallback text into its lines.
 pub fn derive_variants(value: &str) -> Vec<String> {
     let mut out = base64_derived(value);
+    if value.contains('\u{FFFD}') {
+        for token in value.split('\u{FFFD}').filter(|t| t.len() >= BASE64_MIN_LEN) {
+            out.extend(base64_derived(token));
+        }
+    }
     // Compose the structural transforms over the base64-decoded variants.
     let mut composed = Vec::new();
     for d in &out {

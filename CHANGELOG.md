@@ -40,6 +40,18 @@ All notable changes to this project are documented here. The format follows
 - A failed alert webhook delivery no longer writes the webhook URL to the control-plane log. A Slack
   URL is a credential: if you run a webhook with a secret in its URL, check your logs and rotate it
   if it appears there.
+- Multipart bodies can no longer hide their content from inspection. The parser stopped at the first
+  deviation from strict framing and handed the modules no fields, and a value with one invalid UTF-8
+  byte was skipped as binary, so a payload in malformed framing reached the application uninspected,
+  whichever module should have caught it. The parser now reads the shapes backends accept, and any
+  body outside what browsers and HTTP clients send is also scanned as a whole. Binary file uploads
+  stay out of the scan. A client that sends malformed multipart may see rules fire on text that was
+  not inspected before.
+- Form and raw bodies had the same gap. One invalid UTF-8 byte took a whole
+  `application/x-www-form-urlencoded` body out of inspection, and one invalid byte or NUL did the same
+  for a raw body such as `text/plain` or XML. Forms now keep every parameter. Raw bodies are read as
+  text when they declare a text type, or when they are nearly all text whatever they declare, which
+  also covers UTF-16. Real binary bodies and bodies under a `Content-Encoding` stay out of the scan.
 
 ### Removed
 - Build output that had been committed by mistake: the `target/` folders of the WASM test fixture

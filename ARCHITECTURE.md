@@ -211,6 +211,32 @@ A **critical** point to avoid bypasses. Minimum steps:
 > pattern broadening: the same path-traversal/LFI rules run. (Only the part fields; the
 > `name` stays attacker content, not routing metadata.)
 
+> **Multipart framing.** Backends do not share one multipart grammar (bare LF, transport
+> padding, a missing closing delimiter, quoting, folding), and every disagreement can show
+> the application a value the WAF never saw. `parse_multipart` has two layers. The parser is
+> tolerant and never stops silently. Any deviation from what browsers and HTTP clients emit
+> also appends the whole body as one synthetic field (empty name, no filename), so a shape
+> nobody anticipated still reaches the rules. In that fallback text, line breaks and NUL
+> become a non-whitespace separator, or the part headers themselves would read as
+> `hdr-crlf-header-injection` and `name="f"` next to `--` as `sqli-quote-comment`. Binary
+> uploads are cut out of it, unless the boundary occurs inside them: that is how a part ends
+> earlier for a backend, so those bytes may be a field to it. A well-formed body never
+> reaches the fallback. What is skipped as binary is decided in one place,
+> `multipart_field_text`: only a non-empty `filename` qualifies, since anything else reaches
+> the application as a form value. Known limit: a payload that needs its line breaks
+> (`\r\nQUIT\r\n`) is only caught when the parser could extract the value. The cases are in
+> `waf-corpus/src/cases/multipart_framing.rs`, on exact bytes.
+
+> **Bodies that are not clean UTF-8.** Text with a stray invalid byte is still text to the
+> backend, so a form is read lossily, every parameter kept, and `raw_body_text` feeds a `Raw`
+> body to the derived channel (`body_str_values` skips it, as with gRPC leaves). A declared
+> text type is always read, so padding cannot pass for binary. Any other type is judged on
+> its bytes, at a low threshold: containers of HTML or JS sit at 6-30% non-text bytes and
+> fire rules, measured on real files. NUL is dropped, which also makes ASCII in UTF-16
+> readable. gRPC and bodies under a `Content-Encoding` stay out. Known limit: enough padding,
+> under a non-text type, to a backend reading raw bytes regardless. The cases are in
+> `waf-corpus/src/cases/body_encoding.rs`.
+
 > **Multipart deep-normalization — overlong/`../`-base CLOSED on multipart (10b-cont fix).**
 > `canonicalize_multipart_field` applies, before matching: (1) **recursive** percent-decode +
 > overlong-collapse up to a fixed point (cap of 5 passes) → `%25C0%25AE`→`%C0%AE`→bytes
