@@ -27,7 +27,7 @@ sqlx = { version = "0.9", default-features = false, features = [
 # Ed25519 signatures + SHA-256 for the audit hash-chain (same `ring` the other enterprise crates use;
 # no new crypto crate). Password hashing = argon2id (ring has no argon2).
 ring = "0.17"
-argon2 = "0.5"
+argon2 = "0.6"
 rand_core = { version = "0.6", features = ["getrandom"] }
 hex = "0.4"
 
