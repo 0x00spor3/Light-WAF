@@ -21,3 +21,5 @@ waf-core = { workspace = true }
 waf-detection = { workspace = true }
 # The datapath bite-test runs the curated module through the REAL pipeline (blocks vs control).
 waf-pipeline = { workspace = true }
+# The false-positive gate replays the core corpus' `Clean` traps through the curated ruleset.
+waf-corpus = { path = "../waf-corpus" }

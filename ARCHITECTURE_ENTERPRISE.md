@@ -343,9 +343,10 @@ downgrade** (fail-closed); a per-connection handshake error stays non-fatal.
   lives here (maintained and tuned `SecRule` files). **It counts towards the same cumulative
   anomaly score** → with curated CRS enabled, threshold tuning is the operator's call (double
   counting with the native modules accepted, B2 guardrail #4).
-  - **Additive content, not baseline**: high-curation CVE/app/evasion signatures. **28 rules**
+  - **Additive content, not baseline**: high-curation CVE/app/evasion signatures. **41 rules**
     (27 in v1, plus id 9000004 for Log4Shell lookup obfuscation — `${${lower:j}ndi:…}`,
-    `${::-j}`, `${env:X:-j}` — added after pentest #2, finding E-1): (a) generic categories (cloud-metadata SSRF, PHP-wrapper LFI, webshells, `.git`/`.env`
+    `${::-j}`, `${env:X:-j}` — added after pentest #2, finding E-1; plus 13 for the Aug–Nov 2026
+    KEV wave: 9100040–9100051 and the generic `pearcmd.php` pivot 9000033): (a) generic categories (cloud-metadata SSRF, PHP-wrapper LFI, webshells, `.git`/`.env`
     exposure, dangerous HTTP methods, deserialization markers, recon UAs); (b) a **named-CVE pack**
     from CISA KEV (`rules/cve.conf`, ids 9100000+): Joomla JCE, Mirasvit/Magento object injection,
     UniFi/Cisco SD-WAN/FortiWeb/TeamCity/PAN-OS traversal, Next.js middleware bypass, SharePoint

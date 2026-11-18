@@ -5833,6 +5833,7 @@ name = "waf-crs-curated"
 version = "1.0.3"
 dependencies = [
  "waf-core",
+ "waf-corpus",
  "waf-detection",
  "waf-pipeline",
 ]

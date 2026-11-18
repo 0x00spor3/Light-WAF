@@ -3,14 +3,18 @@
 Curated OWASP CRS / ModSecurity rule content for **[Light WAF](https://github.com/0x00spor3/Light-WAF)**.
 
 The Light WAF core already ships a `SecRule` parser and engine (`waf-detection`'s CRS module). This
-crate ships only **content**: 28 tuned rules, embedded at compile time, that add high-confidence
+crate ships only **content**: 41 tuned rules, embedded at compile time, that add high-confidence
 signatures on top of the core's native detection modules:
 
-- generic categories — cloud-metadata SSRF, PHP-wrapper LFI, webshells, `.git`/`.env` exposure,
-  dangerous HTTP methods, deserialization markers, reconnaissance user agents;
+- generic categories — cloud-metadata SSRF, PHP-wrapper LFI, `pearcmd.php` pivot, webshells,
+  `.git`/`.env` exposure, dangerous HTTP methods, deserialization markers, reconnaissance user
+  agents;
 - a named-CVE pack taken from the CISA KEV catalog — e.g. Log4Shell (including lookup
   obfuscation such as `${${lower:j}ndi:…}`), Spring4Shell, MOVEit, GoAnywhere, PaperCut, PAN-OS,
-  FortiWeb, TeamCity, SharePoint ToolShell, PHP-CGI argument injection, Next.js middleware bypass.
+  FortiWeb, TeamCity, SharePoint ToolShell, PHP-CGI argument injection, Next.js middleware bypass,
+  and the Aug–Nov 2026 wave (Apache Roller XML-RPC, TeamCity XStream, Langflow, WordPress core
+  LFI, Next.js Windows traversal, Ivanti Connect Secure, GPUStack, Kestra, Plex, Cisco SD-WAN
+  Manager, JFrog Access, WSO2 JWT `alg:none`).
 
 It does not re-implement baseline SQLi/XSS/traversal/RCE detection: that stays in the core.
 Matches contribute to the same cumulative anomaly score as the native modules. Rule ids use the

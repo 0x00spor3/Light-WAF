@@ -26,7 +26,7 @@ cargo test -p waf-crs-curated
 
 What it proves (the enterprise value — a *guaranteed-compatible, tested* ruleset):
 - `all_curated_rules_load_and_nothing_is_silently_skipped` — the engine loads exactly
-  `EXPECTED_LOADED` (28) rules with **zero** skipped. If a future edit reaches outside the supported
+  `EXPECTED_LOADED` (41) rules with **zero** skipped. If a future edit reaches outside the supported
   subset (which the engine would *skip*, not load) this fails — no silent coverage loss.
 - one bite-test per rule — each signature fires on its payload with the declared severity.
 - `datapath.rs` — the module, on the REAL pipeline, blocks a Log4Shell request; the same request
@@ -62,7 +62,7 @@ enabled = true                 # load the curated premium ruleset
 
 ```sh
 WAF_CONFIG=crs-node.toml cargo run -p waf-enterprise
-# boot log: "wiring curated premium CRS ruleset: CRS import: 28 rules loaded, 0 skipped"
+# boot log: "wiring curated premium CRS ruleset: CRS import: 41 rules loaded, 0 skipped"
 ```
 
 In another terminal:
@@ -76,7 +76,7 @@ PORT=8080 scripts/crs-curated/check_curated_rules.sh
 - Every **attack** row → `[BLOCK ok ] … -> 403` (blocked before the backend is reached).
 - The **control** row → `[PASS ok  ] … -> 200` (proxied to the dummy backend).
 - Summary `failed: 0` and `curated ruleset verified on the wire.`
-- Confirm the boot log shows **28 rules loaded, 0 skipped** — the wire counterpart of the offline
+- Confirm the boot log shows **41 rules loaded, 0 skipped** — the wire counterpart of the offline
   gate. Fewer-than-expected also raises a `warn` at boot.
 
 The script only asserts CRITICAL-severity signatures block (they cross `block_threshold = 5` alone).
