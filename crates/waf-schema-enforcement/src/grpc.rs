@@ -324,7 +324,8 @@ impl WafModule for GrpcSchemaModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prost::Message;
+    // prost-reflect's re-export: always the prost that protox and prost-reflect build against.
+    use prost_reflect::prost::Message;
 
     /// Compile the fixture `.proto` to a FileDescriptorSet (`.bin` bytes), mirroring the real flow
     /// (operator ships a compiled descriptor from protoc/buf). Uses protox — no `protoc` binary.

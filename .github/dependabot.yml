@@ -19,12 +19,15 @@ updates:
       day: monday
     cooldown:
       default-days: 7
-    # A package lands in the FIRST group it matches, so the lockstep group comes before the catch-all.
+    # A package lands in the FIRST group it matches, so the lockstep groups come before the catch-all.
     # Each kube major pins one k8s-openapi minor: bumped apart, k8s-openapi alone cannot resolve and
-    # kube alone leaves two copies in the tree, which fails k8s-openapi's build script.
+    # kube alone leaves two copies in the tree, which fails k8s-openapi's build script. Likewise
+    # protox (dev) and prost-reflect build on one prost, and the gRPC tests mix their types.
     groups:
       kube:
         patterns: ["kube", "kube-*", "k8s-openapi"]
+      protobuf:
+        patterns: ["protox", "protox-*", "prost", "prost-*"]
       cargo-minor-patch:
         update-types: [minor, patch]
 
