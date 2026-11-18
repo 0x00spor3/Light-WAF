@@ -50,7 +50,7 @@ jobs:
           curl -fsSLo ./kind \
             https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
           # From the release's kind-linux-amd64.sha256sum; bump it together with the version. Its
-          # default node is Kubernetes 1.37 (the operator's k8s-openapi supports 1.32 onward).
+          # default node is Kubernetes 1.37 (the operator's k8s-openapi supports 1.33 onward).
           echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  ./kind" | sha256sum -c -
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind

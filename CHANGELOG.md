@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Operator: kube 4.2 → 5.0, k8s-openapi 0.28 → 0.29. The oldest supported Kubernetes API moves from
+  1.32 to 1.33 (k8s-openapi 0.29 dropped 1.32); 1.37 is now covered too.
+
 ## [1.0.3] — 2026-11-11
 
 A security release. Request bodies that departed from strict multipart framing, or held one
