@@ -77,8 +77,10 @@ jobs:
       - name: Install UI dependencies
         run: npm ci
 
+      # `npm audit --audit-level=high`, except advisories accepted (reason + expiry) in
+      # ui/osv-scanner.toml — npm audit has no ignore list of its own.
       - name: Audit UI dependencies
-        run: npm audit --audit-level=high
+        run: npm run audit:gate
 
       - name: Install Playwright browser (chromium)
         run: npx playwright install --with-deps chromium

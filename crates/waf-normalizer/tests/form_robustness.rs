@@ -5,25 +5,20 @@
 //!
 //! The split/canonicalize/bound mechanics are SHARED with `parse_query` (#4) and not
 //! re-proven from scratch — `parse_query` is reused as the oracle. The NEW surface is
-//! the UTF-8 boundary: the body is raw `&[u8]`, decoded with
-//! `from_utf8(body).unwrap_or("")`.
+//! the UTF-8 boundary: the body is raw `&[u8]`, decoded with `from_utf8_lossy`.
 //!
 //! Pinned invariants:
 //!   (1) non-panic + bounded on ARBITRARY bytes (not just valid `&str` like #4);
 //!   (2a) valid-UTF-8 body behaves EXACTLY like `parse_query` on the same text;
-//!   (2b) ANY invalid byte → `Ok([])` — ALL-OR-NOTHING, never a partial parse of the
-//!        valid prefix (a partial contract would let an attacker smuggle a param as
-//!        "valid prefix + invalid byte");
-//!   (2c) the boundary is `from_utf8` strict→empty, NOT `from_utf8_lossy`→replacement.
-//!
-//! Declared (verbale, like the cookie non-canonicalization in #6): the form body uses
-//! **strict `from_utf8` → empty** on invalid UTF-8, which is the OPPOSITE policy of
-//! the value canonicalizer (#1/#3), where overlong/invalid bytes become the
-//! replacement char (lossy). Different boundaries, different policies — intentional.
+//!   (2b) ANY invalid byte → every parameter is still extracted, like `parse_query` on
+//!        the lossy text. Backends split on `&` and `=` whatever the bytes are, so neither
+//!        an empty parse nor a partial one is acceptable: both hide parameters the
+//!        application reads. Empty is what this used to do, and it was a bypass: one
+//!        `0xFF` anywhere took the whole form out of inspection.
 
 use proptest::prelude::*;
 use waf_core::{Bytes, LimitsConfig, ParsedBody};
-use waf_normalizer::body::parse_body;
+use waf_normalizer::body::{lossy_text, parse_body};
 use waf_normalizer::url::parse_query;
 
 /// Parse a form body, returning the params or `Err(())` on `TooManyParams`.
@@ -58,31 +53,32 @@ proptest! {
 }
 
 proptest! {
-    // (1)+(2b) arbitrary BYTES: non-panic, bounded, and all-or-nothing on invalid UTF-8.
+    // (1)+(2b) arbitrary BYTES: non-panic, bounded, and identical to the lossy text.
     #[test]
-    fn prop_form_arbitrary_bytes_all_or_nothing(body in prop::collection::vec(any::<u8>(), 0..256)) {
+    fn prop_form_arbitrary_bytes_parse_as_lossy_text(body in prop::collection::vec(any::<u8>(), 0..256)) {
         let lim = limits(8);
         let res = parse_form(&body, &lim);
         if let Ok(params) = &res {
             prop_assert!(params.len() <= lim.max_params);
         }
-        // Invalid UTF-8 anywhere → the WHOLE body is dropped (empty), never partial.
-        if std::str::from_utf8(&body).is_err() {
-            prop_assert_eq!(res, Ok(Vec::new()));
-        }
+        let text = lossy_text(&body);
+        let query = parse_query(&text, &lim).map(|(p, _, _)| p).map_err(|_| ());
+        prop_assert_eq!(res, query);
     }
 }
 
 #[test]
-fn invalid_byte_drops_whole_body_not_partial() {
+fn invalid_byte_keeps_every_parameter() {
     let lim = LimitsConfig::default();
-    // (2b) valid prefix + one invalid byte → [] (NOT [("a","b")]).
-    assert_eq!(parse_form(b"a=b\xFF", &lim), Ok(Vec::new()));
-    assert_eq!(parse_form(b"\xFFa=b", &lim), Ok(Vec::new()));
-    assert_eq!(parse_form(b"a=b&c=d\xFF", &lim), Ok(Vec::new()));
-    // (2c) NOT lossy: the invalid byte must NOT survive as a replacement char.
-    let r = parse_form(b"a=b\xFF", &lim).unwrap();
-    assert!(r.is_empty(), "strict→empty, not lossy replacement: {r:?}");
+    let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
+    assert_eq!(parse_form(b"a=b\xFF", &lim), Ok(vec![pair("a", "b\u{FFFD}")]));
+    assert_eq!(parse_form(b"\xFFa=b", &lim), Ok(vec![pair("\u{FFFD}a", "b")]));
+    // A run of invalid bytes counts as one.
+    assert_eq!(parse_form(b"a=\xFF\xFF\xFFb", &lim), Ok(vec![pair("a", "\u{FFFD}b")]));
+    assert_eq!(
+        parse_form(b"a=b&x=\xFF&c=d", &lim),
+        Ok(vec![pair("a", "b"), pair("x", "\u{FFFD}"), pair("c", "d")])
+    );
 }
 
 #[test]

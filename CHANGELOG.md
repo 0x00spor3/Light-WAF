@@ -7,6 +7,38 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Operator: kube 4.2 → 5.0, k8s-openapi 0.28 → 0.29. The oldest supported Kubernetes API moves from
+  1.32 to 1.33 (k8s-openapi 0.29 dropped 1.32); 1.37 is now covered too.
+- `sqlx` 0.9.0 → 0.9.1 (control plane, governance, node agent). Upstream, a Postgres `hostaddr`
+  (`PGHOSTADDR`) is no longer an alias of `host`: it now skips DNS, and `host` is still used for TLS
+  SNI, as in libpq. A `WAF_CP_DATABASE_URL` that relied on the old alias needs `host` instead.
+
+### Security
+- `libsqlite3-sys` 0.30.1 → 0.40.0 (RUSTSEC-2026-0459, bundled SQLite). It was only a lockfile entry
+  through sqlx's optional SQLite driver, which no crate enables, so it was never built; the update
+  clears the OSV-Scanner / Scorecard finding.
+- `osv-scanner.toml`: RUSTSEC-2026-0543 (`chrono` unmaintained, via openidconnect/oauth2/rustls-acme)
+  accepted until 2027-04-30; the RUSTSEC-2026-0387 and GHSA-qwgh-2vcv-g2f7 entries are dropped
+  (`crypto-bigint` is now 0.7.11, and the advisory was narrowed to `block-buffer` 0.11). New
+  `crates/waf-controlplane/ui/osv-scanner.toml` accepts GHSA-fc5q-39xc-vjpf (`picomatch`, dev-only
+  in the UI build, no fixed version) until 2027-02-28.
+- The dashboard's `npm audit` gate is now `npm run audit:gate`: still fails on any HIGH/CRITICAL
+  advisory, except one accepted (with reason and expiry) in `ui/osv-scanner.toml`, the same list
+  OSV-Scanner reads. npm audit has no ignore list, and its only "fix" for `picomatch` was a downgrade
+  to vite 6.2.7.
+- Container images: the CVE-2026-84782 (`libssl3`) acceptance in `.trivyignore` is extended to
+  2026-12-09. Distroless has still not rebuilt `cc-debian12` with the fixed 3.0.22, and no shipped
+  binary links OpenSSL, so it remains not applicable.
+- The image scan gate runs trivy v0.76.2 (was v0.70.0, the trivy-action default).
+
+## [1.0.3] — 2026-11-11
+
+A security release. Request bodies that departed from strict multipart framing, or held one
+invalid UTF-8 byte or NUL, were not inspected at all, so an attack in them reached the application.
+Every deployment that relies on body inspection should upgrade (see Security). It also adds Slack
+webhooks and CEF export to the control plane, and moves the operator to kube 4.2.
+
 ### Added
 - SLSA build provenance on GitHub Releases: `light-waf-<version>.intoto.jsonl` covers every release
   asset, made by the official SLSA generator in the release-assets workflow.
@@ -40,6 +72,18 @@ All notable changes to this project are documented here. The format follows
 - A failed alert webhook delivery no longer writes the webhook URL to the control-plane log. A Slack
   URL is a credential: if you run a webhook with a secret in its URL, check your logs and rotate it
   if it appears there.
+- Multipart bodies can no longer hide their content from inspection. The parser stopped at the first
+  deviation from strict framing and handed the modules no fields, and a value with one invalid UTF-8
+  byte was skipped as binary, so a payload in malformed framing reached the application uninspected,
+  whichever module should have caught it. The parser now reads the shapes backends accept, and any
+  body outside what browsers and HTTP clients send is also scanned as a whole. Binary file uploads
+  stay out of the scan. A client that sends malformed multipart may see rules fire on text that was
+  not inspected before.
+- Form and raw bodies had the same gap. One invalid UTF-8 byte took a whole
+  `application/x-www-form-urlencoded` body out of inspection, and one invalid byte or NUL did the same
+  for a raw body such as `text/plain` or XML. Forms now keep every parameter. Raw bodies are read as
+  text when they declare a text type, or when they are nearly all text whatever they declare, which
+  also covers UTF-16. Real binary bodies and bodies under a `Content-Encoding` stay out of the scan.
 
 ### Removed
 - Build output that had been committed by mistake: the `target/` folders of the WASM test fixture

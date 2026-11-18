@@ -24,6 +24,7 @@ pub mod xxe;
 
 use regex::RegexSet;
 use waf_core::{ParsedBody, RequestContext, Severity};
+use waf_normalizer::body::multipart_field_text;
 use waf_normalizer::url::canonicalize_multipart_field;
 
 /// Highest paranoia level any shipped rule currently declares. The config
@@ -245,7 +246,6 @@ pub(crate) fn inspectable_header_values(ctx: &RequestContext) -> impl Iterator<I
 }
 
 /// Collect all inspectable string values from a parsed body.
-/// Binary multipart parts that are not valid UTF-8 are silently skipped.
 pub(crate) fn body_str_values(body: &ParsedBody) -> Vec<String> {
     match body {
         ParsedBody::FormUrlEncoded(params) => {
@@ -261,16 +261,16 @@ pub(crate) fn body_str_values(body: &ParsedBody) -> Vec<String> {
             // (no filename) or in the value, often double-/overlong-encoded. Each is
             // run through `canonicalize_multipart_field` (recursive decode + overlong
             // UTF-8 collapse + NFKC) so `%25C0%25AE…` / `..%2f` resolve to `../`
-            // BEFORE the rules see them. Binary values that are not valid UTF-8
-            // contribute name+filename only.
+            // BEFORE the rules see them. Binary file uploads contribute name+filename
+            // only, see `multipart_field_text` for what counts as one.
             let mut out = Vec::with_capacity(fields.len() * 2);
             for f in fields {
                 out.push(canonicalize_multipart_field(&f.name));
                 if let Some(filename) = &f.filename {
                     out.push(canonicalize_multipart_field(filename));
                 }
-                if let Ok(s) = std::str::from_utf8(&f.data) {
-                    out.push(canonicalize_multipart_field(s));
+                if let Some(s) = multipart_field_text(f) {
+                    out.push(canonicalize_multipart_field(&s));
                 }
             }
             out

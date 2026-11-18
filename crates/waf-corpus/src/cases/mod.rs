@@ -9,12 +9,14 @@
 
 use crate::Case;
 
+pub mod body_encoding;
 pub mod graphql;
 pub mod grpc;
 pub mod header_injection;
 pub mod ldap;
 pub mod lfi_rfi;
 pub mod mail;
+pub mod multipart_framing;
 pub mod nosql;
 pub mod path_traversal;
 pub mod rce;
@@ -46,6 +48,8 @@ pub static MODULE_TABLES: &[&[Case]] = &[
     request_smuggling::CASES,
     graphql::CASES,
     grpc::CASES,
+    multipart_framing::CASES,
+    body_encoding::CASES,
 ];
 
 /// Every case in the corpus, flattened.

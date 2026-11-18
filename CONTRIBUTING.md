@@ -77,7 +77,7 @@ cargo test --workspace
 ```sh
 cd crates/waf-controlplane/ui
 npm ci
-npm audit --audit-level=high
+npm run audit:gate # npm audit at HIGH, minus the accepts (reason + expiry) in ui/osv-scanner.toml
 npm run e2e        # builds the UI + a release control plane, then runs Playwright (needs WAF_CP_DATABASE_URL)
 ```
 

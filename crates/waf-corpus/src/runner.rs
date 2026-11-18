@@ -243,6 +243,9 @@ fn build_ctx(field: &Field) -> RequestContext {
                 .body(body.into_bytes(), &format!("multipart/form-data; boundary={BOUNDARY}"))
                 .build()
         }
+        Field::RawBytes { content_type, body } => {
+            req.method("POST").body(body.to_vec(), content_type).build()
+        }
         Field::Cookie(raw) => req.cookie_header(raw).build(),
         Field::Header { name, value } => req.header(name, value).build(),
         Field::Path(path) => req.path(path).build(),

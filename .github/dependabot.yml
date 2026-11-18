@@ -19,7 +19,12 @@ updates:
       day: monday
     cooldown:
       default-days: 7
+    # A package lands in the FIRST group it matches, so the lockstep group comes before the catch-all.
+    # Each kube major pins one k8s-openapi minor: bumped apart, k8s-openapi alone cannot resolve and
+    # kube alone leaves two copies in the tree, which fails k8s-openapi's build script.
     groups:
+      kube:
+        patterns: ["kube", "kube-*", "k8s-openapi"]
       cargo-minor-patch:
         update-types: [minor, patch]
 

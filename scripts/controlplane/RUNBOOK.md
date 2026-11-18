@@ -136,7 +136,7 @@ Build the frontend (Node v22 / npm 10):
 ```sh
 cd crates/waf-controlplane/ui
 npm ci                 # install from the committed lockfile
-npm audit              # supply-chain gate (expect 0 vulnerabilities)
+npm run audit:gate     # supply-chain gate: no HIGH/CRITICAL except the accepts in ui/osv-scanner.toml
 npm run build          # tsc --noEmit + vite build → ui/dist
 ```
 

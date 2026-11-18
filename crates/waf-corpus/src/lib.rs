@@ -148,6 +148,11 @@ pub enum Field {
         filename: Option<&'static str>,
         content: &'static str,
     },
+    /// POST with an explicit Content-Type and a body sent byte for byte. For wire shapes
+    /// the other variants cannot express: `MultipartFile` always emits well-formed CRLF
+    /// framing, so a framing evasion authored through it would pass without testing
+    /// anything, and `RawBody` is `&str` (no invalid UTF-8).
+    RawBytes { content_type: &'static str, body: &'static [u8] },
     /// Raw `Cookie` header value (`name=value; …`).
     Cookie(&'static str),
     /// A single raw header.

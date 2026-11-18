@@ -1039,6 +1039,8 @@ pub enum ParsedBody {
     Raw(Bytes),
 }
 
+/// One part of a multipart body. `name` is empty for a part without one, and for the
+/// trailing field that carries the whole body as text when its framing was anomalous.
 #[derive(Debug, Clone)]
 pub struct MultipartField {
     pub name: String,
