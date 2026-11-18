@@ -10,6 +10,27 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 - Operator: kube 4.2 → 5.0, k8s-openapi 0.28 → 0.29. The oldest supported Kubernetes API moves from
   1.32 to 1.33 (k8s-openapi 0.29 dropped 1.32); 1.37 is now covered too.
+- `sqlx` 0.9.0 → 0.9.1 (control plane, governance, node agent). Upstream, a Postgres `hostaddr`
+  (`PGHOSTADDR`) is no longer an alias of `host`: it now skips DNS, and `host` is still used for TLS
+  SNI, as in libpq. A `WAF_CP_DATABASE_URL` that relied on the old alias needs `host` instead.
+
+### Security
+- `libsqlite3-sys` 0.30.1 → 0.40.0 (RUSTSEC-2026-0459, bundled SQLite). It was only a lockfile entry
+  through sqlx's optional SQLite driver, which no crate enables, so it was never built; the update
+  clears the OSV-Scanner / Scorecard finding.
+- `osv-scanner.toml`: RUSTSEC-2026-0543 (`chrono` unmaintained, via openidconnect/oauth2/rustls-acme)
+  accepted until 2027-04-30; the RUSTSEC-2026-0387 and GHSA-qwgh-2vcv-g2f7 entries are dropped
+  (`crypto-bigint` is now 0.7.11, and the advisory was narrowed to `block-buffer` 0.11). New
+  `crates/waf-controlplane/ui/osv-scanner.toml` accepts GHSA-fc5q-39xc-vjpf (`picomatch`, dev-only
+  in the UI build, no fixed version) until 2027-02-28.
+- The dashboard's `npm audit` gate is now `npm run audit:gate`: still fails on any HIGH/CRITICAL
+  advisory, except one accepted (with reason and expiry) in `ui/osv-scanner.toml`, the same list
+  OSV-Scanner reads. npm audit has no ignore list, and its only "fix" for `picomatch` was a downgrade
+  to vite 6.2.7.
+- Container images: the CVE-2026-84782 (`libssl3`) acceptance in `.trivyignore` is extended to
+  2026-12-09. Distroless has still not rebuilt `cc-debian12` with the fixed 3.0.22, and no shipped
+  binary links OpenSSL, so it remains not applicable.
+- The image scan gate runs trivy v0.76.2 (was v0.70.0, the trivy-action default).
 
 ## [1.0.3] — 2026-11-11
 
