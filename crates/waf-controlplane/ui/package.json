@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "audit:gate": "node scripts/audit-gate.mjs",
     "e2e:server": "cargo build --release -p waf-controlplane --features embed-ui --manifest-path ../../../Cargo.toml",
     "e2e": "npm run build && npm run e2e:server && playwright test",
     "e2e:ui": "playwright test --ui",

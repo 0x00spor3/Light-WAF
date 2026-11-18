@@ -21,6 +21,10 @@ All notable changes to this project are documented here. The format follows
   (`crypto-bigint` is now 0.7.11, and the advisory was narrowed to `block-buffer` 0.11). New
   `crates/waf-controlplane/ui/osv-scanner.toml` accepts GHSA-fc5q-39xc-vjpf (`picomatch`, dev-only
   in the UI build, no fixed version) until 2027-02-28.
+- The dashboard's `npm audit` gate is now `npm run audit:gate`: still fails on any HIGH/CRITICAL
+  advisory, except one accepted (with reason and expiry) in `ui/osv-scanner.toml`, the same list
+  OSV-Scanner reads. npm audit has no ignore list, and its only "fix" for `picomatch` was a downgrade
+  to vite 6.2.7.
 - Container images: the CVE-2026-84782 (`libssl3`) acceptance in `.trivyignore` is extended to
   2026-12-09. Distroless has still not rebuilt `cc-debian12` with the fixed 3.0.22, and no shipped
   binary links OpenSSL, so it remains not applicable.
