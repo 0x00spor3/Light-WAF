@@ -5961,7 +5961,6 @@ version = "1.0.3"
 dependencies = [
  "argon2",
  "hex",
- "rand_core 0.6.4",
  "ring",
  "serde",
  "serde_json",

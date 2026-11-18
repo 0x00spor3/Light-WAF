@@ -4,17 +4,18 @@
 //! Password hashing (argon2id). Hashes are PHC strings (algorithm + params + random salt embedded),
 //! so verification needs only the stored string.
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::Argon2;
-use rand_core::OsRng;
 
 use crate::error::{Error, Result};
 
 /// Hash a password with argon2id (default params) and a fresh random salt. Returns a PHC string.
 pub fn hash_password(password: &str) -> Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
+    // `hash_password` draws the 16-byte salt from the OS CSPRNG (getrandom); an RNG failure is an
+    // `Err`, never a fixed or empty salt.
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())
         .map_err(|e| Error::Password(e.to_string()))
 }
@@ -25,7 +26,7 @@ pub fn verify_password(password: &str, phc_hash: &str) -> Result<bool> {
     let parsed = PasswordHash::new(phc_hash).map_err(|e| Error::Password(e.to_string()))?;
     match Argon2::default().verify_password(password.as_bytes(), &parsed) {
         Ok(()) => Ok(true),
-        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
         Err(e) => Err(Error::Password(e.to_string())),
     }
 }
@@ -54,5 +55,24 @@ mod tests {
     #[test]
     fn malformed_hash_is_error_not_match() {
         assert!(verify_password("whatever", "not-a-phc-string").is_err());
+    }
+
+    /// Hashes already stored in `gov_users` must keep verifying across argon2 upgrades: this one was
+    /// produced by argon2 0.5.3 (the 1.0.3 code path: `SaltString::generate(&mut OsRng)`).
+    #[test]
+    fn hash_from_argon2_0_5_still_verifies() {
+        const V05: &str =
+            "$argon2id$v=19$m=19456,t=2,p=1$nt5N/LgAbxcUiuuN0LboKQ$o7ZddODJ0C2LxLWBgR766js5htwLFyQBiuiZJfpZJkw";
+        assert!(verify_password("correct horse battery staple", V05).unwrap());
+        assert!(!verify_password("correct horse battery stapl", V05).unwrap());
+    }
+
+    #[test]
+    fn new_hashes_keep_the_phc_shape_and_params() {
+        // Same algorithm, version and cost as 0.5 wrote, plus a 16-byte (22 B64 chars) salt.
+        let h = hash_password("pw").unwrap();
+        let parts: Vec<&str> = h.split('$').collect();
+        assert_eq!(&parts[1..4], ["argon2id", "v=19", "m=19456,t=2,p=1"]);
+        assert_eq!(parts[4].len(), 22);
     }
 }
