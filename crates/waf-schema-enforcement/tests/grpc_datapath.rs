@@ -6,7 +6,8 @@
 //! (control). Also proves the fail-safe: a schema-valid message passes even WITH the module on, and
 //! a non-gRPC request / default-off is inert.
 
-use prost::Message;
+// prost-reflect's re-export: always the prost that protox and prost-reflect build against.
+use prost_reflect::prost::Message;
 use waf_core::{Bytes, Config, Normalized, ParsedBody, RequestContext, WafMode};
 use waf_schema_enforcement::{grpc::GrpcSchemaModule, rules};
 use waf_pipeline::{Pipeline, PipelineVerdict};
