@@ -102,9 +102,12 @@ jobs:
       # matches scripts/images/sbom-scan.sh (no --ignore-unfixed); keeping the two
       # gates aligned is the point — `ignore-unfixed: true` here would have passed
       # green on the 103 unfixed base CVEs that drove the distroless rebase.
+      # `version` overrides the action's built-in default (v0.70.0 in v0.36.0). Dependabot bumps
+      # the action SHA but not this input, so on an action bump re-check it is not older.
       - name: Vulnerability scan (gate on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: v0.76.2
           image-ref: ${{ matrix.image }}:${{ steps.ver.outputs.version }}
           scanners: vuln
           severity: HIGH,CRITICAL
