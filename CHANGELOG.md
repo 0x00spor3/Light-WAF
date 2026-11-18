@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- Operator: kube 4.2 → 5.0, k8s-openapi 0.28 → 0.29. The oldest supported Kubernetes API moves from
+  1.32 to 1.33 (k8s-openapi 0.29 dropped 1.32); 1.37 is now covered too.
 - `sqlx` 0.9.0 → 0.9.1 (control plane, governance, node agent). Upstream, a Postgres `hostaddr`
   (`PGHOSTADDR`) is no longer an alias of `host`: it now skips DNS, and `host` is still used for TLS
   SNI, as in libpq. A `WAF_CP_DATABASE_URL` that relied on the old alias needs `host` instead.
