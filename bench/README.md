@@ -26,7 +26,7 @@ The latest published results, with the machine they ran on, are on
 | Container | Image | Role |
 |---|---|---|
 | `backend` | `nginx:1.27.5-alpine` | Answers `200 ok` to every request, as cheaply as possible, so the numbers are the WAF's. |
-| `lightwaf` | `ghcr.io/0x00spor3/waf-enterprise:1.0.1` | Light WAF, the recommended baseline ([`lightwaf.toml`](lightwaf.toml): `examples/balanced.toml`, PL2, threshold 5, all 15 detection modules) without the per-IP rate limit. |
+| `lightwaf` | `ghcr.io/0x00spor3/waf-enterprise:1.0.3` | Light WAF, the recommended baseline ([`lightwaf.toml`](lightwaf.toml): `examples/balanced.toml`, PL2, threshold 5, all 15 detection modules) without the per-IP rate limit. |
 | `lightwaf-strict` | same | The strict profile ([`lightwaf-strict.toml`](lightwaf-strict.toml): the detection settings of `examples/strict.toml`, PL4, threshold 3), for high-value targets. |
 | `modsec-pl1` | `owasp/modsecurity-crs:4.30.0-nginx-…` | ModSecurity + CRS 4.30 as shipped: paranoia 1, inbound anomaly threshold 5. |
 | `modsec-pl2` | same | The same at paranoia 2, which is closer to Light WAF's PL2 baseline. |
@@ -118,7 +118,7 @@ the setup, re-run, and say on the results page what changed.
 | `CONNECTIONS` | `64` | Concurrent connections. |
 | `DURATION` / `WARMUP` | `30s` / `5s` | Per-run measurement and warm-up time. |
 | `WAF_CPUS` / `BACKEND_CPUS` / `LOADGEN_CPUS` | `0-1` / `2` / `3-5` | CPU sets (`docker --cpuset-cpus` syntax). |
-| `LIGHTWAF_VERSION` | `1.0.1` | Light WAF image tag. |
+| `LIGHTWAF_VERSION` | `1.0.3` | Light WAF image tag. |
 
 ## Files
 

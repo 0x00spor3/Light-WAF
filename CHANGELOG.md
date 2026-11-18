@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- Container images: the CVE-2026-84782 (`libssl3`) acceptance in `.trivyignore` is extended to
+  2026-12-09. Distroless has still not rebuilt `cc-debian12` with the fixed 3.0.22, and no shipped
+  binary links OpenSSL, so it remains not applicable.
+- The image scan gate runs trivy v0.76.2 (was v0.70.0, the trivy-action default).
+
 ## [1.0.3] — 2026-11-11
 
 A security release. Request bodies that departed from strict multipart framing, or held one
