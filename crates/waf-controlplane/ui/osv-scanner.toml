@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# npm advisories for the dashboard's package-lock.json that OSV-Scanner (and OpenSSF Scorecard) should
+# not report. OSV-Scanner picks up the osv-scanner.toml next to each lockfile, so this one covers only
+# this directory; the Rust lockfile's entries are in the repository root's osv-scanner.toml. Same
+# rules: a reason per entry, an expiry, and drop it once an update removes the affected version.
+# The CI `npm audit` gate (scripts/audit-gate.mjs, `npm run audit:gate`) reads this file too, and
+# needs `id`, `ignoreUntil` and `reason` on every entry.
+
+# picomatch 4.0.7 (dev-only: vite, tinyglobby, fdir). ReDoS when the GLOB PATTERN is attacker-supplied;
+# no fixed version exists. It only runs at build time on the globs in our own vite/tsconfig, never on
+# user input, and is not in the shipped bundle (no runtime dependency pulls it in). Short expiry: pick
+# up a fixed picomatch as soon as one is released.
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2027-02-28
+reason = "Dev-only build tooling (vite); globs come from our own config, never from users, and it is not in the shipped UI bundle"
