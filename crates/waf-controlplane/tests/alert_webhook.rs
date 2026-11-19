@@ -119,7 +119,7 @@ async fn alert_fires_and_delivers_webhook_env_gated() {
 
     // Stored AND delivered, with the right group + value.
     let stored = store.recent_alerts(500).await.unwrap();
-    let sa = stored.iter().find(|a| a.rule_name == uniq_name).expect("alert stored");
+    let sa = &stored.iter().find(|a| a.alert.rule_name == uniq_name).expect("alert stored").alert;
     assert_eq!(sa.group_key, "6.6.6.6");
     assert_eq!(sa.value, 3);
 

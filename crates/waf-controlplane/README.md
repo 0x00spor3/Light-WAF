@@ -37,10 +37,12 @@ follow-on.)
 | `GET /api/decisions/volume` | Current per-decision totals (latest counter snapshot). |
 | `GET /api/decisions/series?window_seconds=&bucket_seconds=` | Denied-event counts over time. `bucket_seconds` ∈ {60, 300, 3600}; the window is capped at 7 days server-side. |
 | `GET /api/latency` | Per-node p50/p95/p99 (ms) from the latest histogram snapshot. |
-| `GET /api/events?rule_id=&decision=&client_ip=&limit=` | Search denied-request events (newest first). |
+| `GET /api/events?rule_id=&decision=&client_ip=&since=&until=&limit=` | Search denied-request events (newest first). `since`/`until` are inclusive RFC3339 bounds. |
 | `GET /api/events/{request_id}` | Full drill-down: the reconstructed verdict + per-rule breakdown. |
-| `GET /api/alerts?limit=` | Recent fired alerts (v2), newest first. |
+| `GET /api/alerts?limit=` | Recent fired alerts (v2), newest first, each with its `id`. |
 | `GET /api/alerts/rules` | The configured alert rules (v2). |
+| `GET /api/alerts/{id}` | One fired alert, the `match` (filters, grouping, window) its events are selected with, its `match_source` (`snapshot` \| `current_config` \| `unavailable`) and the window start. |
+| `GET /api/alerts/{id}/events?limit=&offset=` | The denied events behind the alert: in its window, matching its rule, in the fired group, newest first, plus the `total`. 404 when `match_source` is `unavailable`. |
 | `GET /api/siem/status` | SIEM export status (§9): per (destination, stream) cursor / head / **lag** / last delivery. |
 | `GET /api/stream` | Live change stream (SSE): emits `event: events` / `event: alerts` notices so the dashboard refreshes the moment data changes (notify-then-pull; no payload). |
 

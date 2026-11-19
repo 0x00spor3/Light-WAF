@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Control plane: alert evidence. Opening a fired alert in the dashboard lists the denied events that
+  made it fire (its window, rule filters and fired group), each linking to the event drill-down. New
+  `GET /api/alerts/{id}` and `GET /api/alerts/{id}/events`; `GET /api/alerts` rows now carry `id`.
+  Each alert stores a snapshot of its rule's match (migration `0008_alert_match`), so the events
+  stay resolvable after the rule is edited; alerts fired before the upgrade use the configured rule
+  of the same name, or report the events unavailable. The webhook payloads are unchanged.
+- Control plane: `GET /api/events` takes `since` / `until` (RFC3339), and the Events view has a time
+  range filter.
+
 ### Changed
 - Operator: kube 4.2 → 5.0, k8s-openapi 0.28 → 0.29. The oldest supported Kubernetes API moves from
   1.32 to 1.33 (k8s-openapi 0.29 dropped 1.32); 1.37 is now covered too.

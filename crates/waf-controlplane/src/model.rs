@@ -91,6 +91,16 @@ pub struct Alert {
     pub summary: String,
 }
 
+/// A stored [`Alert`] with its row id — the shape `GET /api/alerts` lists, so each alert has a stable
+/// handle for its detail and evidence (`GET /api/alerts/{id}[/events]`). The id is the same one the
+/// SIEM export uses (`waf-alert-{id}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FiredAlert {
+    pub id: i64,
+    #[serde(flatten)]
+    pub alert: Alert,
+}
+
 /// An immutable published ruleset version (§7 write-path, v3). `content` is the raw managed SecRule
 /// `.conf` text; each publish appends one row and `rule_current` selects the live one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

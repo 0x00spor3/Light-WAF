@@ -113,6 +113,12 @@ OpenAPI spec: `documented` vs `shadow`. Read-only and off-datapath; the path→r
 standalone `serde_json`-only re-implementation of the datapath router. Zombie-endpoint detection,
 all-traffic discovery and an OpenAPI-draft-from-traffic learning mode are follow-ons.
 
+*Alert evidence:* each fired alert stores a snapshot of its rule's match (filters, grouping,
+window), and `GET /api/alerts/{id}/events` re-selects the denied events behind it from
+`decision_events` — the rows the alert counted, read with the same permission as `/api/events`.
+Control-plane only: no new telemetry and nothing on the datapath. Alerts fired before the
+snapshot fall back to the configured rule of the same name.
+
 ### 2.3 Governance and compliance
 - **RBAC**, SSO (**OIDC native**; **SAML via an IdP broker**, see below), signed audit log.
 - Compliance evidence reports (SOC 2 / PCI DSS).

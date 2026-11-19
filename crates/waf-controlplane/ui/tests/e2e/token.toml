@@ -3,6 +3,21 @@
 listen = "127.0.0.1:9701"
 retention_days = 30
 
+# Alerting, for the alert-detail spec (32-alert-detail). The rule only matches the spec's own probe
+# rule_id, so the seeded events never fire it; a fast evaluation keeps the spec quick.
+[controlplane.alerting]
+enabled = true
+eval_interval_seconds = 1
+
+[[controlplane.alerts]]
+name = "e2e-alert-burst"
+decision = "blocked"
+rule_id = "e2e-alert-probe"
+group_by = "client_ip"
+window_seconds = 3600
+threshold = 3
+severity = "critical"
+
 # API attack-surface inventory (§4-B pt3 discovery). Path is relative to the webServer cwd (ui/).
 [controlplane.api_inventory]
 spec_path = "tests/e2e/openapi.json"

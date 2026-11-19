@@ -25,7 +25,8 @@ use tokio_stream::{Stream, StreamExt};
 
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::config::AlertRule;
+use crate::config::{AlertMatch, AlertRule};
+use crate::model::{Alert, DecisionEvent, FiredAlert};
 use crate::gov_api::{audit, MaybePrincipal};
 use crate::ingest::Ingestor;
 use crate::prometheus::histogram_quantile;
@@ -73,6 +74,8 @@ pub(crate) fn read_api() -> Router<Arc<AppState>> {
         .route("/api/events/{request_id}", get(get_event))
         .route("/api/alerts", get(list_alerts))
         .route("/api/alerts/rules", get(alert_rules))
+        .route("/api/alerts/{id}", get(get_alert))
+        .route("/api/alerts/{id}/events", get(alert_events))
         .route("/api/siem/status", get(siem_status))
         .route("/api/inventory", get(api_inventory))
         .route("/api/inventory/drift", get(api_inventory_drift))
@@ -387,12 +390,30 @@ struct EventQuery {
     rule_id: Option<String>,
     decision: Option<String>,
     client_ip: Option<String>,
+    /// RFC3339 lower/upper bound on the event time (inclusive).
+    since: Option<String>,
+    until: Option<String>,
     limit: Option<i64>,
 }
 
+/// Parse an optional RFC3339 query parameter; `Err` is the 400 message naming the parameter.
+fn opt_time_param(name: &str, v: Option<&str>) -> Result<Option<time::OffsetDateTime>, String> {
+    match v {
+        None | Some("") => Ok(None),
+        Some(s) => time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+            .map(Some)
+            .map_err(|_| format!("invalid '{name}' (want RFC3339)")),
+    }
+}
+
 async fn list_events(State(s): State<Arc<AppState>>, Query(q): Query<EventQuery>) -> Response {
-    let filter =
-        EventFilter { rule_id: q.rule_id, decision: q.decision, client_ip: q.client_ip };
+    let bounds = opt_time_param("since", q.since.as_deref())
+        .and_then(|since| Ok((since, opt_time_param("until", q.until.as_deref())?)));
+    let (since, until) = match bounds {
+        Ok(b) => b,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+    let filter = EventFilter { rule_id: q.rule_id, decision: q.decision, client_ip: q.client_ip, since, until };
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     match s.store.search_events(&filter, limit).await {
         Ok(events) => Json(events).into_response(),
@@ -444,6 +465,103 @@ async fn list_alerts(State(s): State<Arc<AppState>>, Query(q): Query<AlertQuery>
 /// The configured alert rules (so an operator can see what is active).
 async fn alert_rules(State(s): State<Arc<AppState>>) -> Response {
     Json(s.alert_rules.clone()).into_response()
+}
+
+/// Where an alert's match parameters (and so its events) come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MatchSource {
+    /// The snapshot stored when the alert fired (exact).
+    Snapshot,
+    /// No snapshot (fired before it existed): the configured rule of the same name, which may have
+    /// changed since — the events are an approximation.
+    CurrentConfig,
+    /// No snapshot and no configured rule of that name: the events cannot be resolved.
+    Unavailable,
+}
+
+/// The match an alert's events are selected with: its snapshot, else the configured rule by name.
+fn resolve_match(
+    s: &AppState,
+    alert: &Alert,
+    snapshot: Option<AlertMatch>,
+) -> (Option<AlertMatch>, MatchSource) {
+    if let Some(m) = snapshot {
+        return (Some(m), MatchSource::Snapshot);
+    }
+    match s.alert_rules.iter().find(|r| r.name == alert.rule_name) {
+        Some(r) => (Some(r.matcher()), MatchSource::CurrentConfig),
+        None => (None, MatchSource::Unavailable),
+    }
+}
+
+/// `GET /api/alerts/{id}` — one fired alert, the match its events are selected with and the window.
+#[derive(Serialize)]
+struct AlertDetail {
+    #[serde(flatten)]
+    fired: FiredAlert,
+    #[serde(rename = "match")]
+    matcher: Option<AlertMatch>,
+    match_source: MatchSource,
+    /// Start of the evaluated window (`fired_at - window_seconds`); the window ends at `fired_at`.
+    window_start: Option<String>,
+}
+
+async fn get_alert(State(s): State<Arc<AppState>>, Path(id): Path<i64>) -> Response {
+    let (fired, snapshot) = match s.store.get_alert(id).await {
+        Ok(Some(found)) => found,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such alert").into_response(),
+        Err(e) => return err500(e),
+    };
+    let (matcher, match_source) = resolve_match(&s, &fired.alert, snapshot);
+    let window_start = matcher.as_ref().and_then(|m| {
+        let w = time::Duration::seconds(i64::try_from(m.window_seconds).ok()?);
+        fired.alert.fired_at.checked_sub(w)?.format(&time::format_description::well_known::Rfc3339).ok()
+    });
+    Json(AlertDetail { fired, matcher, match_source, window_start }).into_response()
+}
+
+#[derive(Deserialize)]
+struct AlertEventsQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+/// `GET /api/alerts/{id}/events` — one page of the events behind an alert, plus the total.
+#[derive(Serialize)]
+struct AlertEvents {
+    match_source: MatchSource,
+    /// Events currently selected (can differ from the alert's `value`: late arrivals, retention).
+    total: i64,
+    events: Vec<DecisionEvent>,
+}
+
+/// The denied events that made an alert fire: those in its window matching its (snapshotted) rule
+/// and fired group, newest first. Same read permission as `/api/events` — the same rows.
+async fn alert_events(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(q): Query<AlertEventsQuery>,
+) -> Response {
+    let (fired, snapshot) = match s.store.get_alert(id).await {
+        Ok(Some(found)) => found,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such alert").into_response(),
+        Err(e) => return err500(e),
+    };
+    let (Some(m), match_source) = resolve_match(&s, &fired.alert, snapshot) else {
+        return (StatusCode::NOT_FOUND, "the alert's rule is no longer configured; its events cannot be resolved")
+            .into_response();
+    };
+    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let total = match s.store.count_alert_events(&fired.alert, &m).await {
+        Ok(n) => n,
+        Err(e) => return err500(e),
+    };
+    match s.store.alert_events(&fired.alert, &m, limit, offset).await {
+        Ok(events) => Json(AlertEvents { match_source, total, events }).into_response(),
+        Err(e) => err500(e),
+    }
 }
 
 #[derive(Deserialize)]

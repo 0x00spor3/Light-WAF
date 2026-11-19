@@ -70,6 +70,25 @@ impl GroupBy {
             GroupBy::RuleId => Some("rule_id"),
         }
     }
+
+    /// The config/serde spelling (`none` | `client_ip` | `rule_id`), as stored in the alert snapshot.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupBy::None => "none",
+            GroupBy::ClientIp => "client_ip",
+            GroupBy::RuleId => "rule_id",
+        }
+    }
+
+    /// Inverse of [`GroupBy::as_str`]; `None` for an unknown spelling.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(GroupBy::None),
+            "client_ip" => Some(GroupBy::ClientIp),
+            "rule_id" => Some(GroupBy::RuleId),
+            _ => None,
+        }
+    }
 }
 
 fn default_severity() -> String {
@@ -109,6 +128,30 @@ pub struct AlertRule {
     /// Do not re-fire the same (rule, group) within this many seconds.
     #[serde(default = "default_cooldown")]
     pub cooldown_seconds: u64,
+}
+
+impl AlertRule {
+    /// The parameters that select this rule's events — snapshotted on every fired alert.
+    pub fn matcher(&self) -> AlertMatch {
+        AlertMatch {
+            decision: self.decision.clone(),
+            rule_id: self.rule_id.clone(),
+            client_ip: self.client_ip.clone(),
+            group_by: self.group_by,
+            window_seconds: self.window_seconds,
+        }
+    }
+}
+
+/// What selects an alert rule's events: its filters, grouping and look-back window. Stored with each
+/// fired alert so the events behind it stay resolvable after the rule changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlertMatch {
+    pub decision: Option<String>,
+    pub rule_id: Option<String>,
+    pub client_ip: Option<String>,
+    pub group_by: GroupBy,
+    pub window_seconds: u64,
 }
 
 /// The JSON body POSTed to the alert webhook. An unknown value fails config parsing at load.

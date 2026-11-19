@@ -119,7 +119,8 @@ async fn evaluate_rule(
             threshold: rule.threshold,
             summary: summary(rule, &group_key, count),
         };
-        store.insert_alert(&alert).await?;
+        // The match snapshot keeps the alert's events resolvable after the rule changes.
+        store.insert_fired_alert(&alert, &rule.matcher()).await?;
         warn!(rule = %rule.name, group = %group_key, value = count, threshold = rule.threshold, "ALERT fired");
         // Push a live notice so connected dashboards refresh the Alerts view immediately.
         bus.notify(StreamKind::Alerts);
@@ -336,8 +337,18 @@ mod tests {
         // First cycle: 3 blocks from 7.7.7.7 reach threshold 3 → one alert fires (no webhook).
         let bus = EventBus::new();
         evaluate_rule(&store, &rule, None, WebhookFormat::Generic, None, &bus).await.expect("cycle 1");
-        let fired = |alerts: Vec<Alert>| alerts.iter().filter(|a| a.rule_name == uniq_name).count();
+        let fired = |alerts: Vec<crate::model::FiredAlert>| {
+            alerts.iter().filter(|a| a.alert.rule_name == uniq_name).count()
+        };
         assert_eq!(fired(store.recent_alerts(500).await.unwrap()), 1, "one alert on first cycle");
+
+        // The fired alert carries the rule's match snapshot, and it resolves back to the 3 events.
+        let id = store.recent_alerts(500).await.unwrap().into_iter().find(|a| a.alert.rule_name == uniq_name).unwrap().id;
+        let (fired_alert, snapshot) = store.get_alert(id).await.unwrap().expect("alert by id");
+        assert_eq!(snapshot.as_ref(), Some(&rule.matcher()), "evaluator stores the match snapshot");
+        let events = store.alert_events(&fired_alert.alert, &rule.matcher(), 100, 0).await.unwrap();
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert!(events.iter().all(|e| e.request_id.starts_with(&format!("ev-{nanos}-"))));
 
         // Second cycle immediately: still over threshold, but cooldown (3600s) blocks a re-fire.
         evaluate_rule(&store, &rule, None, WebhookFormat::Generic, None, &bus).await.expect("cycle 2");
