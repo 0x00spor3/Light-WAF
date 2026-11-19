@@ -284,6 +284,165 @@ fn cve_2025_61882_oracle_ebs() {
     assert_fires("crs-9100033", Severity::Error, |c| set_path(c, "/OA_HTML/SyncServlet"));
 }
 
+// ── Tier 3: Aug–Nov 2026 KEV wave (each with a benign trap for its FP edge) ────
+
+/// Assert the rule `crs-<id>` does NOT fire for the request built by `build` (FP trap).
+fn assert_clean(id: &str, build: impl FnOnce(&mut RequestContext)) {
+    let mut c = ctx();
+    build(&mut c);
+    let d = module().inspect(&c);
+    assert_eq!(fired(&d, id), None, "{id} false-positive — got {d:?}");
+}
+
+fn post(c: &mut RequestContext, path: &str, content_type: &str, body: &str) {
+    c.method = "POST".to_string();
+    set_path(c, path);
+    c.headers = vec![("Content-Type".to_string(), content_type.to_string())];
+    c.body = Bytes::from(body.to_string());
+}
+
+#[test]
+fn cve_2026_129448_roller_xmlrpc_serializable() {
+    assert_fires("crs-9100040", Severity::Critical, |c| {
+        post(c, "/roller-services/xmlrpc", "text/xml",
+            "<?xml version=\"1.0\"?><methodCall><methodName>blogger.getUsersBlogs</methodName>\
+             <params><param><value><ex:serializable xmlns:ex=\"http://ws.apache.org/xmlrpc/namespaces/extensions\">\
+             AAAA</ex:serializable></value></param></params></methodCall>");
+    });
+    // Trap: an ordinary MetaWeblog call carries only standard XML-RPC types.
+    assert_clean("crs-9100040", |c| {
+        post(c, "/roller-services/xmlrpc", "text/xml",
+            "<?xml version=\"1.0\"?><methodCall><methodName>metaWeblog.newPost</methodName>\
+             <params><param><value><string>serializable objects in Java</string></value></param></params></methodCall>");
+    });
+}
+
+#[test]
+fn cve_2026_63077_teamcity_xstream() {
+    assert_fires("crs-9100041", Severity::Critical, |c| {
+        post(c, "/app/agents/v1/commands/error", "application/xml",
+            "<map><entry><dynamic-proxy><interface>java.lang.Comparable</interface></dynamic-proxy></entry></map>");
+    });
+    // Trap: an agent error report whose stack trace NAMES the class as text.
+    assert_clean("crs-9100041", |c| {
+        post(c, "/app/agents/v1/commands/error", "application/xml",
+            "<error><message>at java.lang.ProcessBuilder.start(ProcessBuilder.java:1128)</message></error>");
+    });
+}
+
+#[test]
+fn cve_2026_0768_langflow_validate() {
+    assert_fires("crs-9100042", Severity::Critical, |c| {
+        post(c, "/api/v1/validate/code", "application/json",
+            "{\"code\":\"def f(x=__import__('os').popen('id')): pass\"}");
+    });
+    // A primitive at the start of a JSON-escaped line (`\n` precedes it, no word boundary).
+    assert_fires("crs-9100042", Severity::Critical, |c| {
+        post(c, "/api/v1/validate/code", "application/json", "{\"code\":\"x = 1\\nexec('id')\"}");
+    });
+    // Trap: a normal custom component that reads its key from the environment.
+    assert_clean("crs-9100042", |c| {
+        post(c, "/api/v1/validate/code", "application/json",
+            "{\"code\":\"import os\\nclass C(Component):\\n    key = os.environ.get('API_KEY')\"}");
+    });
+}
+
+#[test]
+fn cve_2026_87902_wordpress_pagename() {
+    // Double-encoded traversal, as seen in the wild.
+    assert_fires("crs-9100043", Severity::Critical, |c| {
+        set_uri(c, "/", "page_id=2&pagename=templates%2f%252e%252e%252f%252e%252e%252fwp-links-opml");
+    });
+    assert_clean("crs-9100043", |c| set_uri(c, "/", "page_id=2&pagename=about-us"));
+}
+
+#[test]
+fn pearcmd_pivot() {
+    assert_fires("crs-9000033", Severity::Critical, |c| {
+        set_uri(c, "/index.php", "file=/usr/local/lib/php/pearcmd.php&+config-show");
+    });
+}
+
+#[test]
+fn cve_2026_75604_nextjs_backslash_traversal() {
+    assert_fires("crs-9100044", Severity::Critical, |c| set_path(c, "/blog/..%5c..%5cserver%5capp"));
+    assert_fires("crs-9100044", Severity::Critical, |c| set_path(c, "/blog/%252e%252e%255cserver"));
+    // Trap: a lone encoded backslash and a forward-slash `..` are not this signature.
+    assert_clean("crs-9100044", |c| set_path(c, "/docs/C%5cUsers/readme"));
+}
+
+#[test]
+fn cve_2026_104935_ivanti_dscgi_header() {
+    assert_fires("crs-9100045", Severity::Critical, |c| {
+        c.headers = vec![("X-DSCGI-PATH".to_string(), "/x".to_string())];
+    });
+}
+
+#[test]
+fn cve_2026_102895_gpustack_loopback_spoof() {
+    assert_fires("crs-9100046", Severity::Critical, |c| {
+        c.headers = vec![("X-GPUStack-Real-IP".to_string(), "127.0.0.1".to_string())];
+    });
+    assert_clean("crs-9100046", |c| {
+        c.headers = vec![("X-GPUStack-Real-IP".to_string(), "10.0.0.5".to_string())];
+    });
+}
+
+#[test]
+fn cve_2026_49869_kestra_configs_suffix() {
+    assert_fires("crs-9100047", Severity::Critical, |c| {
+        set_path(c, "/api/v1/main/executions/company.team/configs");
+    });
+    assert_fires("crs-9100047", Severity::Critical, |c| set_path(c, "/api/v1/flows/company.team/configs"));
+    // Traps: the real public endpoint, and a generic REST API that is not Kestra.
+    assert_clean("crs-9100047", |c| set_path(c, "/api/v1/configs"));
+    assert_clean("crs-9100047", |c| set_path(c, "/api/v1/projects/42/configs"));
+}
+
+#[test]
+fn cve_2026_96652_plex_timeline_ssrf() {
+    assert_fires("crs-9100048", Severity::Critical, |c| {
+        set_uri(c, "/player/timeline/poll", "protocol=http%3A%2F%2F10.0.0.1%3A8080%2Fx&commandID=1");
+    });
+    assert_clean("crs-9100048", |c| set_uri(c, "/player/timeline/poll", "protocol=http&commandID=1"));
+}
+
+#[test]
+fn cve_2026_76504_cisco_sdwan_encoded_login() {
+    assert_fires("crs-9100049", Severity::Critical, |c| set_path(c, "/%6a_security_check"));
+    assert_fires("crs-9100049", Severity::Critical, |c| set_path(c, "/j_security%5Fcheck"));
+    // Trap: the literal login servlet is normal vManage traffic.
+    assert_clean("crs-9100049", |c| set_path(c, "/j_security_check"));
+}
+
+#[test]
+fn cve_2026_82329_jfrog_registry_join() {
+    assert_fires("crs-9100050", Severity::Critical, |c| {
+        post(c, "/access/api/v1/registry/join", "application/json", "{}");
+    });
+    assert_clean("crs-9100050", |c| set_path(c, "/access/api/v1/registry/join"));
+}
+
+#[test]
+fn cve_2026_5430_jwt_alg_none() {
+    // `{"alg":"none","typ":"JWT"}` and `{"typ":"JWT","alg":"none"}` (different alignment).
+    for tok in ["eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.e30.", "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.e30."] {
+        assert_fires("crs-9100051", Severity::Critical, |c| {
+            c.headers = vec![("Authorization".to_string(), format!("Bearer {tok}"))];
+        });
+    }
+    assert_fires("crs-9100051", Severity::Critical, |c| {
+        c.headers = vec![("X-JWT-Assertion".to_string(), "eyJhbGciOiJOT05FIn0.e30.".to_string())];
+    });
+    // Trap: a properly signed RS256 token.
+    assert_clean("crs-9100051", |c| {
+        c.headers = vec![(
+            "Authorization".to_string(),
+            "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.e30.c2lnbmF0dXJl".to_string(),
+        )];
+    });
+}
+
 // ── control: a benign request trips nothing ────────────────────────────────────
 
 #[test]
