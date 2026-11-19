@@ -73,6 +73,8 @@ test("a fired alert lists the events that fired it", async ({ page, request, bas
   await expect(summary).toContainText(`client_ip=${firedIp}`);
   await expect(summary).toContainText(`rule=${PROBE_RULE}`);
   await expect(summary).toContainText("3600s");
+  // Still ongoing: the three events are in the window ending now (threshold 3).
+  await expect(summary).toContainText("3 matching events in the last 3600s — still above threshold");
   // Fired with a snapshot: no "approximate" / "unavailable" notice.
   await expect(summary.locator(".alert-notice")).toHaveCount(0);
 

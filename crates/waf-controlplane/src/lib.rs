@@ -33,7 +33,7 @@ pub mod stream;
 
 pub use config::ControlPlaneConfig;
 pub use error::{Error, Result};
-pub use evaluator::{evaluate_once, run_evaluator};
+pub use evaluator::{evaluate_once, run_evaluator, Delivery};
 pub use stream::{EventBus, StreamKind};
 pub use gov_api::Governance;
 pub use ingest::Ingestor;

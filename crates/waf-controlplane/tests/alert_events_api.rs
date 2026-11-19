@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use time::OffsetDateTime;
-use waf_controlplane::config::{AlertRule, GroupBy, WebhookFormat};
+use waf_controlplane::config::{AlertRule, GroupBy};
 use waf_controlplane::model::{Alert, DecisionEvent};
-use waf_controlplane::{app, evaluate_once, AppState, Ingestor, Store};
+use waf_controlplane::{app, evaluate_once, AppState, Delivery, Ingestor, Store};
 
 const TOKEN: &str = "alert-events-token";
 
@@ -111,7 +111,7 @@ async fn alert_events_api_env_gated() {
     }
     let fired_rule = rule(&name, &rule_id);
     let bus = waf_controlplane::EventBus::new();
-    evaluate_once(&store, std::slice::from_ref(&fired_rule), None, WebhookFormat::Generic, None, &bus).await;
+    evaluate_once(&store, std::slice::from_ref(&fired_rule), Delivery::default(), None, &bus).await;
 
     // The rule is then edited (its filter now matches nothing): the snapshot must still resolve the
     // events the alert fired on, not the edited rule's.
@@ -130,6 +130,10 @@ async fn alert_events_api_env_gated() {
     assert_eq!(detail["match"]["group_by"], "client_ip");
     assert_eq!(detail["match"]["window_seconds"], 3600);
     assert!(detail["window_start"].is_string());
+    // Still ongoing: the fired group's 2 events are in the window ending now (threshold 2).
+    assert_eq!(detail["current"]["count"], 2, "{detail}");
+    assert_eq!(detail["current"]["above_threshold"], true);
+    assert!(detail["current"]["since"].is_string());
 
     let (status, events) = get(&client, format!("{base}/api/alerts/{id}/events")).await;
     assert_eq!(status, 200, "{events}");
@@ -167,6 +171,7 @@ async fn alert_events_api_env_gated() {
     let (_, detail) = get(&client, format!("{base}/api/alerts/{oid}")).await;
     assert_eq!(detail["match_source"], "unavailable");
     assert!(detail["match"].is_null());
+    assert!(detail["current"].is_null());
     let (status, _) = get(&client, format!("{base}/api/alerts/{oid}/events")).await;
     assert_eq!(status, 404);
 

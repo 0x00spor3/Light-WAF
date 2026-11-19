@@ -19,9 +19,12 @@ use time::OffsetDateTime;
 use tracing::{info, warn};
 use waf_governance::store as gov_store;
 
-use crate::config::{SiemConfig, SiemDestination, SiemStream};
-use crate::siem::{alert_to_siem, audit_to_siem, decision_to_siem, formatter_for, SiemEvent};
+use crate::config::{alert_url, SiemConfig, SiemDestination, SiemStream};
+use crate::siem::{alert_to_siem_with_evidence, audit_to_siem, decision_to_siem, formatter_for, SiemEvent};
 use crate::store::Store;
+
+/// How many `request_id`s of the events behind an alert its SIEM event carries.
+const ALERT_SAMPLE_REQUEST_IDS: i64 = 5;
 
 /// Whether an HTTP status counts as a successful delivery (the cursor may advance).
 pub fn is_success(status: u16) -> bool {
@@ -60,11 +63,25 @@ pub struct SiemForwarder {
     config: SiemConfig,
     client: reqwest::Client,
     status: SiemStatusHandle,
+    /// `[controlplane].public_url`: alert events carry their dashboard link (`event.url`) when set.
+    public_url: Option<String>,
 }
 
 impl SiemForwarder {
     pub fn new(store: Store, config: SiemConfig) -> Self {
-        Self { store, config, client: reqwest::Client::new(), status: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            store,
+            config,
+            client: reqwest::Client::new(),
+            status: Arc::new(Mutex::new(HashMap::new())),
+            public_url: None,
+        }
+    }
+
+    /// Link alert events to the dashboard at `public_url` (`event.url = {public_url}/alerts/{id}`).
+    pub fn with_public_url(mut self, public_url: Option<String>) -> Self {
+        self.public_url = public_url;
+        self
     }
 
     /// A cheap clone of the shared status handle (share it with `AppState` before spawning `run`).
@@ -91,8 +108,20 @@ impl SiemForwarder {
             }
             SiemStream::Alerts => {
                 let rows = self.store.fetch_alerts_since(after, limit).await?;
-                let max = rows.last().map(|(id, _)| *id).unwrap_or(after);
-                (rows.iter().map(|(id, a)| alert_to_siem(*id, a)).collect(), max)
+                let max = rows.last().map(|(f, _)| f.id).unwrap_or(after);
+                let mut events = Vec::with_capacity(rows.len());
+                for (fired, snapshot) in &rows {
+                    // A pre-snapshot alert has no exact selection: it is exported without samples.
+                    let samples = match snapshot {
+                        Some(m) => {
+                            self.store.alert_sample_request_ids(&fired.alert, m, ALERT_SAMPLE_REQUEST_IDS).await?
+                        }
+                        None => Vec::new(),
+                    };
+                    let url = alert_url(self.public_url.as_deref(), fired.id);
+                    events.push(alert_to_siem_with_evidence(fired.id, &fired.alert, samples, url));
+                }
+                (events, max)
             }
         };
         Ok((events, max_id))

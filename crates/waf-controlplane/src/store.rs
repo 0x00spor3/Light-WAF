@@ -623,13 +623,24 @@ impl Store {
         Ok(row.map(AlertRow::split))
     }
 
-    /// The binds shared by the alert-evidence queries: the window `[fired_at - window, fired_at]` (the
-    /// same `since` the evaluator counted from) and the group key routed to its column's slot.
-    fn alert_window(a: &Alert, m: &AlertMatch) -> (OffsetDateTime, Option<String>, Option<String>) {
+    /// The start of `m`'s look-back window ending at `end` — for an alert's window, `end = fired_at`
+    /// gives the same `since` the evaluator counted from.
+    pub fn window_start(end: OffsetDateTime, m: &AlertMatch) -> OffsetDateTime {
         let window = time::Duration::seconds(i64::try_from(m.window_seconds).unwrap_or(i64::MAX / 2));
-        let since = a.fired_at.checked_sub(window).unwrap_or(OffsetDateTime::UNIX_EPOCH);
-        let group = |g: GroupBy| (m.group_by == g).then(|| a.group_key.clone());
-        (since, group(GroupBy::ClientIp), group(GroupBy::RuleId))
+        end.checked_sub(window).unwrap_or(OffsetDateTime::UNIX_EPOCH)
+    }
+
+    /// The group key routed to its column's bind slot (`$6` client_ip, `$7` rule_id).
+    fn group_binds(m: &AlertMatch, group_key: &str) -> (Option<String>, Option<String>) {
+        let group = |g: GroupBy| (m.group_by == g).then(|| group_key.to_string());
+        (group(GroupBy::ClientIp), group(GroupBy::RuleId))
+    }
+
+    /// The binds shared by the alert-evidence queries: the window `[fired_at - window, fired_at]` and
+    /// the group key routed to its column's slot.
+    fn alert_window(a: &Alert, m: &AlertMatch) -> (OffsetDateTime, Option<String>, Option<String>) {
+        let (ip_group, rule_group) = Self::group_binds(m, &a.group_key);
+        (Self::window_start(a.fired_at, m), ip_group, rule_group)
     }
 
     /// The denied events behind a fired alert, newest first: the events in its window that match
@@ -664,10 +675,22 @@ impl Store {
     /// How many events [`Store::alert_events`] selects in total (for paging). Can differ from the
     /// alert's `value` when events arrived late or have been pruned since.
     pub async fn count_alert_events(&self, a: &Alert, m: &AlertMatch) -> Result<i64> {
-        let (since, ip_group, rule_group) = Self::alert_window(a, m);
+        self.count_matching_events(m, &a.group_key, Self::window_start(a.fired_at, m), a.fired_at).await
+    }
+
+    /// How many events in `[since, until]` match `m` and belong to `group_key` — the alert-evidence
+    /// selection over an arbitrary window (e.g. the window ending now: is the alert still ongoing?).
+    pub async fn count_matching_events(
+        &self,
+        m: &AlertMatch,
+        group_key: &str,
+        since: OffsetDateTime,
+        until: OffsetDateTime,
+    ) -> Result<i64> {
+        let (ip_group, rule_group) = Self::group_binds(m, group_key);
         let (n,): (i64,) = sqlx::query_as(concat!("SELECT COUNT(*)::bigint", alert_events_where!()))
             .bind(since)
-            .bind(a.fired_at)
+            .bind(until)
             .bind(&m.decision)
             .bind(&m.rule_id)
             .bind(&m.client_ip)
@@ -676,6 +699,28 @@ impl Store {
             .fetch_one(&self.pool)
             .await?;
         Ok(n)
+    }
+
+    /// Up to `limit` `request_id`s of the events behind a fired alert, newest first (the samples the
+    /// SIEM alert event carries for correlation).
+    pub async fn alert_sample_request_ids(&self, a: &Alert, m: &AlertMatch, limit: i64) -> Result<Vec<String>> {
+        let (since, ip_group, rule_group) = Self::alert_window(a, m);
+        let rows: Vec<(String,)> = sqlx::query_as(concat!(
+            "SELECT request_id",
+            alert_events_where!(),
+            " ORDER BY ts DESC, id DESC LIMIT $8"
+        ))
+        .bind(since)
+        .bind(a.fired_at)
+        .bind(&m.decision)
+        .bind(&m.rule_id)
+        .bind(&m.client_ip)
+        .bind(ip_group)
+        .bind(rule_group)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(rid,)| rid).collect())
     }
 
     /// Store one scrape's latency histogram (one row per bucket, common `ts`/`node`).
@@ -983,22 +1028,19 @@ impl Store {
         Ok(m)
     }
 
-    /// Fired alerts with `id > after`, ascending, capped at `limit` (with their ids).
-    pub async fn fetch_alerts_since(&self, after: i64, limit: i64) -> Result<Vec<(i64, Alert)>> {
-        let rows = sqlx::query_as::<_, (i64, String, String, OffsetDateTime, String, i64, i64, String)>(
-            "SELECT id, rule_name, group_key, fired_at, severity, value, threshold, summary \
+    /// Fired alerts with `id > after`, ascending, capped at `limit` (with their ids and fire-time match
+    /// snapshots, `None` for a pre-snapshot row).
+    pub async fn fetch_alerts_since(&self, after: i64, limit: i64) -> Result<Vec<(FiredAlert, Option<AlertMatch>)>> {
+        let rows: Vec<AlertRow> = sqlx::query_as::<_, AlertRow>(
+            "SELECT id, rule_name, group_key, fired_at, severity, value, threshold, summary, \
+             match_window_seconds, match_group_by, match_decision, match_rule_id, match_client_ip \
              FROM alerts WHERE id > $1 ORDER BY id LIMIT $2",
         )
         .bind(after)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(id, rule_name, group_key, fired_at, severity, value, threshold, summary)| {
-                (id, Alert { rule_name, group_key, fired_at, severity, value, threshold, summary })
-            })
-            .collect())
+        Ok(rows.into_iter().map(AlertRow::split).collect())
     }
 
     /// The highest `alerts.id` (0 if empty).
@@ -1420,6 +1462,12 @@ mod tests {
         let page2: Vec<String> =
             store.alert_events(&a, &m, 1, 1).await.unwrap().into_iter().map(|e| e.request_id).collect();
         assert_eq!(page2, vec![id("hit-1")]);
+        // SIEM samples: the same selection, newest first, capped.
+        assert_eq!(store.alert_sample_request_ids(&a, &m, 5).await.unwrap(), vec![id("hit-2"), id("hit-1")]);
+        assert_eq!(store.alert_sample_request_ids(&a, &m, 1).await.unwrap(), vec![id("hit-2")]);
+        // An arbitrary window: [fired_at - 1s, fired_at + 1s] holds hit-2 and after-fire only.
+        let near = |s: i64| fired_at + time::Duration::seconds(s);
+        assert_eq!(store.count_matching_events(&m, "1.1.1.1", near(-1), near(1)).await.unwrap(), 2);
 
         // A `rule_id` group selects that rule's events from every IP.
         let by_rule = AlertMatch { group_by: GroupBy::RuleId, rule_id: None, ..m.clone() };

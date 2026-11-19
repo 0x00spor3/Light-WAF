@@ -240,6 +240,8 @@ export interface AlertDetail extends FiredAlert {
   match_source: MatchSource;
   /** Start of the evaluated window; it ends at `fired_at`. */
   window_start: string | null;
+  /** The same selection over the window ending now (is the alert still ongoing?); null if unavailable. */
+  current: { since: string; count: number; above_threshold: boolean } | null;
 }
 
 export interface AlertEvents {

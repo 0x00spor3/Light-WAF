@@ -505,6 +505,22 @@ struct AlertDetail {
     match_source: MatchSource,
     /// Start of the evaluated window (`fired_at - window_seconds`); the window ends at `fired_at`.
     window_start: Option<String>,
+    /// The same selection over the window ending NOW — whether the alert is still ongoing (the
+    /// evaluator would fire it again but for the cooldown). `None` when the match is unavailable.
+    current: Option<CurrentWindow>,
+}
+
+/// The alert's match evaluated over the window ending now.
+#[derive(Serialize)]
+struct CurrentWindow {
+    since: String,
+    count: i64,
+    /// `count >= threshold` (the alert's own threshold).
+    above_threshold: bool,
+}
+
+fn rfc3339(ts: time::OffsetDateTime) -> String {
+    ts.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
 }
 
 async fn get_alert(State(s): State<Arc<AppState>>, Path(id): Path<i64>) -> Response {
@@ -514,11 +530,23 @@ async fn get_alert(State(s): State<Arc<AppState>>, Path(id): Path<i64>) -> Respo
         Err(e) => return err500(e),
     };
     let (matcher, match_source) = resolve_match(&s, &fired.alert, snapshot);
-    let window_start = matcher.as_ref().and_then(|m| {
-        let w = time::Duration::seconds(i64::try_from(m.window_seconds).ok()?);
-        fired.alert.fired_at.checked_sub(w)?.format(&time::format_description::well_known::Rfc3339).ok()
-    });
-    Json(AlertDetail { fired, matcher, match_source, window_start }).into_response()
+    let window_start = matcher.as_ref().map(|m| rfc3339(Store::window_start(fired.alert.fired_at, m)));
+    let current = match &matcher {
+        Some(m) => {
+            let now = time::OffsetDateTime::now_utc();
+            let since = Store::window_start(now, m);
+            match s.store.count_matching_events(m, &fired.alert.group_key, since, now).await {
+                Ok(count) => Some(CurrentWindow {
+                    since: rfc3339(since),
+                    count,
+                    above_threshold: count >= fired.alert.threshold,
+                }),
+                Err(e) => return err500(e),
+            }
+        }
+        None => None,
+    };
+    Json(AlertDetail { fired, matcher, match_source, window_start, current }).into_response()
 }
 
 #[derive(Deserialize)]

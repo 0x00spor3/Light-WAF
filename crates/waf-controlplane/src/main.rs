@@ -76,6 +76,7 @@ async fn run() -> waf_controlplane::Result<()> {
             config.alerts.clone(),
             config.alerting.webhook_url.clone(),
             config.alerting.webhook_format,
+            config.public_url.clone(),
             config.alerting.eval_interval_seconds,
             bus.clone(),
         ));
@@ -85,7 +86,8 @@ async fn run() -> waf_controlplane::Result<()> {
     // spawn the background flush loop (zero-datapath: it reads the stores; the WAF is unaware).
     let siem = if config.siem.enabled {
         info!(destinations = config.siem.destinations.len(), "siem export enabled; starting forwarder");
-        let forwarder = SiemForwarder::new(store.clone(), config.siem.clone());
+        let forwarder =
+            SiemForwarder::new(store.clone(), config.siem.clone()).with_public_url(config.public_url.clone());
         let handle = forwarder.status();
         tokio::spawn(forwarder.run());
         Some((config.siem.clone(), handle))

@@ -41,7 +41,7 @@ follow-on.)
 | `GET /api/events/{request_id}` | Full drill-down: the reconstructed verdict + per-rule breakdown. |
 | `GET /api/alerts?limit=` | Recent fired alerts (v2), newest first, each with its `id`. |
 | `GET /api/alerts/rules` | The configured alert rules (v2). |
-| `GET /api/alerts/{id}` | One fired alert, the `match` (filters, grouping, window) its events are selected with, its `match_source` (`snapshot` \| `current_config` \| `unavailable`) and the window start. |
+| `GET /api/alerts/{id}` | One fired alert, the `match` (filters, grouping, window) its events are selected with, its `match_source` (`snapshot` \| `current_config` \| `unavailable`), the window start, and `current`: the same selection over the window ending now (`count`, `above_threshold`). |
 | `GET /api/alerts/{id}/events?limit=&offset=` | The denied events behind the alert: in its window, matching its rule, in the fired group, newest first, plus the `total`. 404 when `match_source` is `unavailable`. |
 | `GET /api/siem/status` | SIEM export status (§9): per (destination, stream) cursor / head / **lag** / last delivery. |
 | `GET /api/stream` | Live change stream (SSE): emits `event: events` / `event: alerts` notices so the dashboard refreshes the moment data changes (notify-then-pull; no payload). |

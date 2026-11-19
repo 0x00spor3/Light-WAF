@@ -20,7 +20,7 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
 use time::OffsetDateTime;
-use waf_controlplane::config::{SiemConfig, SiemDestination, SiemFormat, SiemStream};
+use waf_controlplane::config::{AlertMatch, GroupBy, SiemConfig, SiemDestination, SiemFormat, SiemStream};
 use waf_controlplane::model::{Alert, Contribution, DecisionEvent};
 use waf_controlplane::{app, AppState, Ingestor, SiemForwarder, Store};
 
@@ -233,6 +233,34 @@ async fn siem_all_streams_and_status_env_gated() {
         })
         .await
         .unwrap();
+    // An alert fired with its rule snapshot, over two events of its group (plus one of another group).
+    let evidence_rule = format!("{dest}-evidence");
+    for (i, ip) in ["7.7.7.7", "7.7.7.7", "8.8.8.8"].into_iter().enumerate() {
+        let mut ev = sample(&format!("{dest}-ev-{i}"), &evidence_rule);
+        ev.client_ip = Some(ip.into());
+        store.insert_decision_event(&ev).await.unwrap();
+    }
+    let evidence_id = store
+        .insert_fired_alert(
+            &Alert {
+                rule_name: evidence_rule.clone(),
+                group_key: "7.7.7.7".into(),
+                fired_at: OffsetDateTime::now_utc(),
+                severity: "critical".into(),
+                value: 2,
+                threshold: 2,
+                summary: "burst".into(),
+            },
+            &AlertMatch {
+                decision: Some("blocked".into()),
+                rule_id: Some(evidence_rule.clone()),
+                client_ip: None,
+                group_by: GroupBy::ClientIp,
+                window_seconds: 600,
+            },
+        )
+        .await
+        .unwrap();
     let audit_entry = waf_governance::model::NewAudit::new(
         "admin",
         "rule.publish",
@@ -256,7 +284,7 @@ async fn siem_all_streams_and_status_env_gated() {
             streams: vec![SiemStream::Decisions, SiemStream::Audit, SiemStream::Alerts],
         }],
     };
-    let fwd = SiemForwarder::new(store.clone(), config.clone());
+    let fwd = SiemForwarder::new(store.clone(), config.clone()).with_public_url(Some("https://cp.test".into()));
     let siem_status = fwd.status();
     fwd.forward_once().await;
 
@@ -265,6 +293,24 @@ async fn siem_all_streams_and_status_env_gated() {
     assert!(text.contains("waf-decision-"), "decisions stream delivered");
     assert!(text.contains(&format!("waf-audit-{}", g0 + 1)), "audit stream delivered");
     assert!(text.contains("waf-alert-"), "alerts stream delivered");
+
+    // Alert evidence: the snapshotted alert carries its group's request ids (newest first) and its
+    // link; the pre-snapshot alert carries the link but no samples.
+    let alert_event = |rule: &str| -> serde_json::Value {
+        text.lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|v| v["event"]["kind"] == "alert" && v["waf"]["alert"]["rule"] == rule)
+            .unwrap_or_else(|| panic!("alert event for {rule} delivered:\n{text}"))
+    };
+    let ev = alert_event(&evidence_rule);
+    assert_eq!(ev["event"]["url"], format!("https://cp.test/alerts/{evidence_id}"));
+    assert_eq!(
+        ev["waf"]["alert"]["sample_request_ids"],
+        serde_json::json!([format!("{dest}-ev-1"), format!("{dest}-ev-0")])
+    );
+    let legacy = alert_event(&format!("{dest}-rule"));
+    assert!(legacy["event"]["url"].as_str().unwrap().starts_with("https://cp.test/alerts/"));
+    assert!(legacy["waf"]["alert"].get("sample_request_ids").is_none(), "{legacy}");
 
     // The status API exposes the per-(destination, stream) cursor + lag + last delivery.
     let state = Arc::new(AppState {

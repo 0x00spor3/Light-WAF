@@ -627,7 +627,10 @@ ECS field names where the mapping is obvious; the WAF domain lives under `waf.*`
 own `version` — we promise OUR schema, not conformance to an external one. Audit events add
 `waf.audit.{seq,hash,signature}`; alert events add `waf.alert.{rule,group,value,threshold,severity}`.
 `source.ip` is present only when the value is an IP address, so an alert grouped by `rule_id` or by
-nothing has no `source`; its group stays in `waf.alert.group`.
+nothing has no `source`; its group stays in `waf.alert.group`. An alert event also carries
+`waf.alert.sample_request_ids`, up to 5 `request_id`s of the denied events behind it (newest first),
+to correlate with the `waf-decision-*` events; it is omitted for alerts fired before rule snapshots
+existed. With `[controlplane].public_url` set, `event.url` links to the alert's dashboard page.
 
 ### CEF output
 
@@ -688,7 +691,7 @@ against the SIEM products themselves. Two things to keep in mind:
 | `cn1` | score | value | audit sequence |
 | `cn2` | | threshold | |
 | `cs1` | contributions (`module:rule:points`) | group | audit hash |
-| `cs2` / `cs3` | | | signature / previous hash |
+| `cs2` / `cs3` | | sample request ids (`,`-joined) / alert URL, when present | signature / previous hash |
 
 Each custom field names itself in its `cnNLabel` / `csNLabel` pair. Severity maps `critical`=9, `error`=7,
 `warning`=5, `notice`=3; anything else, or no severity at all, is `0` (Unknown). `externalId` is the stable

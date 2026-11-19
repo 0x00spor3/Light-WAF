@@ -81,6 +81,20 @@ function AlertSummary({ alert }: { alert: AlertDetailDto }) {
           <dt>Match</dt>
           <dd className="muted">{m ? matchSummary(m.decision, m.rule_id, m.client_ip) : "—"}</dd>
         </div>
+        <div>
+          <dt>Now</dt>
+          <dd>
+            {m && alert.current ? (
+              <>
+                <span className={alert.current.above_threshold ? "over" : undefined}>{alert.current.count}</span>{" "}
+                matching events in the last {m.window_seconds}s —{" "}
+                {alert.current.above_threshold ? "still above threshold" : "below threshold"}
+              </>
+            ) : (
+              "—"
+            )}
+          </dd>
+        </div>
       </dl>
       {alert.match_source === "current_config" && (
         <p className="alert-notice">
