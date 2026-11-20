@@ -9,20 +9,84 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::types::Json;
 use time::OffsetDateTime;
 
-use crate::config::{AlertRule, GroupBy};
+use crate::config::{AlertMatch, AlertRule, GroupBy};
 use crate::error::{Error, Result};
 use crate::model::{
-    Alert, CapturedRequest, Contribution, DecisionEvent, MetricRollup, NodeRuleStatus, RuleVersion,
-    RuleVersionMeta,
+    Alert, CapturedRequest, Contribution, DecisionEvent, FiredAlert, MetricRollup, NodeRuleStatus,
+    RuleVersion, RuleVersionMeta,
 };
 use crate::prometheus::{DecisionCount, LatencyBucket};
 
-/// Optional filters for [`Store::search_events`]. A `None` field matches everything.
+/// Optional filters for [`Store::search_events`]. A `None` field matches everything; `since` /
+/// `until` bound `ts` inclusively.
 #[derive(Debug, Default, Clone)]
 pub struct EventFilter {
     pub rule_id: Option<String>,
     pub decision: Option<String>,
     pub client_ip: Option<String>,
+    pub since: Option<OffsetDateTime>,
+    pub until: Option<OffsetDateTime>,
+}
+
+/// The `WHERE` clause selecting an alert's events from `decision_events`: the fire window
+/// `[$1, $2]`, the rule's filters (`$3`–`$5`) and the fired group (`$6` for a `client_ip` group,
+/// `$7` for a `rule_id` group). The group compares through `COALESCE(.., '')` exactly like
+/// [`Store::count_events_grouped`] keys it, so a NULL column matches the `''` group it was counted in.
+macro_rules! alert_events_where {
+    () => {
+        " FROM decision_events \
+         WHERE ts >= $1 AND ts <= $2 \
+           AND ($3::text IS NULL OR decision = $3) \
+           AND ($4::text IS NULL OR rule_id = $4) \
+           AND ($5::text IS NULL OR client_ip = $5) \
+           AND ($6::text IS NULL OR COALESCE(client_ip, '') = $6) \
+           AND ($7::text IS NULL OR COALESCE(rule_id, '') = $7)"
+    };
+}
+
+/// Row shape for `alerts` reads that need the id and the fire-time match snapshot.
+#[derive(sqlx::FromRow)]
+struct AlertRow {
+    id: i64,
+    rule_name: String,
+    group_key: String,
+    fired_at: OffsetDateTime,
+    severity: String,
+    value: i64,
+    threshold: i64,
+    summary: String,
+    match_window_seconds: Option<i64>,
+    match_group_by: Option<String>,
+    match_decision: Option<String>,
+    match_rule_id: Option<String>,
+    match_client_ip: Option<String>,
+}
+
+impl AlertRow {
+    /// The alert plus its snapshot — `None` for a row stored without one (fired before the snapshot
+    /// existed, or with an unreadable `match_group_by`).
+    fn split(self) -> (FiredAlert, Option<AlertMatch>) {
+        let snapshot = match (self.match_window_seconds, self.match_group_by.as_deref().and_then(GroupBy::parse)) {
+            (Some(window), Some(group_by)) => Some(AlertMatch {
+                decision: self.match_decision,
+                rule_id: self.match_rule_id,
+                client_ip: self.match_client_ip,
+                group_by,
+                window_seconds: window.max(0) as u64,
+            }),
+            _ => None,
+        };
+        let alert = Alert {
+            rule_name: self.rule_name,
+            group_key: self.group_key,
+            fired_at: self.fired_at,
+            severity: self.severity,
+            value: self.value,
+            threshold: self.threshold,
+            summary: self.summary,
+        };
+        (FiredAlert { id: self.id, alert }, snapshot)
+    }
 }
 
 /// A pooled connection to the control-plane Postgres, plus the schema operations Phase 2/3 need.
@@ -262,11 +326,15 @@ impl Store {
              WHERE ($1::text IS NULL OR rule_id = $1) \
                AND ($2::text IS NULL OR decision = $2) \
                AND ($3::text IS NULL OR client_ip = $3) \
-             ORDER BY ts DESC LIMIT $4",
+               AND ($4::timestamptz IS NULL OR ts >= $4) \
+               AND ($5::timestamptz IS NULL OR ts <= $5) \
+             ORDER BY ts DESC LIMIT $6",
         )
         .bind(&f.rule_id)
         .bind(&f.decision)
         .bind(&f.client_ip)
+        .bind(f.since)
+        .bind(f.until)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -479,7 +547,34 @@ impl Store {
         Ok(row.0)
     }
 
-    /// Record a fired alert.
+    /// Record a fired alert together with the snapshot of the rule's match parameters at fire time
+    /// (what the evaluator stores). Returns the new row id.
+    pub async fn insert_fired_alert(&self, a: &Alert, m: &AlertMatch) -> Result<i64> {
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT INTO alerts (rule_name, group_key, fired_at, severity, value, threshold, summary, \
+             match_window_seconds, match_group_by, match_decision, match_rule_id, match_client_ip) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id",
+        )
+        .bind(&a.rule_name)
+        .bind(&a.group_key)
+        .bind(a.fired_at)
+        .bind(&a.severity)
+        .bind(a.value)
+        .bind(a.threshold)
+        .bind(&a.summary)
+        .bind(i64::try_from(m.window_seconds).unwrap_or(i64::MAX))
+        .bind(m.group_by.as_str())
+        .bind(&m.decision)
+        .bind(&m.rule_id)
+        .bind(&m.client_ip)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Record a fired alert WITHOUT a match snapshot (the pre-snapshot row shape; its events are
+    /// resolved against the configured rule of the same name). The evaluator uses
+    /// [`Store::insert_fired_alert`].
     pub async fn insert_alert(&self, a: &Alert) -> Result<()> {
         sqlx::query(
             "INSERT INTO alerts (rule_name, group_key, fired_at, severity, value, threshold, summary) \
@@ -497,27 +592,135 @@ impl Store {
         Ok(())
     }
 
-    /// The `limit` most recent fired alerts, newest first (`GET /api/alerts`).
-    pub async fn recent_alerts(&self, limit: i64) -> Result<Vec<Alert>> {
-        let rows = sqlx::query_as::<_, (String, String, OffsetDateTime, String, i64, i64, String)>(
-            "SELECT rule_name, group_key, fired_at, severity, value, threshold, summary \
-             FROM alerts ORDER BY fired_at DESC LIMIT $1",
+    /// The `limit` most recent fired alerts with their ids, newest first (`GET /api/alerts`).
+    pub async fn recent_alerts(&self, limit: i64) -> Result<Vec<FiredAlert>> {
+        let rows = sqlx::query_as::<_, (i64, String, String, OffsetDateTime, String, i64, i64, String)>(
+            "SELECT id, rule_name, group_key, fired_at, severity, value, threshold, summary \
+             FROM alerts ORDER BY fired_at DESC, id DESC LIMIT $1",
         )
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(rule_name, group_key, fired_at, severity, value, threshold, summary)| Alert {
-                rule_name,
-                group_key,
-                fired_at,
-                severity,
-                value,
-                threshold,
-                summary,
+            .map(|(id, rule_name, group_key, fired_at, severity, value, threshold, summary)| FiredAlert {
+                id,
+                alert: Alert { rule_name, group_key, fired_at, severity, value, threshold, summary },
             })
             .collect())
+    }
+
+    /// One fired alert by id, with its fire-time match snapshot (`None` for a pre-snapshot row).
+    pub async fn get_alert(&self, id: i64) -> Result<Option<(FiredAlert, Option<AlertMatch>)>> {
+        let row: Option<AlertRow> = sqlx::query_as::<_, AlertRow>(
+            "SELECT id, rule_name, group_key, fired_at, severity, value, threshold, summary, \
+             match_window_seconds, match_group_by, match_decision, match_rule_id, match_client_ip \
+             FROM alerts WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(AlertRow::split))
+    }
+
+    /// The start of `m`'s look-back window ending at `end` — for an alert's window, `end = fired_at`
+    /// gives the same `since` the evaluator counted from.
+    pub fn window_start(end: OffsetDateTime, m: &AlertMatch) -> OffsetDateTime {
+        let window = time::Duration::seconds(i64::try_from(m.window_seconds).unwrap_or(i64::MAX / 2));
+        end.checked_sub(window).unwrap_or(OffsetDateTime::UNIX_EPOCH)
+    }
+
+    /// The group key routed to its column's bind slot (`$6` client_ip, `$7` rule_id).
+    fn group_binds(m: &AlertMatch, group_key: &str) -> (Option<String>, Option<String>) {
+        let group = |g: GroupBy| (m.group_by == g).then(|| group_key.to_string());
+        (group(GroupBy::ClientIp), group(GroupBy::RuleId))
+    }
+
+    /// The binds shared by the alert-evidence queries: the window `[fired_at - window, fired_at]` and
+    /// the group key routed to its column's slot.
+    fn alert_window(a: &Alert, m: &AlertMatch) -> (OffsetDateTime, Option<String>, Option<String>) {
+        let (ip_group, rule_group) = Self::group_binds(m, &a.group_key);
+        (Self::window_start(a.fired_at, m), ip_group, rule_group)
+    }
+
+    /// The denied events behind a fired alert, newest first: the events in its window that match
+    /// `m` and belong to the fired group. `limit`/`offset` page through them.
+    pub async fn alert_events(
+        &self,
+        a: &Alert,
+        m: &AlertMatch,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<DecisionEvent>> {
+        let (since, ip_group, rule_group) = Self::alert_window(a, m);
+        let rows: Vec<EventRow> = sqlx::query_as::<_, EventRow>(concat!(
+            "SELECT request_id, ts, node, method, path, client_ip, decision, rule_id, reason, score, contributions",
+            alert_events_where!(),
+            " ORDER BY ts DESC, id DESC LIMIT $8 OFFSET $9"
+        ))
+        .bind(since)
+        .bind(a.fired_at)
+        .bind(&m.decision)
+        .bind(&m.rule_id)
+        .bind(&m.client_ip)
+        .bind(ip_group)
+        .bind(rule_group)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// How many events [`Store::alert_events`] selects in total (for paging). Can differ from the
+    /// alert's `value` when events arrived late or have been pruned since.
+    pub async fn count_alert_events(&self, a: &Alert, m: &AlertMatch) -> Result<i64> {
+        self.count_matching_events(m, &a.group_key, Self::window_start(a.fired_at, m), a.fired_at).await
+    }
+
+    /// How many events in `[since, until]` match `m` and belong to `group_key` — the alert-evidence
+    /// selection over an arbitrary window (e.g. the window ending now: is the alert still ongoing?).
+    pub async fn count_matching_events(
+        &self,
+        m: &AlertMatch,
+        group_key: &str,
+        since: OffsetDateTime,
+        until: OffsetDateTime,
+    ) -> Result<i64> {
+        let (ip_group, rule_group) = Self::group_binds(m, group_key);
+        let (n,): (i64,) = sqlx::query_as(concat!("SELECT COUNT(*)::bigint", alert_events_where!()))
+            .bind(since)
+            .bind(until)
+            .bind(&m.decision)
+            .bind(&m.rule_id)
+            .bind(&m.client_ip)
+            .bind(ip_group)
+            .bind(rule_group)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(n)
+    }
+
+    /// Up to `limit` `request_id`s of the events behind a fired alert, newest first (the samples the
+    /// SIEM alert event carries for correlation).
+    pub async fn alert_sample_request_ids(&self, a: &Alert, m: &AlertMatch, limit: i64) -> Result<Vec<String>> {
+        let (since, ip_group, rule_group) = Self::alert_window(a, m);
+        let rows: Vec<(String,)> = sqlx::query_as(concat!(
+            "SELECT request_id",
+            alert_events_where!(),
+            " ORDER BY ts DESC, id DESC LIMIT $8"
+        ))
+        .bind(since)
+        .bind(a.fired_at)
+        .bind(&m.decision)
+        .bind(&m.rule_id)
+        .bind(&m.client_ip)
+        .bind(ip_group)
+        .bind(rule_group)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(rid,)| rid).collect())
     }
 
     /// Store one scrape's latency histogram (one row per bucket, common `ts`/`node`).
@@ -825,22 +1028,19 @@ impl Store {
         Ok(m)
     }
 
-    /// Fired alerts with `id > after`, ascending, capped at `limit` (with their ids).
-    pub async fn fetch_alerts_since(&self, after: i64, limit: i64) -> Result<Vec<(i64, Alert)>> {
-        let rows = sqlx::query_as::<_, (i64, String, String, OffsetDateTime, String, i64, i64, String)>(
-            "SELECT id, rule_name, group_key, fired_at, severity, value, threshold, summary \
+    /// Fired alerts with `id > after`, ascending, capped at `limit` (with their ids and fire-time match
+    /// snapshots, `None` for a pre-snapshot row).
+    pub async fn fetch_alerts_since(&self, after: i64, limit: i64) -> Result<Vec<(FiredAlert, Option<AlertMatch>)>> {
+        let rows: Vec<AlertRow> = sqlx::query_as::<_, AlertRow>(
+            "SELECT id, rule_name, group_key, fired_at, severity, value, threshold, summary, \
+             match_window_seconds, match_group_by, match_decision, match_rule_id, match_client_ip \
              FROM alerts WHERE id > $1 ORDER BY id LIMIT $2",
         )
         .bind(after)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(id, rule_name, group_key, fired_at, severity, value, threshold, summary)| {
-                (id, Alert { rule_name, group_key, fired_at, severity, value, threshold, summary })
-            })
-            .collect())
+        Ok(rows.into_iter().map(AlertRow::split).collect())
     }
 
     /// The highest `alerts.id` (0 if empty).
@@ -1197,7 +1397,177 @@ mod tests {
             .await
             .expect("insert alert");
         assert!(store.last_alert_fired(&uniq, "9.9.9.9").await.expect("last").is_some());
-        assert!(store.recent_alerts(100).await.expect("recent").iter().any(|a| a.rule_name == uniq));
+        assert!(store.recent_alerts(100).await.expect("recent").iter().any(|a| a.alert.rule_name == uniq));
+    }
+
+    /// Insert one blocked event with explicit fields (alert-evidence tests).
+    async fn insert_ev(store: &Store, id: String, ts: OffsetDateTime, rule_id: &str, ip: Option<&str>, decision: &str) {
+        let mut ev = sample_event(&id);
+        ev.ts = ts;
+        ev.rule_id = Some(rule_id.to_string());
+        ev.client_ip = ip.map(str::to_string);
+        ev.decision = decision.to_string();
+        store.insert_decision_event(&ev).await.expect("insert");
+    }
+
+    fn fired(rule_name: &str, group_key: &str, fired_at: OffsetDateTime) -> Alert {
+        Alert {
+            rule_name: rule_name.into(),
+            group_key: group_key.into(),
+            fired_at,
+            severity: "critical".into(),
+            value: 0,
+            threshold: 1,
+            summary: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn alert_events_select_the_window_filters_and_group_env_gated() {
+        let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+            eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+            return;
+        };
+        let store = Store::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+
+        let uniq = format!("evid-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        let other_rule = format!("{uniq}-other");
+        let fired_at = OffsetDateTime::now_utc() - time::Duration::seconds(10);
+        let in_window = fired_at - time::Duration::seconds(30);
+        let id = |s: &str| format!("{uniq}-{s}");
+        // Inside the 60s window, matching: two from the fired IP.
+        insert_ev(&store, id("hit-1"), in_window, &uniq, Some("1.1.1.1"), "blocked").await;
+        insert_ev(&store, id("hit-2"), fired_at, &uniq, Some("1.1.1.1"), "blocked").await;
+        // Each of these misses on exactly one axis.
+        insert_ev(&store, id("before-window"), fired_at - time::Duration::seconds(61), &uniq, Some("1.1.1.1"), "blocked").await;
+        insert_ev(&store, id("after-fire"), fired_at + time::Duration::seconds(1), &uniq, Some("1.1.1.1"), "blocked").await;
+        insert_ev(&store, id("other-group"), in_window, &uniq, Some("2.2.2.2"), "blocked").await;
+        insert_ev(&store, id("other-rule"), in_window, &other_rule, Some("1.1.1.1"), "blocked").await;
+        insert_ev(&store, id("other-decision"), in_window, &uniq, Some("1.1.1.1"), "rejected").await;
+
+        let m = AlertMatch {
+            decision: Some("blocked".into()),
+            rule_id: Some(uniq.clone()),
+            client_ip: None,
+            group_by: GroupBy::ClientIp,
+            window_seconds: 60,
+        };
+        let a = fired(&uniq, "1.1.1.1", fired_at);
+        let ids: Vec<String> =
+            store.alert_events(&a, &m, 100, 0).await.unwrap().into_iter().map(|e| e.request_id).collect();
+        assert_eq!(ids, vec![id("hit-2"), id("hit-1")], "only in-window, matching, same-group, newest first");
+        assert_eq!(store.count_alert_events(&a, &m).await.unwrap(), 2);
+        // Paging.
+        let page2: Vec<String> =
+            store.alert_events(&a, &m, 1, 1).await.unwrap().into_iter().map(|e| e.request_id).collect();
+        assert_eq!(page2, vec![id("hit-1")]);
+        // SIEM samples: the same selection, newest first, capped.
+        assert_eq!(store.alert_sample_request_ids(&a, &m, 5).await.unwrap(), vec![id("hit-2"), id("hit-1")]);
+        assert_eq!(store.alert_sample_request_ids(&a, &m, 1).await.unwrap(), vec![id("hit-2")]);
+        // An arbitrary window: [fired_at - 1s, fired_at + 1s] holds hit-2 and after-fire only.
+        let near = |s: i64| fired_at + time::Duration::seconds(s);
+        assert_eq!(store.count_matching_events(&m, "1.1.1.1", near(-1), near(1)).await.unwrap(), 2);
+
+        // A `rule_id` group selects that rule's events from every IP.
+        let by_rule = AlertMatch { group_by: GroupBy::RuleId, rule_id: None, ..m.clone() };
+        let a = fired(&uniq, &uniq, fired_at);
+        assert_eq!(store.count_alert_events(&a, &by_rule).await.unwrap(), 3, "hit-1, hit-2, other-group");
+    }
+
+    #[tokio::test]
+    async fn alert_events_null_client_ip_is_the_empty_group_env_gated() {
+        let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+            eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+            return;
+        };
+        let store = Store::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+
+        // The evaluator keys a NULL client_ip as the '' group; the evidence must find those events.
+        let uniq = format!("evnull-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        let fired_at = OffsetDateTime::now_utc();
+        insert_ev(&store, format!("{uniq}-null"), fired_at, &uniq, None, "blocked").await;
+        insert_ev(&store, format!("{uniq}-ip"), fired_at, &uniq, Some("3.3.3.3"), "blocked").await;
+        let m = AlertMatch {
+            decision: None,
+            rule_id: Some(uniq.clone()),
+            client_ip: None,
+            group_by: GroupBy::ClientIp,
+            window_seconds: 60,
+        };
+        let rule = AlertRule {
+            name: uniq.clone(),
+            decision: None,
+            rule_id: Some(uniq.clone()),
+            client_ip: None,
+            group_by: GroupBy::ClientIp,
+            window_seconds: 60,
+            threshold: 1,
+            severity: "warning".into(),
+            cooldown_seconds: 0,
+        };
+        let counts = store.count_events_grouped(&rule, fired_at - time::Duration::seconds(60)).await.unwrap();
+        assert!(counts.contains(&(String::new(), 1)), "{counts:?}");
+        let got = store.alert_events(&fired(&uniq, "", fired_at), &m, 100, 0).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].request_id, format!("{uniq}-null"));
+    }
+
+    #[tokio::test]
+    async fn alert_snapshot_roundtrip_and_legacy_rows_env_gated() {
+        let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+            eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+            return;
+        };
+        let store = Store::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+
+        let uniq = format!("snap-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        let m = AlertMatch {
+            decision: Some("blocked".into()),
+            rule_id: None,
+            client_ip: Some("4.4.4.4".into()),
+            group_by: GroupBy::None,
+            window_seconds: 120,
+        };
+        let id = store.insert_fired_alert(&fired(&uniq, "", OffsetDateTime::now_utc()), &m).await.unwrap();
+        let (got, snapshot) = store.get_alert(id).await.unwrap().expect("by id");
+        assert_eq!(got.id, id);
+        assert_eq!(got.alert.rule_name, uniq);
+        assert_eq!(snapshot, Some(m));
+
+        // A row stored without a snapshot (pre-migration shape) reads back with none.
+        let legacy = format!("{uniq}-legacy");
+        store.insert_alert(&fired(&legacy, "", OffsetDateTime::now_utc())).await.unwrap();
+        let legacy_id =
+            store.recent_alerts(100).await.unwrap().into_iter().find(|a| a.alert.rule_name == legacy).unwrap().id;
+        assert_eq!(store.get_alert(legacy_id).await.unwrap().expect("by id").1, None);
+        assert!(store.get_alert(i64::MAX).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn search_events_time_bounds_env_gated() {
+        let Ok(url) = std::env::var("WAF_CP_DATABASE_URL") else {
+            eprintln!("skipping: WAF_CP_DATABASE_URL not set");
+            return;
+        };
+        let store = Store::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+
+        let uniq = format!("tb-{}", OffsetDateTime::now_utc().unix_timestamp_nanos());
+        let now = OffsetDateTime::now_utc();
+        for (name, ago) in [("old", 600), ("mid", 300), ("new", 0)] {
+            insert_ev(&store, format!("{uniq}-{name}"), now - time::Duration::seconds(ago), &uniq, Some("5.5.5.5"), "blocked").await;
+        }
+        let f = EventFilter {
+            rule_id: Some(uniq.clone()),
+            since: Some(now - time::Duration::seconds(400)),
+            until: Some(now - time::Duration::seconds(100)),
+            ..Default::default()
+        };
+        let ids: Vec<String> = store.search_events(&f, 100).await.unwrap().into_iter().map(|e| e.request_id).collect();
+        assert_eq!(ids, vec![format!("{uniq}-mid")]);
     }
 
     #[tokio::test]

@@ -215,7 +215,41 @@ export interface Alert {
   summary: string;
 }
 
+/// A stored alert with its id (the `GET /api/alerts` row shape).
+export interface FiredAlert extends Alert {
+  id: number;
+}
+
 export type GroupBy = "none" | "client_ip" | "rule_id";
+
+/// The parameters an alert's events are selected with (the rule as it was when it fired).
+export interface AlertMatch {
+  decision: string | null;
+  rule_id: string | null;
+  client_ip: string | null;
+  group_by: GroupBy;
+  window_seconds: number;
+}
+
+/// Where an alert's match comes from: the fire-time snapshot (exact), the currently configured rule
+/// of the same name (alert fired before snapshots existed — approximate), or nowhere.
+export type MatchSource = "snapshot" | "current_config" | "unavailable";
+
+export interface AlertDetail extends FiredAlert {
+  match: AlertMatch | null;
+  match_source: MatchSource;
+  /** Start of the evaluated window; it ends at `fired_at`. */
+  window_start: string | null;
+  /** The same selection over the window ending now (is the alert still ongoing?); null if unavailable. */
+  current: { since: string; count: number; above_threshold: boolean } | null;
+}
+
+export interface AlertEvents {
+  match_source: MatchSource;
+  /** Events currently selected (can differ from the alert's value: late arrivals, retention). */
+  total: number;
+  events: DecisionEvent[];
+}
 
 export interface AlertRule {
   name: string;
@@ -421,12 +455,17 @@ export const api = {
     rule_id?: string;
     decision?: string;
     client_ip?: string;
+    /** RFC3339 inclusive bounds on the event time. */
+    since?: string;
+    until?: string;
     limit?: number;
   }) => {
     const q = new URLSearchParams();
     if (params.rule_id) q.set("rule_id", params.rule_id);
     if (params.decision) q.set("decision", params.decision);
     if (params.client_ip) q.set("client_ip", params.client_ip);
+    if (params.since) q.set("since", params.since);
+    if (params.until) q.set("until", params.until);
     if (params.limit) q.set("limit", String(params.limit));
     const qs = q.toString();
     return apiFetch<DecisionEvent[]>(`/api/events${qs ? `?${qs}` : ""}`);
@@ -436,7 +475,11 @@ export const api = {
   /** The full captured request for a denied event. Gated by ViewCaptures; the view is audited. */
   eventCapture: (requestId: string) =>
     apiFetch<CapturedRequest>(`/api/events/${encodeURIComponent(requestId)}/capture`),
-  alerts: (limit = 100) => apiFetch<Alert[]>(`/api/alerts?limit=${limit}`),
+  alerts: (limit = 100) => apiFetch<FiredAlert[]>(`/api/alerts?limit=${limit}`),
+  alert: (id: number) => apiFetch<AlertDetail>(`/api/alerts/${id}`),
+  /** The denied events behind an alert (its window, rule filters and fired group), newest first. */
+  alertEvents: (id: number, limit: number, offset: number) =>
+    apiFetch<AlertEvents>(`/api/alerts/${id}/events?limit=${limit}&offset=${offset}`),
   alertRules: () => apiFetch<AlertRule[]>("/api/alerts/rules"),
 
   // ── API attack-surface inventory (§4-B pt3 discovery) ──

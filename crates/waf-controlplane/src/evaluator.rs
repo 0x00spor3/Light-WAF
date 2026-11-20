@@ -11,10 +11,11 @@
 
 use std::time::Duration;
 
+use serde::Serialize;
 use time::OffsetDateTime;
 use tracing::{info, warn};
 
-use crate::config::{AlertRule, WebhookFormat};
+use crate::config::{alert_url, AlertRule, WebhookFormat};
 use crate::error::Result;
 use crate::model::Alert;
 use crate::store::Store;
@@ -48,12 +49,23 @@ fn summary(rule: &AlertRule, group_key: &str, count: i64) -> String {
     }
 }
 
+/// Where and how fired alerts are delivered: the webhook (if any), its body format, and the
+/// dashboard base URL alert links are built from (if any).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Delivery<'a> {
+    pub webhook_url: Option<&'a str>,
+    pub format: WebhookFormat,
+    /// `[controlplane].public_url` — webhooks carry `{public_url}/alerts/{id}` when set.
+    pub public_url: Option<&'a str>,
+}
+
 /// Run the evaluator forever (spawn as a background task). No-op if no rules are configured.
 pub async fn run_evaluator(
     store: Store,
     rules: Vec<AlertRule>,
     webhook_url: Option<String>,
     webhook_format: WebhookFormat,
+    public_url: Option<String>,
     interval_secs: u64,
     bus: EventBus,
 ) {
@@ -67,9 +79,14 @@ pub async fn run_evaluator(
     }
     let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
     info!(rules = rules.len(), webhook = webhook_url.is_some(), interval_s = interval_secs, "alerting: evaluator started");
+    let delivery = Delivery {
+        webhook_url: webhook_url.as_deref(),
+        format: webhook_format,
+        public_url: public_url.as_deref(),
+    };
     loop {
         ticker.tick().await;
-        evaluate_once(&store, &rules, webhook_url.as_deref(), webhook_format, client.as_ref(), &bus).await;
+        evaluate_once(&store, &rules, delivery, client.as_ref(), &bus).await;
     }
 }
 
@@ -78,13 +95,12 @@ pub async fn run_evaluator(
 pub async fn evaluate_once(
     store: &Store,
     rules: &[AlertRule],
-    webhook_url: Option<&str>,
-    webhook_format: WebhookFormat,
+    delivery: Delivery<'_>,
     client: Option<&reqwest::Client>,
     bus: &EventBus,
 ) {
     for rule in rules {
-        if let Err(e) = evaluate_rule(store, rule, webhook_url, webhook_format, client, bus).await {
+        if let Err(e) = evaluate_rule(store, rule, delivery, client, bus).await {
             warn!(rule = %rule.name, error = %e, "alert rule evaluation failed (skipping this cycle)");
         }
     }
@@ -95,8 +111,7 @@ pub async fn evaluate_once(
 async fn evaluate_rule(
     store: &Store,
     rule: &AlertRule,
-    webhook_url: Option<&str>,
-    webhook_format: WebhookFormat,
+    delivery: Delivery<'_>,
     client: Option<&reqwest::Client>,
     bus: &EventBus,
 ) -> Result<()> {
@@ -119,43 +134,60 @@ async fn evaluate_rule(
             threshold: rule.threshold,
             summary: summary(rule, &group_key, count),
         };
-        store.insert_alert(&alert).await?;
+        // The match snapshot keeps the alert's events resolvable after the rule changes.
+        let id = store.insert_fired_alert(&alert, &rule.matcher()).await?;
         warn!(rule = %rule.name, group = %group_key, value = count, threshold = rule.threshold, "ALERT fired");
         // Push a live notice so connected dashboards refresh the Alerts view immediately.
         bus.notify(StreamKind::Alerts);
-        if let (Some(url), Some(client)) = (webhook_url, client) {
-            deliver_webhook(webhook_request(client, url, webhook_format, &alert, rule), &alert).await;
+        if let (Some(url), Some(client)) = (delivery.webhook_url, client) {
+            let link = alert_url(delivery.public_url, id);
+            let request = webhook_request(client, url, delivery.format, id, link.as_deref(), &alert, rule);
+            deliver_webhook(request, &alert).await;
         }
     }
     Ok(())
 }
 
-/// The one-line alert message for a Slack or Mattermost incoming webhook.
-fn slack_text(alert: &Alert, rule: &AlertRule) -> String {
+/// The `generic` webhook body: the alert's fields, plus its id and (with `public_url`) its link.
+#[derive(Serialize)]
+struct GenericBody<'a> {
+    #[serde(flatten)]
+    alert: &'a Alert,
+    id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<&'a str>,
+}
+
+/// The one-line alert message for a Slack or Mattermost incoming webhook. `link` (the alert's
+/// dashboard page) is appended bare: both auto-link a plain URL.
+fn slack_text(alert: &Alert, rule: &AlertRule, link: Option<&str>) -> String {
     let group = match rule.group_by.column() {
         Some(col) => format!(", {col}={}", alert.group_key),
         None => String::new(),
     };
+    let link = link.map(|l| format!(" {l}")).unwrap_or_default();
     let line = format!(
-        "[{}] {}: {} events in {}s (threshold {}){group}",
+        "[{}] {}: {} events in {}s (threshold {}){group}{link}",
         alert.severity, alert.rule_name, alert.value, rule.window_seconds, alert.threshold
     );
     // Slack reads these three as control characters: an unescaped `<!channel>` would notify everyone.
     line.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// The webhook POST for `alert`, in the configured `format`.
+/// The webhook POST for alert `id`, in the configured `format`.
 fn webhook_request(
     client: &reqwest::Client,
     url: &str,
     format: WebhookFormat,
+    id: i64,
+    link: Option<&str>,
     alert: &Alert,
     rule: &AlertRule,
 ) -> reqwest::RequestBuilder {
     let request = client.post(url);
     match format {
-        WebhookFormat::Generic => request.json(alert),
-        WebhookFormat::Slack => request.json(&serde_json::json!({ "text": slack_text(alert, rule) })),
+        WebhookFormat::Generic => request.json(&GenericBody { alert, id, url: link }),
+        WebhookFormat::Slack => request.json(&serde_json::json!({ "text": slack_text(alert, rule, link) })),
     }
 }
 
@@ -243,21 +275,25 @@ mod tests {
         (alert, rule)
     }
 
-    /// The body actually put on the wire for `format`.
-    fn rendered_body(format: WebhookFormat, alert: &Alert, rule: &AlertRule) -> serde_json::Value {
+    /// The body actually put on the wire for `format`, for alert id 42 with an optional `link`.
+    fn rendered_body(format: WebhookFormat, alert: &Alert, rule: &AlertRule, link: Option<&str>) -> serde_json::Value {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::new();
         let request =
-            webhook_request(&client, "https://hook.test/", format, alert, rule).build().unwrap();
+            webhook_request(&client, "https://hook.test/", format, 42, link, alert, rule).build().unwrap();
         serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap()
     }
 
     #[test]
-    fn generic_webhook_body_is_the_alert_json() {
+    fn generic_webhook_body_is_the_alert_json_plus_its_id() {
         use crate::config::GroupBy;
         let (alert, rule) = webhook_fixture(GroupBy::ClientIp, "1.2.3.4");
-        let got = rendered_body(WebhookFormat::Generic, &alert, &rule);
-        assert_eq!(got, serde_json::to_value(&alert).unwrap());
+        let mut want = serde_json::to_value(&alert).unwrap();
+        want["id"] = 42.into();
+        assert_eq!(rendered_body(WebhookFormat::Generic, &alert, &rule, None), want, "no `url` without public_url");
+
+        want["url"] = "https://cp.test/alerts/42".into();
+        assert_eq!(rendered_body(WebhookFormat::Generic, &alert, &rule, Some("https://cp.test/alerts/42")), want);
     }
 
     #[test]
@@ -265,7 +301,7 @@ mod tests {
         use crate::config::GroupBy;
         let (alert, rule) = webhook_fixture(GroupBy::ClientIp, "1.2.3.4");
         assert_eq!(
-            rendered_body(WebhookFormat::Slack, &alert, &rule),
+            rendered_body(WebhookFormat::Slack, &alert, &rule, None),
             serde_json::json!({
                 "text": "[critical] block-burst: 12 events in 60s (threshold 5), client_ip=1.2.3.4"
             })
@@ -273,8 +309,21 @@ mod tests {
 
         let (alert, rule) = webhook_fixture(GroupBy::None, "");
         assert_eq!(
-            rendered_body(WebhookFormat::Slack, &alert, &rule),
+            rendered_body(WebhookFormat::Slack, &alert, &rule, None),
             serde_json::json!({ "text": "[critical] block-burst: 12 events in 60s (threshold 5)" })
+        );
+    }
+
+    #[test]
+    fn slack_text_ends_with_the_alert_link() {
+        use crate::config::GroupBy;
+        let (alert, rule) = webhook_fixture(GroupBy::ClientIp, "1.2.3.4");
+        assert_eq!(
+            rendered_body(WebhookFormat::Slack, &alert, &rule, Some("https://cp.test/alerts/42")),
+            serde_json::json!({
+                "text": "[critical] block-burst: 12 events in 60s (threshold 5), client_ip=1.2.3.4 \
+                         https://cp.test/alerts/42"
+            })
         );
     }
 
@@ -283,7 +332,7 @@ mod tests {
         use crate::config::GroupBy;
         let (alert, rule) = webhook_fixture(GroupBy::RuleId, "<!channel> & <http://x|y>");
         assert_eq!(
-            slack_text(&alert, &rule),
+            slack_text(&alert, &rule, None),
             "[critical] block-burst: 12 events in 60s (threshold 5), \
              rule_id=&lt;!channel&gt; &amp; &lt;http://x|y&gt;"
         );
@@ -335,12 +384,22 @@ mod tests {
 
         // First cycle: 3 blocks from 7.7.7.7 reach threshold 3 → one alert fires (no webhook).
         let bus = EventBus::new();
-        evaluate_rule(&store, &rule, None, WebhookFormat::Generic, None, &bus).await.expect("cycle 1");
-        let fired = |alerts: Vec<Alert>| alerts.iter().filter(|a| a.rule_name == uniq_name).count();
+        evaluate_rule(&store, &rule, Delivery::default(), None, &bus).await.expect("cycle 1");
+        let fired = |alerts: Vec<crate::model::FiredAlert>| {
+            alerts.iter().filter(|a| a.alert.rule_name == uniq_name).count()
+        };
         assert_eq!(fired(store.recent_alerts(500).await.unwrap()), 1, "one alert on first cycle");
 
+        // The fired alert carries the rule's match snapshot, and it resolves back to the 3 events.
+        let id = store.recent_alerts(500).await.unwrap().into_iter().find(|a| a.alert.rule_name == uniq_name).unwrap().id;
+        let (fired_alert, snapshot) = store.get_alert(id).await.unwrap().expect("alert by id");
+        assert_eq!(snapshot.as_ref(), Some(&rule.matcher()), "evaluator stores the match snapshot");
+        let events = store.alert_events(&fired_alert.alert, &rule.matcher(), 100, 0).await.unwrap();
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert!(events.iter().all(|e| e.request_id.starts_with(&format!("ev-{nanos}-"))));
+
         // Second cycle immediately: still over threshold, but cooldown (3600s) blocks a re-fire.
-        evaluate_rule(&store, &rule, None, WebhookFormat::Generic, None, &bus).await.expect("cycle 2");
+        evaluate_rule(&store, &rule, Delivery::default(), None, &bus).await.expect("cycle 2");
         assert_eq!(fired(store.recent_alerts(500).await.unwrap()), 1, "cooldown prevents a second fire");
     }
 }

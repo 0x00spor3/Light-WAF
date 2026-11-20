@@ -106,9 +106,30 @@ The alerting evaluator queries stored decision events on an interval and fires w
 per-group count crosses a threshold within a window. Fired alerts are recorded, delivered to a
 webhook, and shown in the Alerts view. A cooldown prevents the same `(rule, group)` re-firing too soon.
 
-`webhook_format` picks the body: `generic` (the default) posts the alert as JSON, `slack` posts the
-`{"text": …}` that Slack and Mattermost incoming webhooks expect. A Slack webhook URL is a credential,
-so prefer the `WAF_CP_ALERT_WEBHOOK` env var to the file.
+Opening a fired alert shows the denied events behind it: those in the rule's window ending at the
+fire time that matched the rule's filters and belong to the fired group, each linking to the event
+drill-down. The alert stores a snapshot of its rule's match, so editing or renaming the rule later
+does not change which events it shows. Alerts fired before this snapshot existed use the rule as
+currently configured (flagged in the view), or show no events if no rule of that name is left. The
+listed count can differ from the alert's value when events arrived after the evaluation or have
+been removed by retention. The page also shows whether the alert is still ongoing: how many matching
+events of the group fall in the window ending now, and whether that is still at or above the
+threshold (during the cooldown the evaluator does not fire again, so this is where you see it).
+Webhooks carry the alert only, never the events.
+
+`webhook_format` picks the body: `generic` (the default) posts the alert as JSON with its `id`, `slack`
+posts the `{"text": …}` that Slack and Mattermost incoming webhooks expect. A Slack webhook URL is a
+credential, so prefer the `WAF_CP_ALERT_WEBHOOK` env var to the file.
+
+Set `[controlplane].public_url` to the address operators reach the dashboard at, and every alert
+links to its page, `{public_url}/alerts/{id}`: a `url` field in the `generic` body, the URL at the end
+of the Slack text, and `event.url` in the SIEM alert event. It is unset by default (no links), and must
+be an http(s) base with no query or fragment.
+
+```toml
+[controlplane]
+public_url = "https://waf-cp.example.com"
+```
 
 ```toml
 [controlplane.alerting]

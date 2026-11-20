@@ -48,6 +48,10 @@ pub struct EventFields {
     pub outcome: Option<&'static str>,
     /// A STABLE id the SIEM dedups on (`waf-<stream>-<id>`) — the key to at-least-once safety.
     pub id: String,
+    /// ECS `event.url`: where to continue the investigation — an alert's dashboard page, when
+    /// `[controlplane].public_url` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +124,10 @@ pub struct WafAlert {
     pub value: i64,
     pub threshold: i64,
     pub severity: String,
+    /// Some of the denied events behind the alert (newest first), to correlate with the
+    /// `waf-decision-*` events. Empty (omitted) for an alert fired before rule snapshots existed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sample_request_ids: Vec<String>,
 }
 
 /// The `waf.*` domain namespace — only the sub-objects relevant to the event kind are present.
@@ -174,6 +182,7 @@ pub fn decision_to_siem(id: i64, ev: &DecisionEvent) -> SiemEvent {
             action: ev.decision.clone(),
             outcome,
             id: format!("waf-decision-{id}"),
+            url: None,
         },
         source: ev.client_ip.as_deref().and_then(source_ip),
         http: ev.method.clone().map(|method| Http { request: HttpRequest { method } }),
@@ -212,6 +221,7 @@ pub fn audit_to_siem(rec: &AuditRecord) -> SiemEvent {
             action: rec.action.clone(),
             outcome: None,
             id: format!("waf-audit-{}", rec.seq),
+            url: None,
         },
         source: None,
         http: None,
@@ -234,6 +244,17 @@ pub fn audit_to_siem(rec: &AuditRecord) -> SiemEvent {
 
 /// A fired alert → an alert event. `id` is the `alerts.id`.
 pub fn alert_to_siem(id: i64, a: &Alert) -> SiemEvent {
+    alert_to_siem_with_evidence(id, a, Vec::new(), None)
+}
+
+/// [`alert_to_siem`] plus the alert's evidence: sample `request_id`s of the events behind it and its
+/// dashboard link (`event.url`).
+pub fn alert_to_siem_with_evidence(
+    id: i64,
+    a: &Alert,
+    sample_request_ids: Vec<String>,
+    url: Option<String>,
+) -> SiemEvent {
     SiemEvent {
         version: SIEM_SCHEMA_VERSION,
         timestamp: rfc3339(a.fired_at),
@@ -243,6 +264,7 @@ pub fn alert_to_siem(id: i64, a: &Alert) -> SiemEvent {
             action: a.rule_name.clone(),
             outcome: None,
             id: format!("waf-alert-{id}"),
+            url,
         },
         source: source_ip(&a.group_key),
         http: None,
@@ -258,6 +280,7 @@ pub fn alert_to_siem(id: i64, a: &Alert) -> SiemEvent {
                 value: a.value,
                 threshold: a.threshold,
                 severity: a.severity.clone(),
+                sample_request_ids,
             }),
             ..Waf::default()
         },
@@ -447,6 +470,14 @@ fn cef_line(ev: &SiemEvent) -> String {
         if !alert.group.is_empty() {
             put("cs1", &alert.group, CEF_MAX_CUSTOM_STRING);
             put("cs1Label", "group", CEF_MAX_STRING);
+        }
+        if !alert.sample_request_ids.is_empty() {
+            put("cs2", &alert.sample_request_ids.join(","), CEF_MAX_CUSTOM_STRING);
+            put("cs2Label", "sampleRequestIds", CEF_MAX_STRING);
+        }
+        if let Some(url) = &ev.event.url {
+            put("cs3", url, CEF_MAX_CUSTOM_STRING);
+            put("cs3Label", "alertUrl", CEF_MAX_STRING);
         }
     }
     if let Some(audit) = &ev.waf.audit {
@@ -677,6 +708,44 @@ mod tests {
         assert!(line.contains("externalId=waf-alert-9 rt=1700000200000 "));
         assert!(line.contains("cn1=30 cn1Label=value cn2=20 cn2Label=threshold cs1=sqli-union cs1Label=group"));
         assert!(!line.contains("src="), "a rule id is not an address: {line}");
+    }
+
+    #[test]
+    fn alert_evidence_is_additive_and_omitted_when_absent() {
+        // Without evidence: no new keys at all (same JSON as before), schema version unchanged.
+        let plain = serde_json::to_value(alert_to_siem(9, &alert("5.5.5.5", "critical"))).unwrap();
+        assert!(plain["event"].get("url").is_none(), "{plain}");
+        assert!(plain["waf"]["alert"].get("sample_request_ids").is_none(), "{plain}");
+        assert_eq!(plain["version"], 1);
+
+        let ev = alert_to_siem_with_evidence(
+            9,
+            &alert("5.5.5.5", "critical"),
+            vec!["r-2".into(), "r-1".into()],
+            Some("https://cp.test/alerts/9".into()),
+        );
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(v["event"]["url"], "https://cp.test/alerts/9");
+        assert_eq!(v["waf"]["alert"]["sample_request_ids"], serde_json::json!(["r-2", "r-1"]));
+        assert_eq!(v["event"]["id"], "waf-alert-9");
+    }
+
+    #[test]
+    fn cef_alert_line_carries_the_evidence() {
+        let ev = alert_to_siem_with_evidence(
+            9,
+            &alert("5.5.5.5", "critical"),
+            vec!["r-2".into(), "r=1".into()],
+            Some("https://cp.test/alerts/9".into()),
+        );
+        let line = cef_line(&ev);
+        assert!(
+            line.ends_with(r"cs2=r-2,r\=1 cs2Label=sampleRequestIds cs3=https://cp.test/alerts/9 cs3Label=alertUrl"),
+            "{line}"
+        );
+        // Without evidence the alert line has no cs2/cs3.
+        let plain = cef_line(&alert_to_siem(9, &alert("5.5.5.5", "critical")));
+        assert!(!plain.contains("cs2=") && !plain.contains("cs3="), "{plain}");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
+import { useNavigate } from "react-router";
 import { api } from "../api";
 import { useApi } from "../hooks/useApi";
 import { useLiveStream } from "../hooks/useLiveStream";
@@ -24,9 +25,14 @@ function FiredAlerts() {
   });
 
   useLiveStream("alerts", refresh);
+  const navigate = useNavigate();
 
   return (
-    <Panel title="Fired alerts" subtitle="Recent, newest first" actions={<LiveIndicator at={lastUpdated} />}>
+    <Panel
+      title="Fired alerts"
+      subtitle="Recent, newest first — open one to see the events that fired it"
+      actions={<LiveIndicator at={lastUpdated} />}
+    >
       {loading ? (
         <Loading />
       ) : error ? (
@@ -46,8 +52,8 @@ function FiredAlerts() {
             </tr>
           </thead>
           <tbody>
-            {data.map((a, i) => (
-              <tr key={`${a.rule_name}-${a.group_key}-${i}`}>
+            {data.map((a) => (
+              <tr key={a.id} className="clickable" onClick={() => navigate(`/alerts/${a.id}`)}>
                 <td className="muted nowrap">{fmtTime(a.fired_at)}</td>
                 <td className="mono">{a.rule_name}</td>
                 <td className="mono">{a.group_key || "—"}</td>
@@ -112,7 +118,7 @@ function ConfiguredRules() {
   );
 }
 
-function matchSummary(
+export function matchSummary(
   decision: string | null,
   ruleId: string | null,
   clientIp: string | null,

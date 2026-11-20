@@ -70,6 +70,25 @@ impl GroupBy {
             GroupBy::RuleId => Some("rule_id"),
         }
     }
+
+    /// The config/serde spelling (`none` | `client_ip` | `rule_id`), as stored in the alert snapshot.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupBy::None => "none",
+            GroupBy::ClientIp => "client_ip",
+            GroupBy::RuleId => "rule_id",
+        }
+    }
+
+    /// Inverse of [`GroupBy::as_str`]; `None` for an unknown spelling.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(GroupBy::None),
+            "client_ip" => Some(GroupBy::ClientIp),
+            "rule_id" => Some(GroupBy::RuleId),
+            _ => None,
+        }
+    }
 }
 
 fn default_severity() -> String {
@@ -109,6 +128,30 @@ pub struct AlertRule {
     /// Do not re-fire the same (rule, group) within this many seconds.
     #[serde(default = "default_cooldown")]
     pub cooldown_seconds: u64,
+}
+
+impl AlertRule {
+    /// The parameters that select this rule's events — snapshotted on every fired alert.
+    pub fn matcher(&self) -> AlertMatch {
+        AlertMatch {
+            decision: self.decision.clone(),
+            rule_id: self.rule_id.clone(),
+            client_ip: self.client_ip.clone(),
+            group_by: self.group_by,
+            window_seconds: self.window_seconds,
+        }
+    }
+}
+
+/// What selects an alert rule's events: its filters, grouping and look-back window. Stored with each
+/// fired alert so the events behind it stay resolvable after the rule changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlertMatch {
+    pub decision: Option<String>,
+    pub rule_id: Option<String>,
+    pub client_ip: Option<String>,
+    pub group_by: GroupBy,
+    pub window_seconds: u64,
 }
 
 /// The JSON body POSTed to the alert webhook. An unknown value fails config parsing at load.
@@ -355,6 +398,10 @@ pub struct ControlPlaneConfig {
     pub api_inventory: ApiInventoryConfig,
     /// Request-capture storage (retention of the full denied requests shipped by nodes).
     pub captures: CaptureStoreConfig,
+    /// The dashboard's external base URL (e.g. `https://waf-cp.example.com`). When set, alert
+    /// webhooks and SIEM alert events carry a link to the alert's page (`{public_url}/alerts/{id}`).
+    /// Default unset: no links.
+    pub public_url: Option<String>,
 }
 
 /// `[controlplane.captures]` — retention of the full denied requests (`request_captures`) shipped by
@@ -401,8 +448,33 @@ impl Default for ControlPlaneConfig {
             siem: SiemConfig::default(),
             api_inventory: ApiInventoryConfig::default(),
             captures: CaptureStoreConfig::default(),
+            public_url: None,
         }
     }
+}
+
+/// The dashboard link to alert `id`, or `None` when no `public_url` is configured. `public_url` is
+/// validated at load ([`ControlPlaneConfig::validate`]); a trailing `/` is tolerated.
+pub fn alert_url(public_url: Option<&str>, id: i64) -> Option<String> {
+    public_url.map(|base| format!("{}/alerts/{id}", base.trim_end_matches('/')))
+}
+
+/// `public_url` must be an absolute http(s) base: no query/fragment (the alert path is appended),
+/// and none of the characters chat formats treat as link syntax, so it can be embedded verbatim.
+fn validate_public_url(url: &str) -> Result<()> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| Error::Config(format!("public_url must be http(s)://…, got {url:?}")))?;
+    if rest.is_empty() || rest.starts_with('/') {
+        return Err(Error::Config(format!("public_url has no host: {url:?}")));
+    }
+    if let Some(c) = rest.chars().find(|c| c.is_whitespace() || c.is_control() || "?#<>|\"".contains(*c)) {
+        return Err(Error::Config(format!(
+            "public_url must be a plain base URL (no query, fragment or {c:?}), got {url:?}"
+        )));
+    }
+    Ok(())
 }
 
 /// The `[controlplane]` table wrapper, so the file has a named section like the WAF config.
@@ -530,6 +602,9 @@ impl ControlPlaneConfig {
                     return Err(Error::Config(format!("siem destination {:?} has no streams", d.name)));
                 }
             }
+        }
+        if let Some(url) = &self.public_url {
+            validate_public_url(url)?;
         }
         Ok(())
     }
@@ -773,5 +848,36 @@ format = "cef"
         assert!(ControlPlaneConfig::from_toml_str(bad_w).unwrap().validate().is_err());
         let bad_t = "[controlplane]\n[[controlplane.alerts]]\nname=\"a\"\nwindow_seconds=60\nthreshold=0\n";
         assert!(ControlPlaneConfig::from_toml_str(bad_t).unwrap().validate().is_err());
+    }
+
+    #[test]
+    fn public_url_is_optional_and_validated() {
+        let with = |url: &str| format!("[controlplane]\npublic_url = \"{url}\"\n");
+        assert!(ControlPlaneConfig::from_toml_str("[controlplane]\n").unwrap().public_url.is_none());
+        for ok in ["https://waf-cp.example.com", "http://10.0.0.5:9600/", "https://example.com/waf-cp"] {
+            let cfg = ControlPlaneConfig::from_toml_str(&with(ok)).unwrap();
+            assert!(cfg.validate().is_ok(), "{ok}");
+        }
+        for bad in [
+            "waf-cp.example.com",
+            "ftp://example.com",
+            "https://",
+            "https:///alerts",
+            "https://example.com/?x=1",
+            "https://example.com/#top",
+            "https://example.com/a b",
+            "https://example.com/<!channel>",
+            "https://example.com/a|b",
+        ] {
+            let cfg = ControlPlaneConfig::from_toml_str(&with(bad)).unwrap();
+            assert!(cfg.validate().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn alert_url_joins_the_base_and_the_id() {
+        assert_eq!(alert_url(None, 7), None);
+        assert_eq!(alert_url(Some("https://cp.example.com"), 7).as_deref(), Some("https://cp.example.com/alerts/7"));
+        assert_eq!(alert_url(Some("https://cp.example.com/waf/"), 7).as_deref(), Some("https://cp.example.com/waf/alerts/7"));
     }
 }

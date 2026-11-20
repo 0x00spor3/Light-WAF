@@ -24,6 +24,11 @@ scrape_interval_seconds = 15
 # assets are public and unmatched non-API paths fall back to index.html for client-side routing.
 # ui_dir = "crates/waf-controlplane/ui/dist"
 
+# The dashboard's external base URL, as operators reach it. When set, alert webhooks (generic `url`
+# field, Slack/Mattermost text) and SIEM alert events (`event.url`) link to the alert's page,
+# `{public_url}/alerts/{id}`. Default unset: no links. Must be http(s), with no query or fragment.
+# public_url = "https://waf-cp.example.com"
+
 # WAF nodes whose Prometheus /metrics the scraper polls (Phase 2). The `name` labels stored rollups
 # and ingested events (node identity is set here / by the log shipper, never by the core = zero-core).
 # [[controlplane.nodes]]

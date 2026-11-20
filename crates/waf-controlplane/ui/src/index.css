@@ -1108,6 +1108,23 @@ button.ghost.danger:hover {
   color: var(--ink);
 }
 
+/* ── Alert detail (the events behind an alert) ──────────────────── */
+.alert-notice {
+  margin-top: 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--rejected) 40%, var(--line-2));
+  background: color-mix(in srgb, var(--rejected) 8%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+}
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+
 @media print {
   .sidebar,
   .context-bar,

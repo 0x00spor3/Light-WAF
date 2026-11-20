@@ -13,10 +13,20 @@ interface Filters {
   rule_id: string;
   decision: string;
   client_ip: string;
+  /** `datetime-local` values (local time, no zone); sent to the API as RFC3339 UTC. */
+  since: string;
+  until: string;
   limit: number;
 }
 
-const EMPTY: Filters = { rule_id: "", decision: "", client_ip: "", limit: 100 };
+const EMPTY: Filters = { rule_id: "", decision: "", client_ip: "", since: "", until: "", limit: 100 };
+
+/// A `datetime-local` input value → RFC3339 (UTC), or undefined when empty/invalid.
+function toRfc3339(local: string): string | undefined {
+  if (!local) return undefined;
+  const d = new Date(local);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
 
 export function Events() {
   // `applied` drives the query; the form edits a draft until submitted.
@@ -30,9 +40,11 @@ export function Events() {
         rule_id: applied.rule_id || undefined,
         decision: applied.decision || undefined,
         client_ip: applied.client_ip || undefined,
+        since: toRfc3339(applied.since),
+        until: toRfc3339(applied.until),
         limit: applied.limit,
       }),
-    [applied.rule_id, applied.decision, applied.client_ip, applied.limit],
+    [applied.rule_id, applied.decision, applied.client_ip, applied.since, applied.until, applied.limit],
     // SSE (below) refreshes the instant new events are ingested; this slow poll is just a fallback
     // in case the stream is blocked (e.g. a buffering proxy).
     { pollMs: 20_000 },
@@ -66,6 +78,18 @@ export function Events() {
         placeholder="client_ip"
         value={draft.client_ip}
         onChange={(e) => setDraft({ ...draft, client_ip: e.target.value })}
+      />
+      <input
+        type="datetime-local"
+        value={draft.since}
+        onChange={(e) => setDraft({ ...draft, since: e.target.value })}
+        title="since (local time)"
+      />
+      <input
+        type="datetime-local"
+        value={draft.until}
+        onChange={(e) => setDraft({ ...draft, until: e.target.value })}
+        title="until (local time)"
       />
       <input
         type="number"
