@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.4] — 2026-11-23
+
+A security release. The native SQL injection module missed some forms of tautology and of UNION
+query, so those attacks reached the application at every paranoia level. Every deployment that
+relies on the native SQLi detection should upgrade (see Security). It also adds alert evidence and
+alert links to the control plane, and moves the operator to kube 5.0.
+
 ### Added
 - Control plane: alert evidence. Opening a fired alert in the dashboard lists the denied events that
   made it fire (its window, rule filters and fired group), each linking to the event drill-down. New
@@ -42,6 +49,10 @@ All notable changes to this project are documented here. The format follows
 - `libsqlite3-sys` 0.30.1 → 0.40.0 (RUSTSEC-2026-0459, bundled SQLite). It was only a lockfile entry
   through sqlx's optional SQLite driver, which no crate enables, so it was never built; the update
   clears the OSV-Scanner / Scorecard finding.
+- `url` 2.5.8 → 2.5.9 (RUSTSEC-2026-0592, stack overflow in `Url::origin()` on nested `blob:` URLs).
+  No crate calls `Url::origin()`, directly or through a dependency, and the core datapath does not
+  depend on `url`, so Light WAF was not affected; the update clears the OSV-Scanner / Scorecard
+  finding.
 - `osv-scanner.toml`: RUSTSEC-2026-0543 (`chrono` unmaintained, via openidconnect/oauth2/rustls-acme)
   accepted until 2027-04-30; the RUSTSEC-2026-0387 and GHSA-qwgh-2vcv-g2f7 entries are dropped
   (`crypto-bigint` is now 0.7.11, and the advisory was narrowed to `block-buffer` 0.11). New
