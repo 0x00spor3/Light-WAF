@@ -15,6 +15,9 @@ All notable changes to this project are documented here. The format follows
   SNI, as in libpq. A `WAF_CP_DATABASE_URL` that relied on the old alias needs `host` instead.
 
 ### Security
+- SQL injection detection: stronger detection of SQL tautologies with string operands and of the
+  BETWEEN predicate in injection context (`sqli-tautology-or`, and `sqli-tautology-and` at PL2+).
+  Severity and paranoia levels are unchanged.
 - `libsqlite3-sys` 0.30.1 → 0.40.0 (RUSTSEC-2026-0459, bundled SQLite). It was only a lockfile entry
   through sqlx's optional SQLite driver, which no crate enables, so it was never built; the update
   clears the OSV-Scanner / Scorecard finding.
