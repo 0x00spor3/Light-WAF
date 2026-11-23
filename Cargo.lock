@@ -374,9 +374,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-route53"
-version = "1.134.0"
+version = "1.135.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba16a032be31ec147e0afcba32784ae2ad0a444444408b7f799da4c17d1f721b"
+checksum = "9cf2cbf93fa9e694beb6e59254de3d135fabd6202cf6c1d6725b4a393930fe81"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -2692,9 +2692,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.61.1"
+version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e404978f72e1a21b53c96114b8a56e4cee7f17bd0a09b9c130875ed02a696f43"
+checksum = "0e37f27df77c7887edbc5f5a59ecd8e5ec4a669319266ec1b61068667a603183"
 dependencies = [
  "ahash",
  "bytecount",
@@ -3998,9 +3998,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "1.8.1"
+version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db7f3d75b5a3301746bff39a767bf4c5c42506b08513527308b3875bfb64a031"
+checksum = "c85db9332bbc47e826283f0a6058d747c478ed2278976279cefd22154d541b98"
 dependencies = [
  "arcstr",
  "combine",
