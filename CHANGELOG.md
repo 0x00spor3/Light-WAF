@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.4] — 2026-11-23
+
+A security release. The native SQL injection module missed some forms of tautology and of UNION
+query, so those attacks reached the application at every paranoia level. Every deployment that
+relies on the native SQLi detection should upgrade (see Security). It also adds alert evidence and
+alert links to the control plane, and moves the operator to kube 5.0.
+
 ### Added
 - Control plane: alert evidence. Opening a fired alert in the dashboard lists the denied events that
   made it fire (its window, rule filters and fired group), each linking to the event drill-down. New
