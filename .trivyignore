@@ -1,6 +1,7 @@
 # trivy vulnerability ignore-list — the ONLY sanctioned way to accept a HIGH/CRITICAL
 # finding in a shipped image. Both gates read this file:
-#   - CI:    .github/workflows/images.yml (trivyignores: .trivyignore)
+#   - CI:    .github/workflows/images.yml — always THIS file as of the workflow's own commit (also
+#            when a manual run re-publishes an older tag), checked out to .cve-policy/
 #   - local: scripts/images/sbom-scan.sh  (--ignorefile <repo>/.trivyignore)
 #
 # POLICY (see scripts/images/RUNBOOK.md "Base-image policy"):
@@ -29,3 +30,13 @@
 # has no openssl / openssl-sys / native-tls at all. Extended, not fixed.
 # On expiry: bump the distroless digest in the four Dockerfiles and drop this entry.
 CVE-2026-84782 exp:2026-12-09
+
+# libssl3 3.0.20 (distroless/cc-debian12 base) — DoS via unbounded QUIC frame queueing.
+# NOT APPLICABLE: no shipped binary links OpenSSL — `readelf -d` on the four 1.0.4 binaries
+# lists only libgcc_s / libm / libc / ld-linux, and Cargo.lock has no openssl / openssl-sys /
+# native-tls (TLS is rustls) — and nothing uses OpenSSL's QUIC stack.
+# UNFIXED upstream when added on 2026-11-23: trivy reports it `affected` with no fixed version,
+# and cc-debian12:latest is still the pinned sha256:e5d81ddd….
+# On expiry: re-check Debian/distroless for a fixed libssl3, bump the digest if there is one,
+# otherwise re-review and extend.
+CVE-2026-107494 exp:2026-12-09
