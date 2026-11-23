@@ -29,7 +29,13 @@ pub static SQLI_RULES: &[Rule] = &[
         //     NOT fire, because `c`/`d` are not numeric).
         // Restricting operands to numeric/single-char also rejects benign `or word=word`
         // phrases (e.g. "men or women=adult") that the old space-in-class `+` pattern flagged.
-        pattern: r#"(?i)\bor\s+(?:(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)\s*=\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s*(?:<=|>=|<>|!=|<|>)\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s+like\s+(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?))"#,
+        //   • breakout form (M2-F1): a closing quote or `)` right before `OR`/`||` (the
+        //     injection breakout), then either a QUOTED string (≤32 chars, no inner quote)
+        //     compared with `=` `<>` `!=` `LIKE` `IN (` to another quoted operand, or a
+        //     `BETWEEN … AND …` over numeric/quoted operands. Quotes on both operands plus
+        //     the breakout anchor keep the unquoted `or word=word` prose above clean; the
+        //     right operand needs only its opening quote (the app supplies the closing one).
+        pattern: r#"(?i)(?:\bor\s+(?:(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)\s*=\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s*(?:<=|>=|<>|!=|<|>)\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s+like\s+(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?))|['"`)]\s*(?:or\b|\|\|)[\s(]{0,8}(?:['"`][^'"`]{0,32}['"`]\s*(?:=|<>|!=|like|in\s*\()\s*['"`]|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`][^'"`]{0,32}['"`])\s*between\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`][^'"`]{0,32}['"`])\s*and\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`])))"#,
         severity: Severity::Critical,
         paranoia: 1,
     },
@@ -80,8 +86,9 @@ pub static SQLI_RULES: &[Rule] = &[
         id: "sqli-tautology-and",
         // Same shape/operands as sqli-tautology-or (E-2): `=` with single-char/numeric
         // operands, plus comparison/LIKE with numeric operands. Rejects benign
-        // `and word=word` and keeps `red and blue=mix` clean.
-        pattern: r#"(?i)\band\s+(?:(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)\s*=\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s*(?:<=|>=|<>|!=|<|>)\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s+like\s+(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?))"#,
+        // `and word=word` and keeps `red and blue=mix` clean. Same breakout form as
+        // sqli-tautology-or (M2-F1), with `AND`/`&&`.
+        pattern: r#"(?i)(?:\band\s+(?:(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)\s*=\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`]?\w['"`]?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s*(?:<=|>=|<>|!=|<|>)\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?)\s+like\s+(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?))|['"`)]\s*(?:and\b|&&)[\s(]{0,8}(?:['"`][^'"`]{0,32}['"`]\s*(?:=|<>|!=|like|in\s*\()\s*['"`]|(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`][^'"`]{0,32}['"`])\s*between\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`][^'"`]{0,32}['"`])\s*and\s*(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e\d+)?|['"`])))"#,
         severity: Severity::Warning,
         paranoia: 2,
     },
