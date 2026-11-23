@@ -89,12 +89,31 @@ jobs:
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ github.event.repository.updated_at }}
 
+      # `upload-release-assets: false`: on a tag push the action otherwise attaches the SBOM to the
+      # release of that tag when it already exists (a release created together with its tag), and
+      # this job only has `contents: read` → "Resource not accessible by integration". Release
+      # assets are release-assets.yml's job.
       - name: SBOM (syft → SPDX + CycloneDX)
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ${{ matrix.image }}:${{ steps.ver.outputs.version }}
           format: spdx-json
           output-file: "${{ matrix.image }}-${{ steps.ver.outputs.version }}.spdx.json"
+          upload-release-assets: false
+
+      # The CVE-acceptance POLICY (`.trivyignore`) comes from the commit this workflow runs from,
+      # not from the scanned tag: a manual re-publish of an existing tag (`release_tag`) is gated by
+      # today's justified ignore-list, while the image is still built from exactly the tagged code.
+      # On a tag push or a PR, github.sha IS the checked-out commit, so nothing changes there.
+      # Checked out AFTER the build, so it never enters the docker build context.
+      - name: Check out the CVE policy of the workflow commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: .cve-policy
+          sparse-checkout: .trivyignore
+          sparse-checkout-cone-mode: false
 
       # Gate on ALL HIGH/CRITICAL — fixed OR unfixed. Unfixed base-OS CVEs are NOT
       # silently tolerated: we engineer them away (distroless keeps the OS surface
@@ -111,7 +130,7 @@ jobs:
           image-ref: ${{ matrix.image }}:${{ steps.ver.outputs.version }}
           scanners: vuln
           severity: HIGH,CRITICAL
-          trivyignores: .trivyignore
+          trivyignores: .cve-policy/.trivyignore
           exit-code: "1"
           format: table
 
