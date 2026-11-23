@@ -49,6 +49,10 @@ alert links to the control plane, and moves the operator to kube 5.0.
 - `libsqlite3-sys` 0.30.1 → 0.40.0 (RUSTSEC-2026-0459, bundled SQLite). It was only a lockfile entry
   through sqlx's optional SQLite driver, which no crate enables, so it was never built; the update
   clears the OSV-Scanner / Scorecard finding.
+- `url` 2.5.8 → 2.5.9 (RUSTSEC-2026-0592, stack overflow in `Url::origin()` on nested `blob:` URLs).
+  No crate calls `Url::origin()`, directly or through a dependency, and the core datapath does not
+  depend on `url`, so Light WAF was not affected; the update clears the OSV-Scanner / Scorecard
+  finding.
 - `osv-scanner.toml`: RUSTSEC-2026-0543 (`chrono` unmaintained, via openidconnect/oauth2/rustls-acme)
   accepted until 2027-04-30; the RUSTSEC-2026-0387 and GHSA-qwgh-2vcv-g2f7 entries are dropped
   (`crypto-bigint` is now 0.7.11, and the advisory was narrowed to `block-buffer` 0.11). New
