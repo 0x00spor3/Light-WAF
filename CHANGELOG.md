@@ -37,6 +37,8 @@ All notable changes to this project are documented here. The format follows
 - SQL injection detection: stronger detection of SQL tautologies with string operands and of the
   BETWEEN predicate in injection context (`sqli-tautology-or`, and `sqli-tautology-and` at PL2+).
   Severity and paranoia levels are unchanged.
+- SQL injection detection: `sqli-union-select` now also recognises UNION queries with an alternative
+  separator or set modifier. Severity and paranoia level are unchanged.
 - `libsqlite3-sys` 0.30.1 → 0.40.0 (RUSTSEC-2026-0459, bundled SQLite). It was only a lockfile entry
   through sqlx's optional SQLite driver, which no crate enables, so it was never built; the update
   clears the OSV-Scanner / Scorecard finding.

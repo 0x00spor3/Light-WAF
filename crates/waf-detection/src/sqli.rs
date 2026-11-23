@@ -12,7 +12,14 @@ use crate::{all_matches, body_str_values, inspectable_header_values, Rule};
 pub static SQLI_RULES: &[Rule] = &[
     Rule {
         id: "sqli-union-select",
-        pattern: r"(?i)\bunion\s+(?:all\s+)?select\b",
+        // UNION [ALL|DISTINCT] SELECT. Two branches (M2-F2):
+        //   • whitespace separator — keyword-only, as before (`trade union select committee`
+        //     fires by design; the prefilter soundness test relies on it);
+        //   • parenthesised separator `UNION(SELECT` / `UNION ((SELECT` (≤4 parens) — prose
+        //     like `trade union (select committee)` is common, so this branch also requires a
+        //     SQL projection after SELECT: a literal/`*`/`@@`/quote/`(`/`-`, `NULL`, or an
+        //     identifier followed by `,` `(` or FROM (optionally after ALL/DISTINCT).
+        pattern: r#"(?i)\bunion(?:\s+(?:all|distinct))?(?:\s+select\b|\s*(?:\(\s*){1,4}select\b\s*(?:(?:all|distinct)\s+)?(?:[\d*@'"`(-]|null\b|[\w.$]+\s*(?:,|\(|\bfrom\b)))"#,
         severity: Severity::Critical,
         paranoia: 1,
     },
