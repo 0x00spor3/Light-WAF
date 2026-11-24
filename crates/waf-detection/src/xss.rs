@@ -19,14 +19,51 @@ pub static XSS_RULES: &[Rule] = &[
     },
     Rule {
         id: "xss-javascript-proto",
-        // `javascript:` scheme leading into a function CALL: scheme, then any run of
-        // non-paren chars, then an identifier immediately followed by `(`. This is the
-        // FP-precise form (Fase 10b): the bare `(?i)javascript\s*:` matched benign prose
-        // like "JavaScript: Basics of JavaScript Language" (Critical/PL1 → 403). The
-        // `regex` crate has no lookaround (§8 linear-time), so precision is by structure:
-        // an attack `javascript:alert(…)` has the call, prose has no `(` after the colon.
-        // (Coverage of call-less sinks / entity-obfuscated schemes is later-batch work.)
-        pattern: r"(?i)javascript\s*:[^()]*[a-z_$][\w$]*\(",
+        // The `javascript:` scheme, three branches of ONE rule (a request matching several
+        // still scores once — `all_matches` dedups by rule):
+        // 1. CALL (Fase 10b): scheme, then any run of non-paren chars, then an identifier
+        //    immediately followed by `(`. FP-precise form for free text: the bare
+        //    `(?i)javascript\s*:` matched benign prose like "JavaScript: Basics of JavaScript
+        //    Language" (Critical/PL1 → 403). The `regex` crate has no lookaround (§8
+        //    linear-time), so precision is by structure: an attack `javascript:alert(…)` has
+        //    the call, prose has no `(` after the colon.
+        // 2. URL ATTRIBUTE (F1 M2 famiglia 4): the scheme as the VALUE of an attribute that
+        //    navigates or executes (`href` — also `xlink:href` —, `src`, `action`,
+        //    `formaction`, `data`, SVG animation `values`/`from`/`to`, meta-refresh `url`),
+        //    WHATEVER follows: there the scheme itself is the danger, call or not (tagged
+        //    templates, assignments, `throw`, bracket access). No tag is required (an
+        //    attribute-context breakout `" href=…` counts too); precision comes from the
+        //    value STARTING with the scheme and from the CLOSED attribute list
+        //    (`title="javascript: tips"` stays clean). `srcdoc` is HTML, not a URL.
+        // 3. START OF VALUE (famiglia 4): the scheme at the start of an inspected value
+        //    (`?url=`, `?next=`, a JSON leaf, Referer — the value reflected into an href).
+        //    Followed by a non-space char, or by whitespace + an identifier immediately
+        //    followed by a backtick or `[`, or by `\s*=`. A bare scheme + whitespace + prose
+        //    ("javascript: the good parts", `{"skills":"javascript: 5 anni"}`) stays clean.
+        //    "Start" also means right after U+FFFD: the multipart fallback text replaces the
+        //    framing line breaks with it (`FALLBACK_SEPARATOR`, waf-normalizer `body.rs`) and
+        //    an invalid byte before a value becomes it, so a value a lenient backend extracts
+        //    from malformed framing still starts the match (`tests/multipart_differential.rs`).
+        //    For the same reason U+FFFD right after the colon is the end of that value (the
+        //    next framing line), not code: a bare `javascript:` value stays clean.
+        // Branches 2-3 read the scheme the way the browser URL parser does: TAB/LF/CR are
+        // removed anywhere in a URL (`java%09script:`, `java&#x09;script:` — the normalizer
+        // keeps them), and leading C0 controls/space are stripped.
+        // FREE TEXT without a call is NOT matched: every code indicator has a prose trap
+        // (`=`, `;`, backtick, `[`, keywords like `new`/`void`/`throw`), and a mid-text scheme
+        // only executes where branches 2-3 already look.
+        // ACCEPTED FP: CMS no-op links (`href="javascript:;"`, `"javascript:void 0"`,
+        // `"javascript:"`) block at PL1, consistent with `javascript:void(0)`, already
+        // blocked by branch 1 in 1.0.3. A no-op carve-out was rejected: it is an evasion
+        // surface (`javascript:;<code>`), and the end of an UNQUOTED value is ambiguous
+        // (`href=javascript:; onx=…`, `>`, end of input). There is no per-route exclusion
+        // of a native rule today (only the global `[modules.xss]` / severity / paranoia /
+        // detection-only levers; `SecRuleRemoveById` applies to CRS rules only).
+        // QUANTIFIERS (famiglia 3 convention): stars only over single classes, ONE level,
+        // inner alternatives disjoint on their first char; the top-level branches 1 and 3
+        // share the first consumed char `j` (3 is anchored to `^` / U+FFFD). Size pinned by
+        // `waf-detection/tests/prefilter_size.rs`.
+        pattern: r#"(?i)javascript\s*:[^()]*[a-z_$][\w$]*\(|\b(?:href|src|action|f(?:ormaction|rom)|data|values|to|url)\s*=[\x00-\x20]*(?:["'`][\x00-\x20]*)?j[\t\n\r]*a[\t\n\r]*v[\t\n\r]*a[\t\n\r]*s[\t\n\r]*c[\t\n\r]*r[\t\n\r]*i[\t\n\r]*p[\t\n\r]*t[\t\n\r]*:|(?:^|\x{FFFD})[\x00-\x20]*j[\t\n\r]*a[\t\n\r]*v[\t\n\r]*a[\t\n\r]*s[\t\n\r]*c[\t\n\r]*r[\t\n\r]*i[\t\n\r]*p[\t\n\r]*t[\t\n\r]*:(?:[^\s\x{FFFD}]|\s+[a-z_$][\w$.]*(?:[`\[]|\s*=))"#,
         severity: Severity::Critical,
         paranoia: 1,
     },

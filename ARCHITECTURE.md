@@ -1253,6 +1253,10 @@ the equivalence oracle for the fast-path (Pillar 3).
     `sqli-json-function`); XSS made precise (`xss-javascript-proto` → scheme-CALL
     `javascript\s*:[^()]*…\(` kills the FP "JavaScript: Basics…") + recall
     (`xss-js-sink-call`/`xss-js-sink-invocation` for the bypasses without a tag/handler).
+    F1 M2 adds two URL-context branches to `xss-javascript-proto` (same id, severity and PL):
+    the scheme as the value of a URL attribute, whatever follows, and the scheme at the start of
+    an inspected value followed by code. Both read the scheme the way a browser URL parser does
+    (TAB/LF/CR inside it, leading C0/space). The call branch stays for free text.
   - **B2 — `shell-injection`/`rce`/`ss-include`:** rce extended (chained `getent|host`, windows
     `set /[ap]`, `rce-yaml-deserialization` `!!python/…`); a **new module `ssi`** (`ssi-directive`
     `<!--#<verb>`, Critical/PL1) that replaces the fragile mis-attribution to `sqli-quote-comment`

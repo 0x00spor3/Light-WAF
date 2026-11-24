@@ -72,6 +72,8 @@ fn best_compile_ms(patterns: &[&str]) -> f64 {
 fn size_report() {
     let handler: Vec<&str> =
         xss::XSS_RULES.iter().filter(|r| r.id == "xss-event-handler").map(|r| r.pattern).collect();
+    let js_proto: Vec<&str> =
+        xss::XSS_RULES.iter().filter(|r| r.id == "xss-javascript-proto").map(|r| r.pattern).collect();
     let xss_all: Vec<&str> = xss::XSS_RULES.iter().map(|r| r.pattern).collect();
     println!();
     println!("| automa | size_limit minimo (B) | margine vs 10 MiB | compilazione (ms, best of 5) |");
@@ -82,6 +84,7 @@ fn size_report() {
         println!("| {name} | {min} | {margin:.2}% | {:.2} |", best_compile_ms(p));
     };
     row("xss-event-handler", &handler);
+    row("xss-javascript-proto", &js_proto);
     row("XSS_RULES (PL3)", &xss_all);
     for pl in [1u8, 3] {
         let (main, _) = union_patterns(pl);
