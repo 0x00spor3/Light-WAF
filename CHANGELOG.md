@@ -10,6 +10,9 @@ All notable changes to this project are documented here. The format follows
 ### Security
 - XSS detection: `xss-event-handler` now also recognises inline event-handler attributes outside its
   handler list when they appear inside an HTML tag. Severity and paranoia level are unchanged.
+- XSS detection: strengthened detection of URLs using the `javascript:` scheme (`xss-javascript-proto`).
+  Severity and paranoia level are unchanged. HTML content that contains `javascript:` links, including
+  no-op links, is now blocked consistently at paranoia level 1.
 
 ## [1.0.4] — 2026-11-23
 

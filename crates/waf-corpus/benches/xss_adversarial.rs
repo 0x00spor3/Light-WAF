@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 0x00spor3
 // SPDX-License-Identifier: Apache-2.0
 
-//! F1 M2 famiglia 3 — adversarial latency of the tag-anchored `xss-event-handler` branch.
+//! F1 M2 famiglia 3 — adversarial latency of the tag-anchored `xss-event-handler` branch
+//! (famiglia 4 adds the `js-*` inputs for the URL-context branches of `xss-javascript-proto`).
 //!
 //! The branch walks the attribute grammar of an open tag with single-class stars, so its
 //! worst inputs are the ones that keep the lazy DFA inside a tag: many unclosed attribute
@@ -37,6 +38,11 @@ fn inputs() -> Vec<(&'static str, &'static str)> {
         ("many-attrs-no-handler", fill("a=1 ", "<x ", ">")),
         ("unclosed-quote-text", fill("compra online = subito ", "<p title=\"", "")),
         ("handler-after-huge-value", fill("A", "<body title=\"", "\" onpageshow=print()>")),
+        // F1 M2 famiglia 4 — `xss-javascript-proto` URL-context branches.
+        ("js-scheme-no-indicator", fill("javascript: x ", "", "")),
+        ("js-url-attr-no-scheme", fill("href=\" ", "", "")),
+        ("js-split-scheme-no-colon", fill("j	a	v	a	s	c	r	i	p	t	", "", "")),
+        ("js-leading-ws-no-colon", fill("	", "", "javascript")),
     ]
 }
 
