@@ -520,7 +520,10 @@ share the §7 scoring scheme (severities from `[waf.severity_scores]`, filtered 
 > `paranoia_level` **unchanged**, only the `pattern` changes; recall demonstrated by the
 > existing positive tests):
 > - `xss-event-handler`: from `on\w+=` (matched `?online=true`, `?onsale=1`) to a **closed
->   list** of real event handlers (`onerror|onload|onclick|on…`).
+>   list** of real event handlers (`onerror|onload|onclick|on…`). F1 M2 adds a second branch to
+>   the same rule (same id, severity and PL): any `on…=` in attribute-name position of an open
+>   tag, matched by walking the tag's attribute grammar, so `on…` inside a value or a URL
+>   parameter never counts. The closed list stays for the tag-less (attribute-context) form.
 > - `sqli-tautology-or` / `sqli-tautology-and`: the char-class included the **space** with
 >   `+`, crossing phrases (`men or women=adult`, `color or size=large`). Now the operands are
 >   **numeric or single-character** (`1=1`, `'a'='a'`, `x=x`). NB: the `regex` crate has no

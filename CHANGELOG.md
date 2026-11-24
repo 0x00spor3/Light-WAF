@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- XSS detection: `xss-event-handler` now also recognises inline event-handler attributes outside its
+  handler list when they appear inside an HTML tag. Severity and paranoia level are unchanged.
+
 ## [1.0.4] — 2026-11-23
 
 A security release. The native SQL injection module missed some forms of tautology and of UNION

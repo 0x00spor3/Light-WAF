@@ -32,10 +32,31 @@ pub static XSS_RULES: &[Rule] = &[
     },
     Rule {
         id: "xss-event-handler",
-        // Inline event handlers: onerror=, onclick=, onload=, onmouseover=, etc.
-        // Anchored to the real handler names (NOT `on\w+`, which matched benign
-        // query params like ?online=true, ?onsale=1 at Critical/PL1).
-        pattern: r"(?i)\bon(?:error|load|click|auxclick|mouse\w+|pointer\w+|focus|blur|change|submit|key\w+|abort|drag\w+|drop|input|wheel|scroll|toggle|beforetoggle|select|reset|resize|contextmenu|animation\w+|transition\w+|play|pause|ended|canplay|copy|cut|paste)\s*=",
+        // Inline event handlers, two branches of ONE rule (a request matching both still
+        // scores once — `all_matches` dedups by rule):
+        // 1. LIST: the real handler names, anywhere (NOT `on\w+`, which matched benign
+        //    query params like ?online=true, ?onsale=1 at Critical/PL1). Kept because it
+        //    also covers the tag-less attribute-context form (`" onfocus=… autofocus`).
+        // 2. TAG (F1 M2 famiglia 3): ANY `on[a-z]{3,}=` in attribute-NAME position of an
+        //    open tag, so out-of-list handlers (pageshow, SVG animation begin, focusin, …)
+        //    are caught without a list. Precision comes from walking the tag's attribute
+        //    grammar like the HTML tokenizer: `<tag`, then `[\s/]+`, then attributes —
+        //    name, then nothing / `=` + value. A quoted value is consumed whole (an
+        //    `on…=` or `>` inside it never counts) and may be followed by no separator;
+        //    an unquoted value runs to whitespace (`/` belongs to it); a valueless name is
+        //    followed by `[\s/]+`. So `?online=`, `&onboarding=`, `data-online=`,
+        //    `alt="online = …"`, `href=/p/online=1` never reach the handler position. Tag
+        //    and attribute names use restricted ASCII classes (`; ) { & ? <` excluded) so
+        //    code like `a <b ? online = 1` is not read as a tag.
+        //    QUANTIFIERS (deliberate exception to the bounded-`{0,N}` convention): counted
+        //    repetitions are unrolled by the `regex` crate and grow both the automaton and
+        //    latency, while a bounded value/attribute count is a trivial padding bypass.
+        //    So: only stars over single character classes (`[^"]*`, `[^']*`, `[^\s>]*`), ONE
+        //    level of repetition (the attribute group), and alternatives disjoint on their
+        //    first char (`"` / `'` / other; `\s` / `=` / `/`). Linear time either way
+        //    (precedent: `[^()]*` in xss-javascript-proto); size is pinned by
+        //    `waf-detection/tests/prefilter_size.rs`.
+        pattern: r#"(?i)\bon(?:error|load|click|auxclick|mouse\w+|pointer\w+|focus|blur|change|submit|key\w+|abort|drag\w+|drop|input|wheel|scroll|toggle|beforetoggle|select|reset|resize|contextmenu|animation\w+|transition\w+|play|pause|ended|canplay|copy|cut|paste)\s*=|<[a-z][a-z0-9:._-]*[\s/]+(?:[a-z0-9_:.@#-]+(?:\s+(?:=\s*(?:"[^"]*"[\s/]*|'[^']*'[\s/]*|[^\s>"'][^\s>]*\s+)|/[\s/]*)?|=\s*(?:"[^"]*"[\s/]*|'[^']*'[\s/]*|[^\s>"'][^\s>]*\s+)|/[\s/]*))*on[a-z]{3,}\s*="#,
         severity: Severity::Critical,
         paranoia: 1,
     },
